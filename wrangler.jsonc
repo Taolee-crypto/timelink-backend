@@ -2,24 +2,10 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "timelink-api-worker",
   "main": "src/index.ts",
-  "type": "esm",
-  "account_id": "taolee@kakao.com",  // Cloudflare 계정 ID
   "compatibility_date": "2025-12-03",
-  "compatibility_flags": [
-    "global_fetch_strictly_public"
-  ],
-  "assets": {
-    "directory": "./public"
-  },
-  "observability": {
-    "enabled": true
-  },
-  "d1_databases": [
-    {
-      "binding": "TIMELINK_DB",
-      "database_name": "timelink-db"
-    }
-  ],
+  "type": "esm",
+  "account_id": "a056839cbee168dca5a9439167f98143",
+  "assets": { "directory": "./public" },
   "kv_namespaces": [
     {
       "binding": "TL_SESSIONS",
