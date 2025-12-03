@@ -2,9 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "timelink-api-worker",
   "main": "src/index.ts",
-  "compatibility_date": "2025-12-03",
   "type": "esm",
-  "account_id": "taolee@kakao.com", // Cloudflare 계정 ID 입력
+  "account_id": "taolee@kakao.com",  // Cloudflare 계정 ID
+  "compatibility_date": "2025-12-03",
   "compatibility_flags": [
     "global_fetch_strictly_public"
   ],
