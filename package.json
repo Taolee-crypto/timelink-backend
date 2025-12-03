@@ -1,22 +1,16 @@
 {
   "name": "timelink-api-worker",
   "version": "1.0.0",
-  "description": "TimeLink API Worker",
-  "main": "src/index.ts",
+  "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
   },
-  "author": "Taolee",
-  "license": "MIT",
   "devDependencies": {
-    "@cloudflare/kv-asset-handler": "^0.1.0",
     "typescript": "^5.2.2",
-    "@types/node": "^20.5.1",
-    "wrangler": "^4.51.0",
-    "@types/uuid": "^9.0.2",
+    "@cloudflare/kv-asset-handler": "^0.1.2",
     "uuid": "^9.0.0"
   }
 }
