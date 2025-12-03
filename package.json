@@ -2,9 +2,10 @@
   "name": "timelink-backend",
   "version": "1.0.0",
   "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc"
-  },
+ "scripts": {
+  "build": "tsc",
+  "test": "echo \"Error: no test specified\" && exit 1"
+}
   "devDependencies": {
     "typescript": "^5.2.2",
     "@cloudflare/workers-types": "^4.202"
