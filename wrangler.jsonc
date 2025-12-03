@@ -1,9 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "timelink-api-worker",
-  "main": "index.js",
+  "main": "index.js",         // <- 실제 파일 이름과 일치해야 함
   "compatibility_date": "2025-12-04",
   "assets": {
-    "directory": "./public"
+    "directory": "./public"   // <- 존재하는 폴더
   }
 }
