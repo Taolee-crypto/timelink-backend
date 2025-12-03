@@ -1,13 +1,24 @@
 {
   "name": "timelink-backend",
   "version": "1.0.0",
+  "description": "Timelink Cloudflare Worker backend",
   "main": "dist/index.js",
- "scripts": {
-  "build": "tsc",
-  "test": "echo \"Error: no test specified\" && exit 1"
-}
+  "scripts": {
+    "build": "tsc",
+    "start": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Taolee-crypto/timelink-new.git"
+  },
+  "keywords": ["cloudflare", "worker", "timelink", "backend"],
+  "author": "Lee Ung",
+  "license": "ISC",
+  "homepage": "https://github.com/Taolee-crypto/timelink-new#readme",
   "devDependencies": {
-    "typescript": "^5.2.2",
-    "@cloudflare/workers-types": "^4.202"
+    "typescript": "^5.9.3",
+    "@cloudflare/workers-types": "^4.20251202.0"
   }
 }
