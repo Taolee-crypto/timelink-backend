@@ -1,0 +1,16 @@
+name = "timelink-api-worker"
+main = "dist/worker.js"
+compatibility_date = "2024-12-01"
+
+# 정적 파일(public 폴더)
+[assets]
+directory = "public"
+
+# KV 네임스페이스
+[[kv_namespaces]]
+binding = "TL_SESSIONS"
+id = "ea2f9eacaac44899a621dc0315debf01"
+
+# Observability 옵션
+[observability]
+enabled = true
