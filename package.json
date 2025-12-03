@@ -1,16 +1,12 @@
 {
-  "name": "timelink-api-worker",
+  "name": "timelink-backend",
   "version": "1.0.0",
-  "private": true,
-  "type": "module",
+  "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "build": "tsc"
   },
   "devDependencies": {
     "typescript": "^5.2.2",
-    "@cloudflare/kv-asset-handler": "^0.1.2",
-    "uuid": "^9.0.0"
+    "@cloudflare/workers-types": "^4.202"
   }
 }
