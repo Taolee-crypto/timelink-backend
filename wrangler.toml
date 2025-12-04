@@ -1,0 +1,26 @@
+name = "timelink-api"
+main = "src/index.js"
+compatibility_date = "2023-11-20"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "timelink-db"
+database_id = "your-database-id"
+
+[[r2_buckets]]
+binding = "FILES_BUCKET"
+bucket_name = "timelink-files"
+
+[vars]
+JWT_SECRET = "your-jwt-secret-key"
+API_BASE_URL = "https://api.timelink.digital"
+FRONTEND_URL = "https://yourusername.github.io/timelink"
+
+[triggers]
+crons = ["0 * * * *"]  # 매시간 실행
+
+[env.production]
+zone_id = "your-zone-id"
+routes = [
+  { pattern = "api.timelink.digital/*", zone_name = "timelink.digital" }
+]
