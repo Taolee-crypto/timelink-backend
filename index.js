@@ -1,9 +1,6 @@
-// index.js
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    
-    // CORS 헤더 설정 (중요!)
+    // CORS 설정
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, DELETE',
@@ -13,78 +10,23 @@ export default {
 
     // Preflight 요청 처리
     if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: corsHeaders
-      });
+      return new Response(null, { headers: corsHeaders });
     }
 
-    // API 경로 처리
-    if (url.pathname.startsWith('/api/')) {
-      // UUID 엔드포인트
-      if (url.pathname === '/api/uuid' || url.pathname === '/api/uuid/') {
-        const uuid = crypto.randomUUID();
-        return new Response(
-          JSON.stringify({
-            success: true,
-            uuid: uuid,
-            timestamp: new Date().toISOString(),
-            endpoint: url.pathname
-          }),
-          {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              ...corsHeaders
-            }
-          }
-        );
-      }
-      
-      // Health check 엔드포인트
-      if (url.pathname === '/api/health' || url.pathname === '/api/health/') {
-        return new Response(
-          JSON.stringify({ 
-            status: 'ok', 
-            service: 'timelink-api-worker',
-            timestamp: new Date().toISOString(),
-            environment: env.ENVIRONMENT || 'development'
-          }),
-          {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              ...corsHeaders
-            }
-          }
-        );
-      }
-      
-      // 메시지 엔드포인트 (테스트용)
-      if (url.pathname === '/api/message' || url.pathname === '/api/message/') {
-        return new Response(
-          JSON.stringify({
-            message: 'Hello from TimeLink API!',
-            timestamp: new Date().toISOString()
-          }),
-          {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              ...corsHeaders
-            }
-          }
-        );
-      }
-      
-      // API 404 처리
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // API 엔드포인트
+    if (path === '/api/health' || path === '/api/health/') {
       return new Response(
-        JSON.stringify({ 
-          error: 'API endpoint not found',
-          path: url.pathname,
-          available_endpoints: ['/api/uuid', '/api/health', '/api/message']
+        JSON.stringify({
+          status: 'ok',
+          service: 'timelink-api-worker',
+          timestamp: new Date().toISOString(),
+          environment: 'development'
         }),
         {
-          status: 404,
+          status: 200,
           headers: {
             'Content-Type': 'application/json',
             ...corsHeaders
@@ -93,10 +35,41 @@ export default {
       );
     }
 
-    // 프론트엔드 HTML 서빙 (기존 코드 유지)
-    // 이미 Cloudflare Pages나 GitHub Pages로 프론트엔드를 배포중이므로
-    // API 요청이 아닌 경우 리디렉션 또는 기본 응답
-    if (url.pathname === '/' || url.pathname === '/index.html') {
+    if (path === '/api/uuid' || path === '/api/uuid/') {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          uuid: crypto.randomUUID(),
+          timestamp: new Date().toISOString()
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            ...corsHeaders
+          }
+        }
+      );
+    }
+
+    if (path === '/api/message' || path === '/api/message/') {
+      return new Response(
+        JSON.stringify({
+          message: 'Hello from TimeLink API!',
+          timestamp: new Date().toISOString()
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            ...corsHeaders
+          }
+        }
+      );
+    }
+
+    // 루트 경로 - 정보 페이지
+    if (path === '/' || path === '/index.html') {
       const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -191,12 +164,12 @@ export default {
       });
     }
 
-    // 다른 모든 경로는 404
+    // 404 처리
     return new Response(
       JSON.stringify({
         error: 'Not found',
-        path: url.pathname,
-        note: 'This is the TimeLink API worker. Use /api/* endpoints.'
+        path: path,
+        available_endpoints: ['/api/health', '/api/uuid', '/api/message']
       }),
       {
         status: 404,
