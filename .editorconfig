@@ -127,4 +127,8 @@ trim_trailing_whitespace = false
 
 # 예외: 문서 생성 파일
 [docs/**/*.md]
-trim_trailing_whites
+trim_trailing_whitespace = false
+
+# GitHub 워크플로우
+[.github/workflows/*.yml]
+indent_size = 2
