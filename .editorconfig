@@ -1,12 +1,130 @@
-# http://editorconfig.org
+# EditorConfig is awesome: https://EditorConfig.org
+
+# 최상위 EditorConfig 파일
 root = true
 
+# 모든 파일에 적용
 [*]
-indent_style = tab
-end_of_line = lf
+# 문자 인코딩
 charset = utf-8
-trim_trailing_whitespace = true
+
+# 들여쓰기 스타일
+indent_style = space
+
+# 들여쓰기 크기
+indent_size = 2
+
+# 줄 끝 문자
+end_of_line = lf
+
+# 파일 끝에 새 줄 추가
 insert_final_newline = true
 
-[*.yml]
-indent_style = space
+# 줄 끝의 공백 제거
+trim_trailing_whitespace = true
+
+# JavaScript/TypeScript 파일
+[*.{js,jsx,ts,tsx}]
+indent_size = 2
+max_line_length = 100
+
+# JSON 파일
+[*.json]
+indent_size = 2
+
+# Markdown 파일
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = 80
+
+# HTML 파일
+[*.html]
+indent_size = 2
+max_line_length = 120
+
+# CSS/SCSS 파일
+[*.{css,scss}]
+indent_size = 2
+max_line_length = 120
+
+# YAML 파일
+[*.{yml,yaml}]
+indent_size = 2
+
+# Dockerfile
+[Dockerfile]
+indent_size = 4
+
+# Shell 스크립트
+[*.sh]
+indent_style = tab
+indent_size = 4
+
+# Git 커밋 메시지
+[COMMIT_EDITMSG]
+max_line_length = 72
+
+# 패키지 관리 파일
+[package.json]
+indent_size = 2
+
+# 구성 파일
+[*.{toml,ini}]
+indent_size = 2
+
+# SQL 파일
+[*.sql]
+indent_size = 2
+keyword_case = upper
+identifier_case = lower
+
+# Python 파일
+[*.py]
+indent_size = 4
+max_line_length = 88
+
+# Java 파일
+[*.java]
+indent_size = 4
+max_line_length = 100
+
+# C/C++ 파일
+[*.{c,cpp,h,hpp}]
+indent_size = 4
+max_line_length = 100
+
+# Go 파일
+[*.go]
+indent_style = tab
+indent_size = 4
+max_line_length = 100
+
+# Rust 파일
+[*.rs]
+indent_size = 4
+max_line_length = 100
+
+# Swift 파일
+[*.swift]
+indent_size = 4
+max_line_length = 100
+
+# Kotlin 파일
+[*.kt]
+indent_size = 4
+max_line_length = 100
+
+# 예외: 미니파이된 파일
+[*.min.js]
+trim_trailing_whitespace = false
+insert_final_newline = false
+indent_style = none
+
+# 예외: 빌드 파일
+[dist/**]
+indent_style = none
+trim_trailing_whitespace = false
+
+# 예외: 문서 생성 파일
+[docs/**/*.md]
+trim_trailing_whites
