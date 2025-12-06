@@ -1,245 +1,28 @@
-# 현재 디렉토리에서
-cd ~/timelink-backend
-
-# 1. 모든 캐시 및 설정 삭제
-echo "🗑️  기존 설정 삭제 중..."
-rm -rf ~/.wrangler
-rm -rf ~/AppData/Roaming/.wrangler 2>/dev/null || true
-rm -rf node_modules
-rm -f package-lock.json
-rm -f wrangler.toml
-
-# 2. 완전히 새로 시작
-echo "🔄 새 프로젝트 설정..."
-
-# 3. 기본 파일 생성
-cat > package.json << 'EOF'
-{
-  "name": "timelink-backend",
-  "version": "1.0.0",
-  "description": "TL Platform Backend API",
-  "main": "src/index.js",
-  "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "start": "wrangler dev"
-  },
-  "dependencies": {},
-  "devDependencies": {
-    "wrangler": "^3.16.0"
-  }
-}
-EOF
-
-# 4. 최소한의 백엔드 코드 생성
-mkdir -p src
-cat > src/index.js << 'EOF'
-export default {
-  async fetch(request, env, ctx) {
-    // CORS 헤더 설정
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Max-Age': '86400'
-    };
-
-    // OPTIONS 요청 처리 (Preflight)
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: corsHeaders,
-        status: 204
-      });
-    }
-
-    const url = new URL(request.url);
-    const path = url.pathname;
-    
-    // 기본 응답
-    if (path === '/' || path === '') {
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: '✅ TL Platform API 서버 실행 중!',
-          status: 'online',
-          version: '1.0.0',
-          timestamp: new Date().toISOString(),
-          documentation: 'https://github.com/Taolee-crypto/timelink-backend',
-          endpoints: {
-            root: '/',
-            health: '/health',
-            auth: '/auth/login, /auth/register',
-            market: '/market/list'
-          }
-        }, null, 2),
-        {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            ...corsHeaders
-          }
-        }
-      );
-    }
-
-    // 건강 상태 확인
-    if (path === '/health') {
-      return new Response(
-        JSON.stringify({
-          status: 'healthy',
-          uptime: '100%',
-          timestamp: new Date().toISOString()
-        }),
-        {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            ...corsHeaders
-          }
-        }
-      );
-    }
-
-    // 마켓 아이템 목록
-    if (path === '/market/list') {
-      const items = [
-        {
-          id: 'item_001',
-          title: '테스트 음원 - 팝',
-          type: 'tl3',
-          price: 500,
-          seller: 'test_seller',
-          duration: 180,
-          description: '테스트용 음원 파일'
-        },
-        {
-          id: 'item_002',
-          title: '테스트 비디오 - 튜토리얼',
-          type: 'tl4',
-          price: 1000,
-          seller: 'test_seller',
-          duration: 300,
-          description: '테스트용 비디오 파일'
-        }
-      ];
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          items: items,
-          total: items.length,
-          page: 1,
-          timestamp: new Date().toISOString()
-        }),
-        {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            ...corsHeaders
-          }
-        }
-      );
-    }
-
-    // 인증 테스트
-    if (path === '/auth/login') {
-      try {
-        const body = await request.json();
-        return new Response(
-          JSON.stringify({
-            success: true,
-            message: '로그인 성공 (테스트 모드)',
-            token: 'test_token_' + Date.now(),
-            user: {
-              id: 1,
-              email: body.email || 'test@timelink.com',
-              name: '테스트 사용자',
-              balance: 10000
-            }
-          }),
-          {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              ...corsHeaders
-            }
-          }
-        );
-      } catch (error) {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'JSON 파싱 실패',
-            message: error.message
-          }),
-          {
-            status: 400,
-            headers: {
-              'Content-Type': 'application/json',
-              ...corsHeaders
-            }
-          }
-        );
-      }
-    }
-
-    // 파일 업로드 테스트
-    if (path === '/content/upload') {
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: '파일 업로드 성공 (테스트)',
-          file_id: 'file_' + Date.now(),
-          file_url: 'https://example.com/test-file.tl3',
-          price: 500,
-          timestamp: new Date().toISOString()
-        }),
-        {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            ...corsHeaders
-          }
-        }
-      );
-    }
-
-    // 404 처리
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: 'Not Found',
-        message: '요청하신 경로를 찾을 수 없습니다: ' + path,
-        available_endpoints: ['/', '/health', '/market/list', '/auth/login', '/content/upload']
-      }),
-      {
-        status: 404,
-        headers: {
-          'Content-Type': 'application/json',
-          ...corsHeaders
-        }
-      }
-    );
-  }
-};
-EOF
-
-# 5. 간단한 wrangler 설정
-cat > wrangler.toml << 'EOF'
-name = "timelink-api"
+name = "timelink-backend"
 main = "src/index.js"
-compatibility_date = "2023-11-20"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
 
-# 배포 타겟: workers.dev 서브도메인
-workers_dev = true
+account_id = "a056839cbee168dca5a9439167f98143"
 
-# 환경 변수
 [vars]
-ENVIRONMENT = "development"
-API_VERSION = "1.0.0"
+API_VERSION = "v1"
+JWT_SECRET = "your-jwt-secret-change-in-production"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "timelink-db"
+database_id = "cf631397-ed92-4d21-b989-f3b3cedb7ae4"
+
+# R2 버킷 (선택사항, 나중에 추가)
+# [[r2_buckets]]
+# binding = "MY_BUCKET"
+# bucket_name = "timelink-storage"
 
 [env.production]
-workers_dev = true
-EOF
+name = "timelink-backend-prod"
+vars = { ENVIRONMENT = "production" }
 
-echo "✅ 기본 파일 생성 완료"
+[env.staging]
+name = "timelink-backend-staging"
+vars = { ENVIRONMENT = "staging" }
