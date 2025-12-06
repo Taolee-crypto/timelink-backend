@@ -4,7 +4,7 @@ main = "src/index.js"
 
 [vars]
 API_BASE_URL = "https://timelink-backend.taolee-crypto.workers.dev"
-FRONTEND_URL = "https://timelink.kr"
+FRONTEND_URL = "https://timelink.digital"
 
 [[d1_databases]]
 binding = "DB"

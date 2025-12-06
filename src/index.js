@@ -2,9 +2,9 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     
-    // CORS 설정
+    // CORS 설정 - timelink.digital
     const corsHeaders = {
-      'Access-Control-Allow-Origin': 'https://timelink.kr',
+      'Access-Control-Allow-Origin': 'https://timelink.digital',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Allow-Credentials': 'true'
@@ -21,7 +21,8 @@ export default {
         service: 'TimeLink Backend',
         status: 'healthy',
         timestamp: new Date().toISOString(),
-        environment: 'development'
+        environment: 'development',
+        frontend_url: 'https://timelink.digital'
       }), {
         headers: {
           'Content-Type': 'application/json',
@@ -39,7 +40,7 @@ export default {
           token: 'demo-jwt-token-for-development',
           user: {
             id: 1,
-            email: data.email || 'test@timelink.kr',
+            email: data.email || 'test@timelink.digital',
             name: '테스트 사용자'
           }
         }), {
