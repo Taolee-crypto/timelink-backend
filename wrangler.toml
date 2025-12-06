@@ -1,12 +1,14 @@
 name = "timelink-backend"
 compatibility_date = "2024-12-06"
 main = "src/index.js"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
-API_BASE_URL = "https://timelink-backend.taolee-crypto.workers.dev"
 FRONTEND_URL = "https://timelink.digital"
+ENVIRONMENT = "production"  # "development" 또는 "production"
 
-[[d1_databases]]
-binding = "DB"
-database_name = "timelink-db"
-database_id = "YOUR_DATABASE_ID"
+# D1 Database는 나중에 추가
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "timelink-db"
+# database_id = ""
