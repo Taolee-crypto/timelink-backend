@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 -- TimeLink 데이터베이스 스키마
 -- Cloudflare D1 데이터베이스용 SQL
 
@@ -299,3 +300,52 @@ END;
 -- 초기 관리자 계정 생성 (비밀번호: admin123 - 실제 운영시 변경 필요)
 INSERT OR IGNORE INTO users (email, password, username, role, is_verified) 
 VALUES ('admin@timelink.com', 'admin123', 'admin', 'admin', TRUE);
+=======
+-- timelink-backend/schema.sql
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  name TEXT NOT NULL,
+  balance DECIMAL(10, 2) DEFAULT 0.00,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS content (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  file_url TEXT NOT NULL,
+  file_type TEXT NOT NULL,
+  duration INTEGER,
+  price DECIMAL(10, 2) DEFAULT 0.00,
+  is_public BOOLEAN DEFAULT true,
+  views INTEGER DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  content_id TEXT,
+  amount DECIMAL(10, 2) NOT NULL,
+  type TEXT NOT NULL, -- 'deposit', 'purchase', 'withdraw', 'earn'
+  status TEXT DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (content_id) REFERENCES content(id)
+);
+
+CREATE TABLE IF NOT EXISTS copyright_requests (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  content_id TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  evidence_url TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (content_id) REFERENCES content(id)
+);
+>>>>>>> origin/main

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 name = "timelink-backend"
 main = "src/index.js"
 compatibility_date = "2024-12-01"
@@ -8,10 +9,20 @@ account_id = "a056839cbee168dca5a9439167f98143"
 [vars]
 API_VERSION = "v1"
 JWT_SECRET = "your-jwt-secret-change-in-production"
+=======
+name = "timelink-api"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+JWT_SECRET = "${JWT_SECRET}"
+API_BASE_URL = "https://timelink.digital"
+>>>>>>> origin/main
 
 [[d1_databases]]
 binding = "DB"
 database_name = "timelink-db"
+<<<<<<< HEAD
 database_id = "cf631397-ed92-4d21-b989-f3b3cedb7ae4"
 
 # R2 버킷 (선택사항, 나중에 추가)
@@ -26,3 +37,16 @@ vars = { ENVIRONMENT = "production" }
 [env.staging]
 name = "timelink-backend-staging"
 vars = { ENVIRONMENT = "staging" }
+=======
+database_id = "your-database-id-here"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "your-kv-id-here"
+
+[env.production]
+zone_id = "your_zone_id"
+routes = [
+  { pattern = "api.timelink.digital/*", zone_id = "your_zone_id" }
+]
+>>>>>>> origin/main
