@@ -1,42 +1,158 @@
+// src/index.js
 export default {
     async fetch(request, env, ctx) {
-        // CORS 설정
-        const corsHeaders = {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-        };
-
-        if (request.method === 'OPTIONS') {
-            return new Response(null, { headers: corsHeaders });
-        }
-
-        const url = new URL(request.url);
-        const path = url.pathname;
-
         try {
-            // API 라우팅
-            switch(path) {
-                case '/api/send-verification':
-                    return await handleSendVerification(request, env);
-                case '/api/verify-code':
-                    return await handleVerifyCode(request, env);
-                case '/api/signup':
-                    return await handleSignup(request, env);
-                case '/api/login':
-                    return await handleLogin(request, env);
-                case '/api/check-email':
-                    return await handleCheckEmail(request, env);
-                case '/health':
-                    return jsonResponse({ status: 'ok', service: 'timelink-auth' });
-                default:
-                    return jsonResponse({ error: 'Not found' }, 404);
+            const url = new URL(request.url);
+            const path = url.pathname;
+            
+            // CORS 설정
+            const corsHeaders = {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+            };
+            
+            // OPTIONS 요청 처리
+            if (request.method === 'OPTIONS') {
+                return new Response(null, {
+                    status: 204,
+                    headers: corsHeaders
+                });
             }
+            
+            // API 라우팅
+            if (path === '/health') {
+                return new Response(JSON.stringify({
+                    status: 'ok',
+                    service: 'timelink-auth',
+                    timestamp: new Date().toISOString()
+                }), {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...corsHeaders
+                    }
+                });
+            }
+            
+            if (path === '/api/send-verification') {
+                return await handleSendVerification(request, env);
+            }
+            
+            if (path === '/api/test') {
+                return new Response(JSON.stringify({
+                    message: 'API is working',
+                    timestamp: new Date().toISOString()
+                }), {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...corsHeaders
+                    }
+                });
+            }
+            
+            // 404 처리
+            return new Response(JSON.stringify({
+                error: 'Not Found',
+                path: path
+            }), {
+                status: 404,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...corsHeaders
+                }
+            });
+            
         } catch (error) {
-            console.error('API Error:', error);
-            return jsonResponse({ error: 'Internal server error' }, 500);
+            console.error('Global error:', error);
+            return new Response(JSON.stringify({
+                error: 'Internal Server Error',
+                message: error.message
+            }), {
+                status: 500,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                }
+            });
         }
     }
 };
 
-// 실제 구현 함수들...
+// 간단한 핸들러
+async function handleSendVerification(request, env) {
+    try {
+        // 요청 데이터 파싱
+        let data;
+        try {
+            data = await request.json();
+        } catch {
+            return new Response(JSON.stringify({
+                success: false,
+                message: 'Invalid JSON'
+            }), {
+                status: 400,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                }
+            });
+        }
+        
+        const { email } = data;
+        
+        if (!email) {
+            return new Response(JSON.stringify({
+                success: false,
+                message: 'Email is required'
+            }), {
+                status: 400,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                }
+            });
+        }
+        
+        // 인증 코드 생성
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        
+        // KV에 저장 (KV가 설정된 경우)
+        if (env.VERIFICATIONS) {
+            await env.VERIFICATIONS.put(email, JSON.stringify({
+                code,
+                expiresAt: Date.now() + 600000, // 10분
+                createdAt: Date.now()
+            }), { expirationTtl: 600 });
+        }
+        
+        // 개발용 로그
+        console.log(`Verification code for ${email}: ${code}`);
+        
+        return new Response(JSON.stringify({
+            success: true,
+            message: 'Verification code sent (development mode)',
+            code: code // 개발용 - 실제 서비스에서는 제거
+        }), {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            }
+        });
+        
+    } catch (error) {
+        console.error('Send verification error:', error);
+        return new Response(JSON.stringify({
+            success: false,
+            message: 'Internal server error'
+        }), {
+            status: 500,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            }
+        });
+    }
+}
