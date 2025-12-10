@@ -7,7 +7,7 @@ export function initEmailService(apiKey) {
         sendVerification: async (email, code) => {
             const msg = {
                 to: email,
-                from: 'noreply@timelink.com',
+                from: 'noreply@timelink.digiral',
                 subject: 'Timelink 이메일 인증',
                 text: `인증 코드: ${code}`,
                 html: `<strong>인증 코드: ${code}</strong>`
