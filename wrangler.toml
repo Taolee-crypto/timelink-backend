@@ -1,0 +1,8 @@
+name = "timelink-api"
+account_id = "a056839cbee168dca5a9439167f98143"
+main = "src/workers/api.js"
+compatibility_date = "2023-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
