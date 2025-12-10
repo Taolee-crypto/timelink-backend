@@ -1,8 +1,12 @@
-name = "timelink-api"
-account_id = "a056839cbee168dca5a9439167f98143"
-main = "src/workers/api.js"
-compatibility_date = "2023-12-01"
-compatibility_flags = ["nodejs_compat"]
+name = "timelink-auth-worker"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
 
 [vars]
-ENVIRONMENT = "production"
+NODE_ENV = "development"
+
+[env.production]
+name = "timelink-auth"
+
+[env.staging]
+name = "timelink-auth-staging"
