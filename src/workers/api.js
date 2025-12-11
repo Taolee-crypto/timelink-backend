@@ -1,4 +1,5 @@
 import { Router } from 'itty-router';
+import { TL3Converter } from '../lib/tl3-converter.js';
 
 const router = Router();
 
@@ -16,20 +17,35 @@ router.get('/api/health', () => {
     service: 'TimeLink Backend API',
     version: '2.0.0',
     timestamp: new Date().toISOString(),
-    domain: 'api.timelink.digital'
+    domain: 'api.timelink.digital',
+    features: ['tl3-conversion', 'time-license', 'encryption']
   }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 });
 
 router.post('/api/convert', async (request) => {
-  return new Response(JSON.stringify({
-    success: true,
-    contentId: `tl3_${Date.now()}`,
-    message: 'TL3 변환 API 준비됨'
-  }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-  });
+  try {
+    const formData = await request.formData();
+    const audioFile = formData.get('audio');
+    const metadata = JSON.parse(formData.get('metadata') || '{}');
+    
+    const converter = new TL3Converter();
+    const result = await converter.convert(audioFile, metadata);
+    
+    return new Response(JSON.stringify(result), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+    
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error.message
+    }), {
+      status: 400,
+      headers: corsHeaders
+    });
+  }
 });
 
 export default {

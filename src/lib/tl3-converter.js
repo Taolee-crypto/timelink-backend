@@ -1,40 +1,31 @@
 export class TL3Converter {
-  constructor() {
-    this.version = 'TL3v1';
-  }
-  
-  async convert(audioBuffer, metadata) {
-    // 기본 TL3 파일 구조 생성
-    const tl3Header = {
-      format: this.version,
-      contentId: `tl3_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      timestamp: new Date().toISOString(),
-      metadata: {
-        title: metadata.title,
-        artist: metadata.artist,
-        duration: metadata.duration,
-        pricePerSecond: metadata.pricePerSecond || 0.001,
-        encrypted: true
-      },
-      signatures: {
-        uploader: 'sig_' + Math.random().toString(36).substr(2, 16),
-        copyright: 'sig_' + Math.random().toString(36).substr(2, 16)
-      }
-    };
+  async convert(audioFile, metadata) {
+    console.log('TL3 변환 시작:', metadata.title);
     
-    // TL3 파일 생성 (더미 데이터 + 실제 오디오)
-    const tl3File = {
-      header: tl3Header,
-      audioData: audioBuffer,
-      encryption: 'AES-256-GCM',
-      keyHash: 'hash_' + Math.random().toString(36).substr(2, 16)
+    // 간단한 TL3 파일 생성 (MVP)
+    const tl3Data = {
+      header: {
+        format: 'TL3v1',
+        version: '1.0.0',
+        contentId: `tl3_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        timestamp: new Date().toISOString(),
+        metadata: {
+          title: metadata.title || 'Untitled',
+          artist: metadata.artist || 'Unknown',
+          duration: metadata.duration || 180,
+          pricePerSecond: metadata.pricePerSecond || 0.001,
+          encrypted: true
+        }
+      },
+      audioSize: audioFile.size,
+      encrypted: true
     };
     
     return {
       success: true,
-      contentId: tl3Header.contentId,
-      tl3File: tl3File,
-      downloadUrl: `/api/track/${tl3Header.contentId}/download`
+      contentId: tl3Data.header.contentId,
+      tl3Data: tl3Data,
+      message: 'TL3 파일 생성 완료'
     };
   }
 }
