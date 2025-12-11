@@ -8,12 +8,12 @@
     "deploy": "wrangler deploy",
     "start": "node server.js"
   },
-<<<<<<< HEAD
+
   "devDependencies": {
     "wrangler": "^3.0.0"
   },
   "dependencies": {}
-=======
+
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
     "dotenv": "^17.2.3",
@@ -40,5 +40,5 @@
     "url": "https://github.com/Taolee-crypto/timelink-backend/issues"
   },
   "homepage": "https://github.com/Taolee-crypto/timelink-backend#readme"
->>>>>>> 02ccdcf (Add D1 config and backend updates)
+02ccdcf (Add D1 config and backend updates)
 }
