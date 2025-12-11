@@ -1,8 +1,30 @@
+# Node
 node_modules/
-.wrangler/
-.mf/
-.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
 .env
+.env.*
+!.env.example
+
+# Build artifacts
+dist/
+build/
+.cache/
+.mf/
+.wrangler/
+
+# Logs
 *.log
+
+# System files
 .DS_Store
+Thumbs.db
+
+# Package manager
 package-lock.json
+yarn.lock
+pnpm-lock.yaml
