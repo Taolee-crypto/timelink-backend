@@ -14,3 +14,7 @@ ENVIRONMENT = "production"
 # Put the real SendGrid API key here, or set it in Cloudflare dashboard.
 SENDGRID_API_KEY = "REPLACE_WITH_YOUR_SENDGRID_API_KEY"
 EMAIL_FROM = "noreply@timelink.digital"
+[[d1_databases]]
+binding = "timelink_users"
+database_name = "timelink-users"
+database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
