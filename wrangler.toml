@@ -1,12 +1,7 @@
-name = "timelink-auth-worker"
-main = "src/index.js"
-compatibility_date = "2024-01-01"
+name = "timelink-email-worker"
+type = "javascript"
+account_id = "a056839cbee168dca5a9439167f98143"
+workers_dev = true
 
 [vars]
-NODE_ENV = "development"
-
-[env.production]
-name = "timelink-auth"
-
-[env.staging]
-name = "timelink-auth-staging"
+SENDGRID_API_KEY = "SG.luYeFpFORdOmtUNNdikoWQ.xLVX2w2A_VnPqggvI7burwmuC03sqjReZvgYxNWudmYCopied!"
