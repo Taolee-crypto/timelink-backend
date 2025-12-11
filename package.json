@@ -9,7 +9,7 @@
     "dev": "node server/server-dev.js",
     "test": "node test/test.js"
   },
-  "author": "LEE MUN UNG",
+  "author": "LEE UNG",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
