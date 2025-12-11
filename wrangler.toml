@@ -1,7 +1,16 @@
-name = "timelink-email-worker"
-type = "javascript"
+name = "timelink-api"
 account_id = "a056839cbee168dca5a9439167f98143"
-workers_dev = true
+main = "src/workers/api.js"
+compatibility_date = "2025-12-11"
+compatibility_flags = ["nodejs_compat"]
+
+# === Replace the id value with your KV namespace id (from Cloudflare) ===
+kv_namespaces = [
+  { binding = "AUTH_CODES", id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }
+]
 
 [vars]
-SENDGRID_API_KEY = "SG.luYeFpFORdOmtUNNdikoWQ.xLVX2w2A_VnPqggvI7burwmuC03sqjReZvgYxNWudmYCopied!"
+ENVIRONMENT = "production"
+# Put the real SendGrid API key here, or set it in Cloudflare dashboard.
+SENDGRID_API_KEY = "REPLACE_WITH_YOUR_SENDGRID_API_KEY"
+EMAIL_FROM = "noreply@timelink.digital"
