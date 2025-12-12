@@ -1,12 +1,13 @@
 name = "timelink-backend"
-main = "src/index.mjs"
+main = "src/index.js"
 compatibility_date = "2024-12-01"
-modules = true
+type = "javascript"
 
 [vars]
 ENV = "dev"
+SENDGRID_API_KEY = " SK9ce323a9aaa6e991f6394fc7991bf9fb"
 
 [[d1_databases]]
-binding = "timelink_users"
-database_name = "timelink-users"
+binding = "timelink-verifications"
+database_name = "timelink-verifications"
 database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
