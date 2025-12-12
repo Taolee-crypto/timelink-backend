@@ -1,16 +1,12 @@
 name = "timelink-backend"
 main = "src/index.js"
-compatibility_date = "2023-12-01"
+compatibility_date = "2024-12-01"
+modules = true
+
+[vars]
+ENV = "dev"
 
 [[d1_databases]]
 binding = "timelink_users"
 database_name = "timelink-users"
 database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
-
-[vars]
-ENV = "dev"
-
-name = "timelink-backend"
-main = "src/index.js"
-compatibility_date = "2024-12-01"
-modules = true
