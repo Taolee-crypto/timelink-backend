@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 // 기존 코드에 CORS 헤더 추가
 export default {
     async fetch(request, env, ctx) {
@@ -115,13 +114,13 @@ export default {
                 }
             );
         }
-=======
+
 export default {
     async fetch(request, env, ctx) {
         return new Response('Timelink API is working', {
             status: 200,
             headers: { 'Content-Type': 'text/plain' }
         });
->>>>>>> 02ccdcf (Add D1 config and backend updates)
+ 02ccdcf (Add D1 config and backend updates)
     }
 };
