@@ -1,6 +1,5 @@
 // src/index.js
 export async function fetch(request, env, ctx) {
-  // CORS 헤더
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
@@ -9,7 +8,6 @@ export async function fetch(request, env, ctx) {
     'Access-Control-Max-Age': '86400',
   };
 
-  // OPTIONS (Preflight)
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
@@ -20,6 +18,7 @@ export async function fetch(request, env, ctx) {
   try {
     if (path === '/api/send-verification' && request.method === 'POST') {
       const data = await request.json().catch(() => null);
+
       if (!data?.email) {
         return new Response(
           JSON.stringify({ success: false, message: 'Email required' }),
@@ -28,6 +27,7 @@ export async function fetch(request, env, ctx) {
       }
 
       const code = Math.floor(100000 + Math.random() * 900000).toString();
+
       if (env.VERIFICATIONS) {
         await env.VERIFICATIONS.put(
           data.email,
@@ -42,7 +42,6 @@ export async function fetch(request, env, ctx) {
       );
     }
 
-    // 기본 응답
     return new Response(
       JSON.stringify({ message: 'Timelink API', endpoints: ['/api/send-verification'] }),
       { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
