@@ -1,7 +1,9 @@
-// 기존 코드에 CORS 헤더 추가
+// CORS 설정 포함한 Timelink API Worker
+
 export default {
     async fetch(request, env, ctx) {
-        // CORS 헤더 설정
+
+        // CORS 헤더
         const corsHeaders = {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
@@ -10,7 +12,7 @@ export default {
             'Access-Control-Max-Age': '86400',
         };
 
-        // OPTIONS 요청 처리 (Preflight)
+        // OPTIONS (Preflight)
         if (request.method === 'OPTIONS') {
             return new Response(null, {
                 status: 204,
@@ -22,9 +24,11 @@ export default {
         const path = url.pathname;
 
         try {
-            // API 엔드포인트 처리
+            // -------------------------------
+            // 📌 이메일 인증 코드 발송
+            // -------------------------------
             if (path === '/api/send-verification' && request.method === 'POST') {
-                // 요청 데이터 파싱
+
                 let data;
                 try {
                     data = await request.json();
@@ -33,10 +37,7 @@ export default {
                         JSON.stringify({ success: false, message: 'Invalid JSON' }),
                         {
                             status: 400,
-                            headers: {
-                                'Content-Type': 'application/json',
-                                ...corsHeaders
-                            }
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
                         }
                     );
                 }
@@ -48,79 +49,56 @@ export default {
                         JSON.stringify({ success: false, message: 'Email required' }),
                         {
                             status: 400,
-                            headers: {
-                                'Content-Type': 'application/json',
-                                ...corsHeaders
-                            }
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
                         }
                     );
                 }
 
-                // 인증 코드 생성
+                // 6자리 코드 생성
                 const code = Math.floor(100000 + Math.random() * 900000).toString();
-                
-                // KV에 저장
+
+                // KV 저장
                 if (env.VERIFICATIONS) {
-                    await env.VERIFICATIONS.put(email, JSON.stringify({
-                        code,
-                        expiresAt: Date.now() + 600000,
-                        createdAt: Date.now()
-                    }), { expirationTtl: 600 });
+                    await env.VERIFICATIONS.put(
+                        email,
+                        JSON.stringify({
+                            code,
+                            expiresAt: Date.now() + 600000, // 10분
+                            createdAt: Date.now()
+                        }),
+                        { expirationTtl: 600 }
+                    );
                 }
 
-                console.log(`[EMAIL] ${email}: ${code}`);
+                console.log(`[SEND CODE] ${email} -> ${code}`);
 
                 return new Response(
-                    JSON.stringify({
-                        success: true,
-                        message: 'Verification code sent',
-                        code: code // 개발용
-                    }),
-                    {
-                        status: 200,
-                        headers: {
-                            'Content-Type': 'application/json',
-                            ...corsHeaders
-                        }
-                    }
+                    JSON.stringify({ success: true, message: 'Verification code sent', code }),
+                    { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
                 );
             }
 
-            // 기본 응답
+            // -------------------------------
+            // 📌 기본 응답
+            // -------------------------------
             return new Response(
                 JSON.stringify({
                     message: 'Timelink API',
-                    endpoints: ['/api/send-verification', '/api/verify-code', '/api/signup']
+                    endpoints: [
+                        '/api/send-verification',
+                        '/api/verify-code',
+                        '/api/signup'
+                    ]
                 }),
-                {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...corsHeaders
-                    }
-                }
+                { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
             );
 
-        } catch (error) {
-            console.error('Error:', error);
+        } catch (err) {
+            console.error(err);
             return new Response(
                 JSON.stringify({ error: 'Internal server error' }),
-                {
-                    status: 500,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...corsHeaders
-                    }
-                }
+                { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
             );
         }
-
-export default {
-    async fetch(request, env, ctx) {
-        return new Response('Timelink API is working', {
-            status: 200,
-            headers: { 'Content-Type': 'text/plain' }
-        });
- 02ccdcf (Add D1 config and backend updates)
     }
 };
