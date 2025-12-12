@@ -20,7 +20,7 @@ module.exports = {
             let data;
             try {
                 data = await request.json();
-            } catch (e) {
+            } catch {
                 return new Response(JSON.stringify({ success: false, message: 'Invalid JSON' }), {
                     status: 400,
                     headers: { 'Content-Type': 'application/json', ...corsHeaders }
