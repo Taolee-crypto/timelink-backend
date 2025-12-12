@@ -1,19 +1,20 @@
-import sgMail from '@sendgrid/mail';
+const sgMail = require('@sendgrid/mail');
 
-export function initEmailService(apiKey) {
+function initSendGrid(apiKey) {
     sgMail.setApiKey(apiKey);
-    
-    return {
-        sendVerification: async (email, code) => {
-            const msg = {
-                to: email,
-                from: 'noreply@timelink.digiral',
-                subject: 'Timelink 이메일 인증',
-                text: `인증 코드: ${code}`,
-                html: `<strong>인증 코드: ${code}</strong>`
-            };
-            
-            return sgMail.send(msg);
-        }
-    };
 }
+
+async function sendVerificationEmail(to, code) {
+    const msg = {
+        to,
+        from: 'noreply@timelink.com',
+        subject: 'Your Verification Code',
+        text: `Your code is ${code}`,
+    };
+    await sgMail.send(msg);
+}
+
+module.exports = {
+    initSendGrid,
+    sendVerificationEmail
+};
