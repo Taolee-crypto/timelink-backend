@@ -1,5 +1,5 @@
 // CORS 포함 Worker
-export default {
+module.exports = {
     async fetch(request, env, ctx) {
         const corsHeaders = {
             'Access-Control-Allow-Origin': '*',
