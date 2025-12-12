@@ -1,5 +1,5 @@
-// CORS 포함 Worker
-module.exports = {
+// CORS 포함 Worker (ESM 방식)
+export default {
     async fetch(request, env, ctx) {
         const corsHeaders = {
             'Access-Control-Allow-Origin': '*',
@@ -19,3 +19,4 @@ module.exports = {
         });
     }
 };
+
