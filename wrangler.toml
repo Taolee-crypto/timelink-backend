@@ -1,5 +1,5 @@
 name = "timelink-backend"
-main = "src/index.js"
+main = "src/index.mjs"
 compatibility_date = "2024-12-01"
 modules = true
 
