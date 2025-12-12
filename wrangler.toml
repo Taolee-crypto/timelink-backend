@@ -7,6 +7,6 @@ modules = true
 ENV = "dev"
 
 [[d1_databases]]
-binding = "VERIFICATIONS"
-database_name = "timelink-verifications"
+binding = "timelink_users"
+database_name = "timelink-users"
 database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
