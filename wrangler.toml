@@ -1,7 +1,9 @@
 name = "timelink-backend"
 main = "src/index.js"
+account_id = "a056839cbee168dca5a9439167f98143"
+
 compatibility_date = "2025-12-13"
-compatibility_flags = ["nodejs_compat"]  # ✅ ES6 모듈 지원
+compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
 binding = "timelink_users"
@@ -9,4 +11,4 @@ database_name = "timelink-users"
 database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
 
 [vars]
-APP_ENV = "production" 
+APP_ENV = "production"
