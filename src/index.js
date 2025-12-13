@@ -43,7 +43,7 @@ export default {
             status: 'healthy',
             service: 'tIMELINK Production Backend',
             version: '1.0.0',
-            environment: env.ENV || 'production',
+            environment: 'production',
             timestamp: new Date().toISOString(),
             features: {
               authentication: true,
@@ -64,7 +64,7 @@ export default {
               success: true,
               message: 'Production system operational',
               database: dbTest,
-              environment: env.ENV || 'production',
+              environment: 'production',
               secrets_configured: {
                 sendgrid: !!env.SENDGRID_API_KEY,
                 jwt: !!env.JWT_SECRET
@@ -75,7 +75,7 @@ export default {
             return this.jsonResponse({
               success: false,
               error: 'Database connection issue',
-              environment: env.ENV || 'production'
+              environment: 'production'
             }, corsHeaders, 500);
           }
           
@@ -102,7 +102,7 @@ export default {
             api: 'tIMELINK Digital Asset Platform',
             status: 'production',
             version: '1.0.0',
-            environment: env.ENV || 'production',
+            environment: 'production',
             endpoints: {
               health: 'GET /api/health',
               test: 'GET /api/test',
@@ -477,7 +477,7 @@ export default {
             subject: 'tIMELINK 이메일 인증 코드'
           }],
           from: {
-            email: 'noreply@timelink.app',
+            email: 'noreply@timelink.digital',
             name: 'tIMELINK'
           },
           content: [{
