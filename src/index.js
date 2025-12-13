@@ -463,50 +463,85 @@ export default {
   },
   
   // 이메일 발송 함수
-  async sendVerificationEmail(to, code, apiKey) {
-    try {
-      const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          personalizations: [{
-            to: [{ email: to }],
-            subject: 'tIMELINK 이메일 인증 코드'
-          }],
-          from: {
-            email: 'noreply@timelink.digital',
-            name: 'tIMELINK'
-          },
-          content: [{
-            type: 'text/html',
-            value: `
-              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2>tIMELINK 이메일 인증</h2>
-                <p>아래 인증 코드를 입력해주세요:</p>
-                <div style="background: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0;">
-                  <h1 style="color: #4F46E5; margin: 0;">${code}</h1>
-                </div>
-                <p>이 코드는 10분간 유효합니다.</p>
-                <hr>
-                <p style="color: #666; font-size: 12px;">
-                  본 메일을 요청하지 않으셨다면 무시해주세요.
-                </p>
-              </div>
-            `
-          }]
-        })
-      });
-      
-      return response.ok;
-    } catch (error) {
-      console.error('Email error:', error);
-      return false;
-    }
-  },
+async sendVerificationEmail(to, code, apiKey) {
+  console.error('=== SENDGRID DEBUG START ===');
+  console.error('SendGrid API Key present:', !!apiKey);
+  if (apiKey) {
+    console.error('API Key first 8 chars:', apiKey.substring(0, 8) + '...');
+  }
+  console.error('Sending to:', to);
+  console.error('Verification code:', code);
   
+  if (!apiKey) {
+    console.error('ERROR: SendGrid API Key is missing!');
+    return false;
+  }
+  
+  try {
+    const emailData = {
+      personalizations: [{
+        to: [{ email: to }],
+        subject: 'tIMELINK 이메일 인증 코드'
+      }],
+      from: {
+        email: 'your_verified_email@gmail.com', // ⚠️ 이 부분을 SendGrid에서 인증한 실제 이메일로 변경하세요!
+        name: 'tIMELINK'
+      },
+      content: [{
+        type: 'text/html',
+        value: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>tIMELINK 이메일 인증</h2>
+            <p>아래 인증 코드를 입력해주세요:</p>
+            <div style="background: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0;">
+              <h1 style="color: #4F46E5; margin: 0;">${code}</h1>
+            </div>
+            <p>이 코드는 10분간 유효합니다.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">
+              본 메일을 요청하지 않으셨다면 무시해주세요.
+            </p>
+          </div>
+        `
+      }]
+    };
+    
+    console.error('Sending request to SendGrid...');
+    const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(emailData)
+    });
+    
+    console.error('SendGrid Response Status:', response.status);
+    console.error('SendGrid Response OK:', response.ok);
+    
+    const responseText = await response.text();
+    console.error('SendGrid Response Body:', responseText);
+    
+    if (!response.ok) {
+      console.error('ERROR: SendGrid API returned error:', response.status);
+      try {
+        const errorData = JSON.parse(responseText);
+        console.error('SendGrid Error Details:', JSON.stringify(errorData, null, 2));
+      } catch (e) {
+        console.error('Could not parse error response:', responseText);
+      }
+    }
+    
+    console.error('=== SENDGRID DEBUG END ===');
+    return response.ok;
+    
+  } catch (error) {
+    console.error('EXCEPTION in SendGrid request:', error.message);
+    console.error('Error stack:', error.stack);
+    console.error('=== SENDGRID DEBUG END ===');
+    return false;
+  }
+},
   // JWT 토큰 생성 (간단한 버전)
   generateJWT(user, secret) {
     // 실제로는 jsonwebtoken 라이브러리 사용 권장
