@@ -452,59 +452,36 @@ export default {
   },
   
   // 이메일 발송 함수
-async sendVerificationEmail(to, code, apiKey) {
-  console.error('🔍 [DEBUG] SendGrid 함수 시작');
-  console.error(`🔍 [DEBUG] 수신자: ${to}, 코드: ${code}`);
-  console.error(`🔍 [DEBUG] API 키 존재: ${!!apiKey}`);
-  
-  if (!apiKey) {
-    console.error('❌ [ERROR] SendGrid API 키가 없습니다!');
-    return false;
-  }
-  
-  console.error(`🔍 [DEBUG] API 키 앞 10자: ${apiKey.substring(0, 10)}...`);
-  
+async handleSendVerification(request, env, corsHeaders) {
   try {
-    const emailData = {
-      personalizations: [{
-        to: [{ email: to }],
-        subject: 'tIMELINK 이메일 인증 코드'
-      }],
-      from: {
-        email: '인증된_이메일@주소', // ⚠️ 여기를 SendGrid 인증 주소로 변경!
-        name: 'tIMELINK'
-      },
-      content: [{
-        type: 'text/html',
-        value: `<div>인증 코드: ${code}</div>`
-      }]
-    };
+    const data = await request.json();
+    const { email } = data;
     
-    console.error('🔍 [DEBUG] SendGrid 요청 보내는 중...');
-    const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(emailData)
-    });
-    
-    console.error(`🔍 [DEBUG] SendGrid 응답 상태: ${response.status}`);
-    
-    const responseText = await response.text();
-    console.error(`🔍 [DEBUG] SendGrid 응답: ${responseText}`);
-    
-    if (!response.ok) {
-      console.error(`❌ [ERROR] SendGrid 오류: ${response.status}`);
-      console.error(`❌ [ERROR] 상세: ${responseText}`);
+    if (!email) {
+      return this.jsonResponse({
+        error: 'Email is required'
+      }, corsHeaders, 400);
     }
     
-    return response.ok;
+    console.error('=== SendGrid 테스트 시작 ===');
+    console.error('SendGrid 키 존재:', !!env.SENDGRID_API_KEY);
+    
+    // 간단한 응답만 반환 (SendGrid 호출 없음)
+    return this.jsonResponse({
+      success: true,
+      message: '테스트 성공 - SendGrid 키 상태 확인',
+      sendgrid_configured: !!env.SENDGRID_API_KEY,
+      key_preview: env.SENDGRID_API_KEY ? 
+        env.SENDGRID_API_KEY.substring(0, 6) + '...' : '없음'
+    }, corsHeaders);
     
   } catch (error) {
-    console.error(`❌ [EXCEPTION] 오류 발생: ${error.message}`);
-    return false;
+    console.error('Verification error:', error);
+    console.error('Error stack:', error.stack);
+    return this.jsonResponse({
+      error: 'Failed to process request',
+      details: error.message
+    }, corsHeaders, 500);
   }
 }
   // JWT 토큰 생성 (간단한 버전)
