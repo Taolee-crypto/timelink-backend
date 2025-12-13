@@ -10,4 +10,3 @@ database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
 
 [vars]
 APP_ENV = "production" 
-SENDGRID_API_KEY = "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"
