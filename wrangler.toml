@@ -9,4 +9,4 @@ database_name = "timelink-users"
 database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
 
 [vars]
-ENV = "production"
+APP_ENV = "production" 
