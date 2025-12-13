@@ -1,7 +1,7 @@
-# 현재 wrangler.toml (예상)
 name = "timelink-backend"
 main = "src/index.js"
 compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]  # ✅ ES6 모듈 지원
 
 [[d1_databases]]
 binding = "timelink_users"
@@ -10,4 +10,3 @@ database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
 
 [vars]
 ENV = "production"
-
