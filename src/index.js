@@ -325,24 +325,13 @@ export default {
   },
   
   // 이메일 인증 코드 발송
-  async handleSendVerification(request, env, corsHeaders) {
-    try {
-      const data = await request.json();
-      const { email } = data;
-      
-      if (!email) {
-        return this.jsonResponse({
-          error: 'Email is required'
-        }, corsHeaders, 400);
-      }
-      
-      if (!env.SENDGRID_API_KEY) {
-        return this.jsonResponse({
-          error: 'Email service not configured',
-          contact_admin: true
-        }, corsHeaders, 503);
-      }
-      
+ async handleSendVerification(request, env, corsHeaders) {
+  console.error('=== handleSendVerification 진입 ===');
+  console.error('env.SENDGRID_API_KEY:', !!env.SENDGRID_API_KEY);
+  console.error('env.SENDGRID_API_KEY 타입:', typeof env.SENDGRID_API_KEY);
+  console.error('env.SENDGRID_API_KEY 값 (처음 10자):', 
+    env.SENDGRID_API_KEY ? env.SENDGRID_API_KEY.substring(0, 10) + '...' : '없음');
+  
       const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
       
       // 코드 저장
