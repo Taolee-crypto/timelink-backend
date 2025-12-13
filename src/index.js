@@ -464,18 +464,16 @@ export default {
   
   // 이메일 발송 함수
 async sendVerificationEmail(to, code, apiKey) {
-  console.error('=== SENDGRID DEBUG START ===');
-  console.error('SendGrid API Key present:', !!apiKey);
-  if (apiKey) {
-    console.error('API Key first 8 chars:', apiKey.substring(0, 8) + '...');
-  }
-  console.error('Sending to:', to);
-  console.error('Verification code:', code);
+  console.error('🔍 [DEBUG] SendGrid 함수 시작');
+  console.error(`🔍 [DEBUG] 수신자: ${to}, 코드: ${code}`);
+  console.error(`🔍 [DEBUG] API 키 존재: ${!!apiKey}`);
   
   if (!apiKey) {
-    console.error('ERROR: SendGrid API Key is missing!');
+    console.error('❌ [ERROR] SendGrid API 키가 없습니다!');
     return false;
   }
+  
+  console.error(`🔍 [DEBUG] API 키 앞 10자: ${apiKey.substring(0, 10)}...`);
   
   try {
     const emailData = {
@@ -484,29 +482,16 @@ async sendVerificationEmail(to, code, apiKey) {
         subject: 'tIMELINK 이메일 인증 코드'
       }],
       from: {
-        email: 'your_verified_email@gmail.com', // ⚠️ 이 부분을 SendGrid에서 인증한 실제 이메일로 변경하세요!
+        email: '인증된_이메일@주소', // ⚠️ 여기를 SendGrid 인증 주소로 변경!
         name: 'tIMELINK'
       },
       content: [{
         type: 'text/html',
-        value: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>tIMELINK 이메일 인증</h2>
-            <p>아래 인증 코드를 입력해주세요:</p>
-            <div style="background: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0;">
-              <h1 style="color: #4F46E5; margin: 0;">${code}</h1>
-            </div>
-            <p>이 코드는 10분간 유효합니다.</p>
-            <hr>
-            <p style="color: #666; font-size: 12px;">
-              본 메일을 요청하지 않으셨다면 무시해주세요.
-            </p>
-          </div>
-        `
+        value: `<div>인증 코드: ${code}</div>`
       }]
     };
     
-    console.error('Sending request to SendGrid...');
+    console.error('🔍 [DEBUG] SendGrid 요청 보내는 중...');
     const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
       method: 'POST',
       headers: {
@@ -516,32 +501,23 @@ async sendVerificationEmail(to, code, apiKey) {
       body: JSON.stringify(emailData)
     });
     
-    console.error('SendGrid Response Status:', response.status);
-    console.error('SendGrid Response OK:', response.ok);
+    console.error(`🔍 [DEBUG] SendGrid 응답 상태: ${response.status}`);
     
     const responseText = await response.text();
-    console.error('SendGrid Response Body:', responseText);
+    console.error(`🔍 [DEBUG] SendGrid 응답: ${responseText}`);
     
     if (!response.ok) {
-      console.error('ERROR: SendGrid API returned error:', response.status);
-      try {
-        const errorData = JSON.parse(responseText);
-        console.error('SendGrid Error Details:', JSON.stringify(errorData, null, 2));
-      } catch (e) {
-        console.error('Could not parse error response:', responseText);
-      }
+      console.error(`❌ [ERROR] SendGrid 오류: ${response.status}`);
+      console.error(`❌ [ERROR] 상세: ${responseText}`);
     }
     
-    console.error('=== SENDGRID DEBUG END ===');
     return response.ok;
     
   } catch (error) {
-    console.error('EXCEPTION in SendGrid request:', error.message);
-    console.error('Error stack:', error.stack);
-    console.error('=== SENDGRID DEBUG END ===');
+    console.error(`❌ [EXCEPTION] 오류 발생: ${error.message}`);
     return false;
   }
-},
+}
   // JWT 토큰 생성 (간단한 버전)
   generateJWT(user, secret) {
     // 실제로는 jsonwebtoken 라이브러리 사용 권장
