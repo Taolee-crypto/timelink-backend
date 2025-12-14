@@ -1,25 +1,9 @@
 {
-  "name": "timelink-backend",
+  "name": "timelink-backend-simple",
   "version": "1.0.0",
-  "type": "module",
-  "description": "TimeLink Backend API with TL3 conversion and D1 integration",
   "main": "src/index.js",
   "scripts": {
-    "start": "node server/server-dev.js",
-    "dev": "node server/server-dev.js",
-    "test": "node test/test.js"
+    "dev": "wrangler dev"
   },
-  "author": "LEE UNG",
-  "license": "MIT",
-  "dependencies": {
-    "express": "^4.18.2",
-    "itty-router": "^3.0.12",
-    "dotenv": "^16.3.1",
-    "nodemailer": "^6.9.4"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
-  }
+  "type": "module"
 }
-
-{"type": "module"}
