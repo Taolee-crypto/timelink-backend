@@ -5,13 +5,15 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     
-    // CORS 헤더 설정 (GitHub Pages 도메인 허용)
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
-      'Access-Control-Max-Age': '86400',
-    };
+   // CORS 헤더 설정 (GitHub Pages 도메인 허용)
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',  // 모든 도메인 허용 (안전하지 않음)
+  // 또는 특정 도메인만 허용:
+  // 'Access-Control-Allow-Origin': 'https://taolee-crypto.github.io',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+  'Access-Control-Max-Age': '86400',
+};
 
     // OPTIONS 요청 처리 (CORS preflight)
     if (request.method === 'OPTIONS') {
