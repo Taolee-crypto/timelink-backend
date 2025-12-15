@@ -1,4 +1,3 @@
-cat > /c/users/win11/timelink-backend/src/index.js << 'EOF'
 cat > src/index.js << 'EOF'
 export default {
   async fetch(request, env, ctx) {
