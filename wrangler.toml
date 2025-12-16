@@ -11,10 +11,10 @@ SENDGRID_API_KEY = "SG.wNqVMLAwQ1CGJvCtQ8LN1w.Efev45T5cFRwGDeFXChwvj2LN4oXd6yziq
 # KV 네임스페이스
 [[kv_namespaces]]
 binding = "timelink_users"
-id = "dc48bf27ca944aadb2186fb43fe8910a"
+id = "707458ee138248fdace69850e2fc2b8c"
 
 # D1 데이터베이스
 [[d1_databases]]
-binding = "timelink_users_db"
-database_name = "timelink-users"
-database_id = "9e6c9d2b-3f5c-4a2d-8b1a-7c8d9e0f1a2b"  # 실제 ID로 변경 필요
+binding = "DB"
+database_name = "timelink-db"
+database_id = "your-d1-database-id-here"
