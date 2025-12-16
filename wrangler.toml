@@ -1,10 +1,10 @@
 
 
 # wrangler.toml 확인 및 수정
-cat wrangler.toml
+
 
 # main 경로 수정
-cat > wrangler.toml << 'EOF'
+
 name = "timelink-backend"
 compatibility_date = "2024-12-14"
 main = "src/workers/index.js"  # ← 올바른 경로!
