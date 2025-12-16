@@ -2,10 +2,19 @@ name = "timelink-backend"
 main = "src/index.js"
 compatibility_date = "2024-12-16"
 
-[[d1_databases]]
-binding = "DB"
-database_name = "timelink-db"
-database_id = "your-database-id"
-
 [vars]
 ENVIRONMENT = "production"
+EMAIL_FROM = "noreply@timelink.digital"
+APP_URL = "https://timelink.digital"
+SENDGRID_API_KEY = "SG.wNqVMLAwQ1CGJvCtQ8LN1w.Efev45T5cFRwGDeFXChwvj2LN4oXd6yziqoKq6iYRu8Copied!"
+
+# KV 네임스페이스
+[[kv_namespaces]]
+binding = "timelink_users"
+id = "dc48bf27ca944aadb2186fb43fe8910a"
+
+# D1 데이터베이스
+[[d1_databases]]
+binding = "timelink_users_db"
+database_name = "timelink-users"
+database_id = "9e6c9d2b-3f5c-4a2d-8b1a-7c8d9e0f1a2b"  # 실제 ID로 변경 필요
