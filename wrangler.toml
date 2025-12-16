@@ -1,8 +1,4 @@
-
-
 # wrangler.toml 확인 및 수정
-
-
 # main 경로 수정
 
 name = "timelink-backend"
@@ -23,4 +19,4 @@ id = "dc48bf27ca944aadb2186fb43fe8910a"
 binding = "timelink_users_db"
 database_name = "timelink-users"
 database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
-EOF
+
