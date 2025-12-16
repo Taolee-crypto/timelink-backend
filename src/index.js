@@ -1,4 +1,3 @@
-cat > src/index.js << 'EOF'
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -10,6 +9,7 @@ export default {
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Max-Age': '86400',
+      'Content-Type': 'application/json; charset=utf-8'  // 기본 Content-Type 추가
     };
 
     // OPTIONS 요청 처리
@@ -31,7 +31,9 @@ export default {
           marketplace: '/api/marketplace/*',
           dashboard: '/api/dashboard/*'
         }
-      }, { headers: corsHeaders });
+      }, { 
+        headers: corsHeaders 
+      });
     }
 
     // 1. 로그인 API
@@ -73,7 +75,9 @@ export default {
             name: result.name,
             verified: result.verified
           }
-        }, { headers: corsHeaders });
+        }, { 
+          headers: corsHeaders 
+        });
         
       } catch (error) {
         return Response.json({
@@ -112,7 +116,9 @@ export default {
             downloads: item.downloads,
             rating: item.rating
           }))
-        }, { headers: corsHeaders });
+        }, { 
+          headers: corsHeaders 
+        });
         
       } catch (error) {
         console.error('음원 목록 조회 오류:', error);
@@ -145,7 +151,9 @@ export default {
               rating: 4.8
             }
           ]
-        }, { headers: corsHeaders });
+        }, { 
+          headers: corsHeaders 
+        });
       }
     }
 
@@ -178,7 +186,9 @@ export default {
           success: true,
           message: '회원가입이 완료되었습니다.',
           userId: result.meta.last_row_id
-        }, { headers: corsHeaders });
+        }, { 
+          headers: corsHeaders 
+        });
         
       } catch (error) {
         return Response.json({
@@ -218,7 +228,9 @@ export default {
             rating: 4.9
           }
         ]
-      }, { headers: corsHeaders });
+      }, { 
+        headers: corsHeaders 
+      });
     }
 
     // 5. 대시보드 통계
@@ -243,7 +255,9 @@ export default {
           activeListings: 8,
           monthlyGrowth: 15.5
         }
-      }, { headers: corsHeaders });
+      }, { 
+        headers: corsHeaders 
+      });
     }
 
     // 6. 음원 업로드
@@ -278,7 +292,9 @@ export default {
             genre,
             status: 'active'
           }
-        }, { headers: corsHeaders });
+        }, { 
+          headers: corsHeaders 
+        });
         
       } catch (error) {
         return Response.json({
@@ -289,6 +305,16 @@ export default {
           headers: corsHeaders
         });
       }
+    }
+
+    // 루트 경로 접속 시 기본 메시지
+    if (path === '/' || path === '') {
+      return new Response('TimeLink 백엔드 작동중!', {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8'
+        }
+      });
     }
 
     // 404 처리
@@ -303,4 +329,3 @@ export default {
     });
   }
 }
-EOF
