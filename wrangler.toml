@@ -1,4 +1,4 @@
-cd /c/Users/win11/timelink-backend
+
 
 # wrangler.toml 확인 및 수정
 cat wrangler.toml
