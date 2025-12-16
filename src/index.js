@@ -2,22 +2,39 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
+    const method = request.method;
     
-    // CORS 헤더 설정
-    const corsHeaders = {
+    // 기본 헤더 설정
+    const jsonHeaders = {
+      'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Max-Age': '86400',
-      'Content-Type': 'application/json; charset=utf-8'  // 기본 Content-Type 추가
+    };
+    
+    const textHeaders = {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '86400',
     };
 
     // OPTIONS 요청 처리
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
+    if (method === 'OPTIONS') {
+      return new Response(null, { headers: jsonHeaders });
     }
 
-    // API 기본 정보
+    // 1. 루트 경로 접속 시 기본 메시지
+    if (path === '/' || path === '') {
+      return new Response('TimeLink 백엔드 작동중!', {
+        status: 200,
+        headers: textHeaders
+      });
+    }
+
+    // 2. API 기본 정보
     if (path === '/api' || path === '/api/') {
       return Response.json({
         name: 'TimeLink API',
@@ -32,12 +49,56 @@ export default {
           dashboard: '/api/dashboard/*'
         }
       }, { 
-        headers: corsHeaders 
+        headers: jsonHeaders 
       });
     }
 
-    // 1. 로그인 API
-    if (path === '/api/auth/login' && request.method === 'POST') {
+    // 3. 회원가입 API
+    if (path === '/api/auth/signup' && method === 'POST') {
+      try {
+        const { email, password, name } = await request.json();
+        
+        // 이메일 중복 체크
+        const existing = await env.DB.prepare(
+          'SELECT id FROM users WHERE email = ?'
+        ).bind(email).first();
+        
+        if (existing) {
+          return Response.json({
+            success: false,
+            message: '이미 등록된 이메일입니다.'
+          }, {
+            status: 400,
+            headers: jsonHeaders
+          });
+        }
+        
+        // 실제로는 비밀번호 해싱 필요
+        const result = await env.DB.prepare(
+          'INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)'
+        ).bind(email, password, name).run();
+        
+        return Response.json({
+          success: true,
+          message: '회원가입이 완료되었습니다.',
+          userId: result.meta.last_row_id
+        }, { 
+          headers: jsonHeaders 
+        });
+        
+      } catch (error) {
+        return Response.json({
+          success: false,
+          message: '회원가입 처리 중 오류가 발생했습니다.'
+        }, {
+          status: 500,
+          headers: jsonHeaders
+        });
+      }
+    }
+
+    // 4. 로그인 API
+    if (path === '/api/auth/login' && method === 'POST') {
       try {
         const { email, password } = await request.json();
         
@@ -52,7 +113,7 @@ export default {
             message: '이메일 또는 비밀번호가 잘못되었습니다.'
           }, {
             status: 401,
-            headers: corsHeaders
+            headers: jsonHeaders
           });
         }
         
@@ -76,7 +137,7 @@ export default {
             verified: result.verified
           }
         }, { 
-          headers: corsHeaders 
+          headers: jsonHeaders 
         });
         
       } catch (error) {
@@ -85,13 +146,13 @@ export default {
           message: '로그인 처리 중 오류가 발생했습니다.'
         }, {
           status: 500,
-          headers: corsHeaders
+          headers: jsonHeaders
         });
       }
     }
 
-    // 2. 음원 목록 API
-    if (path === '/api/music/list' && request.method === 'GET') {
+    // 5. 음원 목록 API
+    if (path === '/api/music/list' && method === 'GET') {
       try {
         const { results } = await env.DB.prepare(
           `SELECT m.*, u.name as artist_name 
@@ -117,7 +178,7 @@ export default {
             rating: item.rating
           }))
         }, { 
-          headers: corsHeaders 
+          headers: jsonHeaders 
         });
         
       } catch (error) {
@@ -152,57 +213,13 @@ export default {
             }
           ]
         }, { 
-          headers: corsHeaders 
+          headers: jsonHeaders 
         });
       }
     }
 
-    // 3. 회원가입 API
-    if (path === '/api/auth/signup' && request.method === 'POST') {
-      try {
-        const { email, password, name } = await request.json();
-        
-        // 이메일 중복 체크
-        const existing = await env.DB.prepare(
-          'SELECT id FROM users WHERE email = ?'
-        ).bind(email).first();
-        
-        if (existing) {
-          return Response.json({
-            success: false,
-            message: '이미 등록된 이메일입니다.'
-          }, {
-            status: 400,
-            headers: corsHeaders
-          });
-        }
-        
-        // 실제로는 비밀번호 해싱 필요
-        const result = await env.DB.prepare(
-          'INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)'
-        ).bind(email, password, name).run();
-        
-        return Response.json({
-          success: true,
-          message: '회원가입이 완료되었습니다.',
-          userId: result.meta.last_row_id
-        }, { 
-          headers: corsHeaders 
-        });
-        
-      } catch (error) {
-        return Response.json({
-          success: false,
-          message: '회원가입 처리 중 오류가 발생했습니다.'
-        }, {
-          status: 500,
-          headers: corsHeaders
-        });
-      }
-    }
-
-    // 4. 마켓플레이스 목록
-    if (path === '/api/marketplace/listings' && request.method === 'GET') {
+    // 6. 마켓플레이스 목록
+    if (path === '/api/marketplace/listings' && method === 'GET') {
       return Response.json({
         success: true,
         count: 3,
@@ -229,12 +246,12 @@ export default {
           }
         ]
       }, { 
-        headers: corsHeaders 
+        headers: jsonHeaders 
       });
     }
 
-    // 5. 대시보드 통계
-    if (path === '/api/dashboard/stats' && request.method === 'GET') {
+    // 7. 대시보드 통계
+    if (path === '/api/dashboard/stats' && method === 'GET') {
       const authHeader = request.headers.get('Authorization');
       
       if (!authHeader?.startsWith('Bearer ')) {
@@ -243,7 +260,7 @@ export default {
           message: '인증이 필요합니다.'
         }, {
           status: 401,
-          headers: corsHeaders
+          headers: jsonHeaders
         });
       }
       
@@ -256,12 +273,12 @@ export default {
           monthlyGrowth: 15.5
         }
       }, { 
-        headers: corsHeaders 
+        headers: jsonHeaders 
       });
     }
 
-    // 6. 음원 업로드
-    if (path === '/api/music/upload' && request.method === 'POST') {
+    // 8. 음원 업로드
+    if (path === '/api/music/upload' && method === 'POST') {
       const authHeader = request.headers.get('Authorization');
       
       if (!authHeader?.startsWith('Bearer ')) {
@@ -270,7 +287,7 @@ export default {
           message: '인증이 필요합니다.'
         }, {
           status: 401,
-          headers: corsHeaders
+          headers: jsonHeaders
         });
       }
       
@@ -293,7 +310,7 @@ export default {
             status: 'active'
           }
         }, { 
-          headers: corsHeaders 
+          headers: jsonHeaders 
         });
         
       } catch (error) {
@@ -302,19 +319,9 @@ export default {
           message: '업로드 처리 중 오류가 발생했습니다.'
         }, {
           status: 500,
-          headers: corsHeaders
+          headers: jsonHeaders
         });
       }
-    }
-
-    // 루트 경로 접속 시 기본 메시지
-    if (path === '/' || path === '') {
-      return new Response('TimeLink 백엔드 작동중!', {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8'
-        }
-      });
     }
 
     // 404 처리
@@ -322,10 +329,10 @@ export default {
       success: false,
       message: '요청하신 API를 찾을 수 없습니다.',
       path: path,
-      method: request.method
+      method: method
     }, {
       status: 404,
-      headers: corsHeaders
+      headers: jsonHeaders
     });
   }
 }
