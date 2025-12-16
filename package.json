@@ -1,19 +1,20 @@
 {
-  "name": "timelink-backend-simple",
+  "name": "timelink-auth-worker",
   "version": "1.0.0",
-  "main": "src/index.js",
+  "private": true,
+  "main": "src/worker.js",
   "scripts": {
     "dev": "wrangler dev",
-    "local": "node server/local-server.js",
-    "start": "npm run local",
-    "frontend": "live-server public --port=8080"
-  },
-  "type": "module",
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "test": "echo \"No tests specified\""
   },
   "devDependencies": {
-    "live-server": "^1.2.2"
-  }
+    "wrangler": "^3.114.15"
+  },
+  "description": "TimeLink Authentication Worker",
+  "keywords": ["timelink", "auth", "cloudflare-worker"],
+  "author": "TimeLink Team",
+  "license": "ISC",
+  "type": "commonjs"
 }
