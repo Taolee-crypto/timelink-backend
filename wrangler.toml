@@ -1,22 +1,20 @@
-# wrangler.toml 확인 및 수정
-# main 경로 수정
-
 name = "timelink-backend"
-compatibility_date = "2024-12-14"
-main = "src/workers/index.js"  # ← 올바른 경로!
+main = "src/workers/index.js"
+compatibility_date = "2024-12-16"
 
 [vars]
-ENVIRONMENT = "development"
+ENVIRONMENT = "production"
 EMAIL_FROM = "noreply@timelink.digital"
+APP_URL = "https://timelink.digital"
+SENDGRID_API_KEY = "SG.wNqVMLAwQ1CGJvCtQ8LN1w.Efev45T5cFRwGDeFXChwvj2LN4oXd6yziqoKq6iYRu8Copied!"
 
-# KV 네임스페이스
+# KV 네임스페이스 (인증코드 저장)
 [[kv_namespaces]]
 binding = "timelink_users"
 id = "dc48bf27ca944aadb2186fb43fe8910a"
 
-# D1 데이터베이스
+# D1 데이터베이스 (회원정보 저장)
 [[d1_databases]]
 binding = "timelink_users_db"
 database_name = "timelink-users"
 database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
-
