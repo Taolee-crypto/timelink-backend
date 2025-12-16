@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 
 # === Replace the id value with your KV namespace id (from Cloudflare) ===
 kv_namespaces = [
-  { binding = "AUTH_CODES", id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }
+  { binding = "AUTH_CODES", id = "707458ee138248fdace69850e2fc2b8c" }
 ]
 
 [vars]
