@@ -1,3 +1,26 @@
+cd /c/Users/win11/timelink-backend
+
+# wrangler.toml 확인 및 수정
+cat wrangler.toml
+
+# main 경로 수정
+cat > wrangler.toml << 'EOF'
 name = "timelink-backend"
 compatibility_date = "2024-12-14"
-main = "src/index.js"
+main = "src/workers/index.js"  # ← 올바른 경로!
+
+[vars]
+ENVIRONMENT = "development"
+EMAIL_FROM = "noreply@timelink.digital"
+
+# KV 네임스페이스
+[[kv_namespaces]]
+binding = "timelink_users"
+id = "dc48bf27ca944aadb2186fb43fe8910a"
+
+# D1 데이터베이스
+[[d1_databases]]
+binding = "timelink_users_db"
+database_name = "timelink-users"
+database_id = "22d08400-856b-432c-bf7a-ca01bd3f601a"
+EOF
