@@ -1,13 +1,8 @@
-<<<<<<< HEAD
 import { handleSignup, handleLogin } from './auth.js';
-
-=======
->>>>>>> backup-before-cleanup
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
-<<<<<<< HEAD
 
     // CORS 헤더
     const corsHeaders = {
@@ -124,7 +119,6 @@ export default {
     );
   }
 };
-=======
     const method = request.method;
     
     // 기본 헤더 설정
@@ -459,4 +453,3 @@ export default {
     });
   }
 }
->>>>>>> backup-before-cleanup
