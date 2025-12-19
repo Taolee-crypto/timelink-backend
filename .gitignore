@@ -40,3 +40,18 @@ wrangler.toml
 .wrangler/
 *.backup
 *.bak
+
+# 임시 및 테스트 파일
+*.backup
+*.bak
+bfg.jar
+exact-patterns.txt
+secrets-to-remove.txt
+.bfg-report/
+test-worker.js
+
+# 로컬 개발 파일
+.dev.vars
+.env
+.wrangler/
+node_modules/
