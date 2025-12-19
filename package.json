@@ -1,4 +1,5 @@
 {
+<<<<<<< HEAD
   "name": "timelink-backend",
   "version": "1.0.0",
   "description": "TimeLink 통합 백엔드 서버",
@@ -32,4 +33,24 @@
   "engines": {
     "node": ">=18.0.0"
   }
+=======
+  "name": "timelink-auth-worker",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "test": "echo \"No tests specified\""
+  },
+  "devDependencies": {
+    "wrangler": "^3.114.15"
+  },
+  "description": "TimeLink Authentication Worker",
+  "keywords": ["timelink", "auth", "cloudflare-worker"],
+  "author": "TimeLink Team",
+  "license": "ISC",
+  "type": "commonjs"
+>>>>>>> backup-before-cleanup
 }

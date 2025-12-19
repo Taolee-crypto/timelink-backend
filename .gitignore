@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 환경 변수
 .env
 .dev.vars
@@ -55,3 +56,34 @@ test-worker.js
 .env
 .wrangler/
 node_modules/
+=======
+# Node modules
+node_modules/
+
+# Local env
+.env
+.env.*
+
+# Build artifacts
+dist/
+build/
+
+# Wrangler / Cloudflare internal directories
+.wrangler/
+.mf/
+.cache/
+
+# Logs
+*.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Package manager lockfiles
+yarn.lock
+pnpm-lock.yaml
+
+# Allow package-lock.json (needed for Git)
+!package-lock.json
+>>>>>>> backup-before-cleanup

@@ -1,0 +1,20 @@
+name = "timelink-backend"
+main = "src/index.js"
+compatibility_date = "2024-12-16"
+
+[vars]
+ENVIRONMENT = "production"
+EMAIL_FROM = "noreply@timelink.digital"
+APP_URL = "https://timelink.digital"
+SENDGRID_API_KEY = "SG.wNqVMLAwQ1CGJvCtQ8LN1w.Efev45T5cFRwGDeFXChwvj2LN4oXd6yziqoKq6iYRu8Copied!"
+
+# KV 네임스페이스
+[[kv_namespaces]]
+binding = "timelink_users"
+id = "707458ee138248fdace69850e2fc2b8c"
+
+# D1 데이터베이스
+[[d1_databases]]
+binding = "DB"
+database_name = "timelink-db"
+database_id = "your-d1-database-id-here"
