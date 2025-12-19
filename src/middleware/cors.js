@@ -1,6 +1,6 @@
 // CORS 미들웨어
 export const corsHeaders = {
-    'Access-Control-Allow-Origin': 'https://timelink.digital',
+    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Credentials': 'true'

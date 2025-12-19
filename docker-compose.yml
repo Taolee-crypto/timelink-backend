@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # 프론트엔드 (React)
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_MUSIC_SERVER_URL: ${MUSIC_SERVER_URL}
+      REACT_APP_VIDEO_SERVER_URL: ${VIDEO_SERVER_URL}
+      REACT_APP_AUTH_SERVER_URL: ${AUTH_SERVER_URL}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+  # 백엔드 (Node.js)
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+  # 데이터베이스 (PostgreSQL)
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: timelink
+      POSTGRES_USER: timelink
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Redis 캐시
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # 파일 변환 워커
+  converter-worker:
+    build: ./converter-worker
+    environment:
+      NODE_ENV: production
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+    volumes:
+      - ./converter-worker:/app
+      - /app/node_modules
+    depends_on:
+      - redis
+
+volumes:
+  postgres_data:
+  redis_data:
