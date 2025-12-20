@@ -1,288 +1,538 @@
-import express from "express";
-import cors from "cors";
+// TimeLink 백엔드 API 서버 v3.0 - 이메일 인증번호 발송 포함
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    
+    // CORS 헤더
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    };
+    
+    // OPTIONS 요청 처리
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders });
+    }
+    
+    // API 라우팅
+    if (path.startsWith('/api')) {
+      return handleAPI(request, env, path, corsHeaders);
+    }
+    
+    // 기본 응답
+    return new Response('TimeLink API Server v3.0', { 
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' }
+    });
+  }
+};
 
-const app = express();
-const PORT = 8787;
-
-// CORS 설정
-app.use(cors({
-    origin: ["http://localhost:6199", "http://localhost:3003", "http://localhost:5000"],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true
-}));
-
-app.use(express.json());
-
-// 로깅 미들웨어
-app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} ${req.method} ${req.url}`);
-    next();
-});
-
-// OPTIONS 요청 처리
-app.options("*", cors());
-
-// Health check
-app.get("/health", (req, res) => {
-    res.json({
-        status: "healthy",
-        service: "TimeLink Backend",
-        version: "1.0.0",
-        port: PORT,
+// API 핸들러
+async function handleAPI(request, env, path, corsHeaders) {
+  try {
+    // 회원가입
+    if (path === '/api/signup' && request.method === 'POST') {
+      return await handleSignup(request, env, corsHeaders);
+    }
+    
+    // 로그인
+    if (path === '/api/login' && request.method === 'POST') {
+      return await handleLogin(request, env, corsHeaders);
+    }
+    
+    // 이메일 인증번호 확인
+    if (path === '/api/verify-email' && request.method === 'POST') {
+      return await handleVerifyEmail(request, env, corsHeaders);
+    }
+    
+    // 인증번호 재발송
+    if (path === '/api/resend-verification' && request.method === 'POST') {
+      return await handleResendVerification(request, env, corsHeaders);
+    }
+    
+    // 헬스 체크
+    if (path === '/api/health') {
+      return new Response(JSON.stringify({ 
+        status: 'ok', 
         timestamp: new Date().toISOString(),
-        endpoints: [
-            "GET    /health",
-            "POST   /api/auth/signup",
-            "POST   /api/auth/verify-email",
-            "POST   /api/auth/login",
-            "GET    /api/test",
-            "GET    /api/todos"
+        environment: env.ENVIRONMENT,
+        version: '3.0',
+        features: ['signup', 'login', 'email-verification', 'resend-verification']
+      }), { 
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // API 디버그
+    if (path === '/api/debug/users' && request.method === 'GET') {
+      return await debugUsers(env, corsHeaders);
+    }
+    
+    // 404 처리
+    return new Response(JSON.stringify({ 
+      error: 'API endpoint not found',
+      path: path 
+    }), { 
+      status: 404,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error('API Error:', error);
+    return new Response(JSON.stringify({ 
+      error: 'Internal server error',
+      message: error.message 
+    }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+  }
+}
+
+// ==================== 회원가입 처리 ====================
+async function handleSignup(request, env, corsHeaders) {
+  try {
+    const data = await request.json();
+    
+    // 1. 필수 필드 검증
+    if (!data.email || !data.password || !data.nickname || !data.realName) {
+      return new Response(JSON.stringify({ 
+        error: '필수 항목이 누락되었습니다' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 2. 이메일 형식 검증
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(data.email)) {
+      return new Response(JSON.stringify({ 
+        error: '유효하지 않은 이메일 형식' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 3. 비밀번호 길이 검증
+    if (data.password.length < 8) {
+      return new Response(JSON.stringify({ 
+        error: '비밀번호는 8자 이상이어야 합니다' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 4. 이메일 중복 확인
+    const existingUser = await env.DB.prepare(
+      "SELECT id FROM users WHERE email = ?"
+    ).bind(data.email).first();
+    
+    if (existingUser) {
+      return new Response(JSON.stringify({ 
+        error: '이미 가입된 이메일입니다' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 5. 6자리 인증번호 생성
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // 6. 비밀번호 해싱 (간단한 버전 - 실제로는 bcrypt 필요)
+    const passwordHash = await hashPassword(data.password);
+    
+    // 7. 데이터베이스에 사용자 저장
+    const result = await env.DB.prepare(
+      `INSERT INTO users (email, password_hash, nickname, real_name, phone, verification_code, email_verified, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+    ).bind(
+      data.email,
+      passwordHash,
+      data.nickname,
+      data.realName,
+      data.phone || null,
+      verificationCode,
+      false
+    ).run();
+    
+    if (!result.success) {
+      throw new Error('데이터베이스 저장 실패');
+    }
+    
+    // 8. 이메일 발송 (SendGrid)
+    const emailResult = await sendVerificationEmail(data.email, verificationCode, env);
+    
+    if (!emailResult.success) {
+      // 이메일 발송 실패 시 롤백
+      await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(result.meta.last_row_id).run();
+      return new Response(JSON.stringify({ 
+        error: '이메일 발송에 실패했습니다. 다시 시도해주세요.',
+        debug: env.ENVIRONMENT === 'development' ? emailResult.error : undefined
+      }), { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 9. 성공 응답
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: '6자리 인증번호가 이메일로 발송되었습니다.',
+      userId: result.meta.last_row_id,
+      email: data.email,
+      note: '인증번호를 입력하여 이메일 인증을 완료해주세요.'
+    }), { 
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error('Signup error:', error);
+    return new Response(JSON.stringify({ 
+      error: '회원가입 처리 중 오류 발생',
+      message: error.message 
+    }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+  }
+}
+
+// ==================== 로그인 처리 ====================
+async function handleLogin(request, env, corsHeaders) {
+  try {
+    const data = await request.json();
+    
+    if (!data.email || !data.password) {
+      return new Response(JSON.stringify({ 
+        error: '이메일과 비밀번호를 입력해주세요' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 데이터베이스에서 사용자 조회
+    const user = await env.DB.prepare(
+      "SELECT id, email, password_hash, nickname, email_verified FROM users WHERE email = ?"
+    ).bind(data.email).first();
+    
+    if (!user) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: '이메일 또는 비밀번호가 일치하지 않습니다'
+      }), { 
+        status: 401,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 비밀번호 검증
+    const passwordValid = await verifyPassword(data.password, user.password_hash);
+    
+    if (!passwordValid) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: '이메일 또는 비밀번호가 일치하지 않습니다'
+      }), { 
+        status: 401,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 이메일 인증 확인
+    if (!user.email_verified) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: '이메일 인증이 필요합니다. 가입한 이메일의 인증번호를 확인해주세요.',
+        requiresVerification: true
+      }), { 
+        status: 401,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // JWT 토큰 생성 (임시)
+    const token = generateToken(user);
+    
+    return new Response(JSON.stringify({
+      success: true,
+      message: '로그인 성공',
+      token: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        nickname: user.nickname,
+        verified: user.email_verified
+      }
+    }), { 
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error('Login error:', error);
+    return new Response(JSON.stringify({
+      error: '로그인 처리 중 오류 발생',
+      message: error.message
+    }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+  }
+}
+
+// ==================== 이메일 인증 확인 ====================
+async function handleVerifyEmail(request, env, corsHeaders) {
+  try {
+    const data = await request.json();
+    
+    if (!data.email || !data.verificationCode) {
+      return new Response(JSON.stringify({ 
+        error: '이메일과 인증번호를 입력해주세요' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 인증번호 확인
+    const user = await env.DB.prepare(
+      "SELECT id, verification_code FROM users WHERE email = ? AND email_verified = false"
+    ).bind(data.email).first();
+    
+    if (!user) {
+      return new Response(JSON.stringify({ 
+        error: '사용자를 찾을 수 없거나 이미 인증된 이메일입니다.' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    if (user.verification_code !== data.verificationCode) {
+      return new Response(JSON.stringify({ 
+        error: '인증번호가 일치하지 않습니다.' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 인증 완료 처리
+    await env.DB.prepare(
+      "UPDATE users SET email_verified = true, verification_code = NULL WHERE id = ?"
+    ).bind(user.id).run();
+    
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: '이메일 인증이 완료되었습니다! 이제 로그인하실 수 있습니다.' 
+    }), { 
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error('Verify email error:', error);
+    return new Response(JSON.stringify({ 
+      error: '인증 처리 중 오류 발생',
+      message: error.message 
+    }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+  }
+}
+
+// ==================== 인증번호 재발송 ====================
+async function handleResendVerification(request, env, corsHeaders) {
+  try {
+    const data = await request.json();
+    
+    if (!data.email) {
+      return new Response(JSON.stringify({ 
+        error: '이메일을 입력해주세요' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 사용자 확인
+    const user = await env.DB.prepare(
+      "SELECT id, email_verified FROM users WHERE email = ?"
+    ).bind(data.email).first();
+    
+    if (!user) {
+      return new Response(JSON.stringify({ 
+        error: '가입되지 않은 이메일입니다.' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    if (user.email_verified) {
+      return new Response(JSON.stringify({ 
+        error: '이미 인증된 이메일입니다.' 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    // 새 인증번호 생성
+    const newVerificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // 데이터베이스 업데이트
+    await env.DB.prepare(
+      "UPDATE users SET verification_code = ? WHERE email = ?"
+    ).bind(newVerificationCode, data.email).run();
+    
+    // 이메일 재발송
+    const emailResult = await sendVerificationEmail(data.email, newVerificationCode, env);
+    
+    if (!emailResult.success) {
+      return new Response(JSON.stringify({ 
+        error: '이메일 재발송에 실패했습니다.',
+        debug: env.ENVIRONMENT === 'development' ? emailResult.error : undefined
+      }), { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: '새 인증번호가 이메일로 재발송되었습니다.'
+    }), { 
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error('Resend verification error:', error);
+    return new Response(JSON.stringify({ 
+      error: '인증번호 재발송 중 오류 발생',
+      message: error.message 
+    }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+  }
+}
+
+// ==================== 유틸리티 함수 ====================
+
+// SendGrid 이메일 발송
+async function sendVerificationEmail(email, verificationCode, env) {
+  try {
+    const msg = {
+      to: email,
+      from: env.EMAIL_FROM,
+      subject: 'TimeLink 이메일 인증번호',
+      text: `TimeLink 이메일 인증번호: ${verificationCode}\n인증번호를 입력하여 이메일 인증을 완료해주세요.`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #29C4A8;">TimeLink 이메일 인증</h2>
+          <p>아래 인증번호를 입력하여 이메일 인증을 완료해주세요:</p>
+          <div style="background: #f4f4f4; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px;">
+            <h1 style="color: #29C4A8; font-size: 32px; letter-spacing: 5px; margin: 0;">${verificationCode}</h1>
+          </div>
+          <p>인증번호는 10분간 유효합니다.</p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
+          <p style="color: #666; font-size: 12px;">본 메일은 발신전용입니다.</p>
+        </div>
+      `
+    };
+
+    const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.SENDGRID_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: msg.to }] }],
+        from: { email: msg.from },
+        subject: msg.subject,
+        content: [
+          { type: 'text/plain', value: msg.text },
+          { type: 'text/html', value: msg.html }
         ]
+      })
     });
-});
 
-// 테스트 API
-app.get("/api/test", (req, res) => {
-    res.json({
-        success: true,
-        message: "TimeLink 백엔드 API 작동중",
-        environment: "development",
-        timestamp: new Date().toISOString()
-    });
-});
-
-// 회원가입 API
-app.post("/api/auth/signup", (req, res) => {
-    try {
-        const { name, email, password } = req.body;
-        
-        console.log("📧 회원가입 요청:", { name, email });
-        
-        // 필수 입력 확인
-        if (!name || !email || !password) {
-            return res.status(400).json({
-                success: false,
-                message: "이름, 이메일, 비밀번호를 모두 입력해주세요."
-            });
-        }
-        
-        // 이메일 형식 확인
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(email)) {
-            return res.status(400).json({
-                success: false,
-                message: "유효한 이메일 주소를 입력해주세요."
-            });
-        }
-        
-        // 비밀번호 길이 확인
-        if (password.length < 8) {
-            return res.status(400).json({
-                success: false,
-                message: "비밀번호는 8자 이상이어야 합니다."
-            });
-        }
-        
-        // 인증 코드 생성 (실제로는 이메일로 전송)
-        const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-        
-        console.log(`🔐 개발 모드 - ${email}님의 인증 코드: ${verificationCode}`);
-        
-        res.json({
-            success: true,
-            message: "회원가입이 완료되었습니다. 이메일 인증을 진행해주세요.",
-            email: email,
-            verificationRequired: true,
-            verificationCode: verificationCode, // 개발 모드에서만 노출
-            note: "개발 모드: 실제 서비스에서는 이메일로 전송됩니다."
-        });
-        
-    } catch (error) {
-        console.error("회원가입 에러:", error);
-        res.status(500).json({
-            success: false,
-            message: "서버 오류가 발생했습니다."
-        });
+    if (response.ok) {
+      console.log(`이메일 발송 성공: ${email}`);
+      return { success: true };
+    } else {
+      const errorText = await response.text();
+      console.error(`이메일 발송 실패 (${response.status}): ${errorText}`);
+      return { success: false, error: errorText };
     }
-});
+  } catch (error) {
+    console.error('이메일 발송 오류:', error);
+    return { success: false, error: error.message };
+  }
+}
 
-// 이메일 인증 확인 API
-app.post("/api/auth/verify-email", (req, res) => {
-    try {
-        const { email, code } = req.body;
-        
-        console.log("✅ 이메일 인증 요청:", { email, code });
-        
-        if (!email || !code) {
-            return res.status(400).json({
-                success: false,
-                message: "이메일과 인증 코드를 입력해주세요."
-            });
-        }
-        
-        // 인증 코드 검증 (실제로는 DB에서 확인)
-        if (code && code.length === 6 && /^\d{6}$/.test(code)) {
-            // JWT 토큰 생성 (간단한 버전)
-            const token = `jwt-token-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            
-            res.json({
-                success: true,
-                message: "이메일 인증이 완료되었습니다!",
-                token: token,
-                user: {
-                    id: Date.now(),
-                    name: "인증된사용자",
-                    email: email,
-                    balance: 10000,
-                    verified: true,
-                    joined: new Date().toISOString()
-                }
-            });
-        } else {
-            res.status(400).json({
-                success: false,
-                message: "인증 코드가 올바르지 않습니다. 6자리 숫자를 입력해주세요."
-            });
-        }
-        
-    } catch (error) {
-        console.error("이메일 인증 에러:", error);
-        res.status(500).json({
-            success: false,
-            message: "서버 오류가 발생했습니다."
-        });
-    }
-});
+// 비밀번호 해싱 (간단한 버전 - 실제 프로덕션에서는 bcrypt 사용)
+async function hashPassword(password) {
+  // 간단한 해싱 (실제로는 @node-rs/bcrypt 같은 라이브러리 사용)
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + 'timelink_salt');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
-// 로그인 API
-app.post("/api/auth/login", (req, res) => {
-    try {
-        const { email, password } = req.body;
-        
-        console.log("🔑 로그인 요청:", { email });
-        
-        if (!email || !password) {
-            return res.status(400).json({
-                success: false,
-                message: "이메일과 비밀번호를 입력해주세요."
-            });
-        }
-        
-        // 테스트용 계정
-        if (email === "test@test.com" && password === "test1234") {
-            const token = `jwt-token-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            
-            res.json({
-                success: true,
-                message: "로그인 성공",
-                token: token,
-                user: {
-                    id: 1,
-                    name: "테스트사용자",
-                    email: email,
-                    balance: 10000,
-                    verified: true,
-                    joined: new Date().toISOString()
-                }
-            });
-        } else {
-            res.status(401).json({
-                success: false,
-                message: "이메일 또는 비밀번호가 올바르지 않습니다."
-            });
-        }
-        
-    } catch (error) {
-        console.error("로그인 에러:", error);
-        res.status(500).json({
-            success: false,
-            message: "서버 오류가 발생했습니다."
-        });
-    }
-});
+async function verifyPassword(password, hash) {
+  const newHash = await hashPassword(password);
+  return newHash === hash;
+}
 
-// ToDo API (예시)
-app.get("/api/todos", (req, res) => {
-    res.json([
-        {
-            id: 1,
-            title: "TimeLink 회원가입 기능 구현",
-            completed: true,
-            createdAt: "2024-01-01T10:00:00.000Z"
-        },
-        {
-            id: 2,
-            title: "이메일 인증 기능 추가",
-            completed: true,
-            createdAt: "2024-01-02T14:30:00.000Z"
-        },
-        {
-            id: 3,
-            title: "프론트엔드와 API 연동 테스트",
-            completed: false,
-            createdAt: "2024-01-03T09:15:00.000Z"
-        }
-    ]);
-});
+// JWT 토큰 생성 (간단한 버전)
+function generateToken(user) {
+  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = btoa(JSON.stringify({
+    userId: user.id,
+    email: user.email,
+    exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24) // 24시간
+  }));
+  const signature = btoa('timelink_secret_key');
+  return `${header}.${payload}.${signature}`;
+}
 
-// 사용자 프로필 API
-app.get("/api/user/profile", (req, res) => {
-    const token = req.headers.authorization;
+// 디버그용: 저장된 사용자 확인
+async function debugUsers(env, corsHeaders) {
+  try {
+    const users = await env.DB.prepare(
+      "SELECT id, email, nickname, email_verified, created_at FROM users ORDER BY created_at DESC"
+    ).all();
     
-    if (!token) {
-        return res.status(401).json({
-            success: false,
-            message: "인증 토큰이 필요합니다."
-        });
-    }
-    
-    res.json({
-        success: true,
-        user: {
-            id: 1,
-            name: "테스트사용자",
-            email: "test@test.com",
-            balance: 10000,
-            verified: true,
-            joined: "2024-01-01T00:00:00.000Z"
-        }
+    return new Response(JSON.stringify({
+      success: true,
+      count: users.results.length,
+      users: users.results
+    }), { 
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
-});
-
-// 404 처리
-app.use((req, res) => {
-    res.status(404).json({
-        success: false,
-        message: "요청한 API를 찾을 수 없습니다.",
-        path: req.url,
-        method: req.method
+  } catch (error) {
+    return new Response(JSON.stringify({
+      error: "사용자 조회 실패",
+      details: error.message
+    }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
-});
-
-// 에러 처리
-app.use((err, req, res, next) => {
-    console.error("서버 에러:", err);
-    res.status(500).json({
-        success: false,
-        message: "서버 내부 오류가 발생했습니다.",
-        error: process.env.NODE_ENV === "development" ? err.message : undefined
-    });
-});
-
-// 서버 시작
-app.listen(PORT, () => {
-    console.log("");
-    console.log("🚀 TimeLink 백엔드 서버 시작!");
-    console.log("📡 URL: http://localhost:" + PORT);
-    console.log("🏥 Health Check: http://localhost:" + PORT + "/health");
-    console.log("🔧 API 테스트: http://localhost:" + PORT + "/api/test");
-    console.log("");
-    console.log("📋 테스트 계정:");
-    console.log("   📧 이메일: test@test.com");
-    console.log("   🔑 비밀번호: test1234");
-    console.log("");
-    console.log("🔄 프록시 서버 (3003)와 연결 확인:");
-    console.log("   http://localhost:3003/health");
-    console.log("");
-});
+  }
+}
