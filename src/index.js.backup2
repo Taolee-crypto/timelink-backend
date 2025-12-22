@@ -1,455 +1,592 @@
-import { handleSignup, handleLogin } from './auth.js';
+// TimeLink 백엔드 API 서버 v3.0 - 이메일 인증번호 발송 포함
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
-
+    
     // CORS 헤더
     const corsHeaders = {
-      'Access-Control-Allow-Origin': 'https://timelink.digital',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Allow-Credentials': 'true'
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
     };
-
+    
     // OPTIONS 요청 처리
-    if (request.method === 'OPTIONS') {
+    if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
-
-    // 헬스 체크
-    if (path === '/health') {
-      return new Response(JSON.stringify({
-        status: 'ok',
-        service: 'TimeLink Backend API',
-        timestamp: new Date().toISOString()
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
+    
+    // API 라우팅
+    if (path.startsWith("/api")) {
+      return handleAPI(request, env, path, corsHeaders);
     }
-
-    // 1. 회원가입 API
-    if (path === '/api/auth/signup' && request.method === 'POST') {
-      return await handleSignup(request, env);
-    }
-
-    // 2. 로그인 API
-    if (path === '/api/auth/login' && request.method === 'POST') {
-      return await handleLogin(request, env);
-    }
-
-    // 3. 이메일 인증 API (기존)
-    if (path === '/auth/send-verification' && request.method === 'POST') {
-      try {
-        const { email } = await request.json();
-
-        if (!email) {
-          return new Response(
-            JSON.stringify({ success: false, message: '이메일이 필요합니다.' }),
-            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
-        }
-
-        // 6자리 인증 코드 생성
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
-
-        // KV에 저장
-        await env.timelink_users.put(
-          `code:${email}`,
-          JSON.stringify({
-            code: code,
-            email: email,
-            expiresAt: Date.now() + 600000, // 10분
-            createdAt: new Date().toISOString()
-          }),
-          { expirationTtl: 600 }
-        );
-
-        // 개발/프로덕션 모드 구분
-        if (env.ENVIRONMENT === 'production' && env.SENDGRID_API_KEY) {
-          // 프로덕션: 실제 SendGrid 호출
-          return new Response(
-            JSON.stringify({
-              success: true,
-              message: '인증 코드가 이메일로 전송되었습니다.'
-            }),
-            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
-        } else {
-          // 개발 모드: 코드 반환
-          return new Response(
-            JSON.stringify({
-              success: true,
-              code: code,
-              message: '개발 모드: 인증 코드 생성됨'
-            }),
-            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
-        }
-
-      } catch (error) {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            message: '서버 오류가 발생했습니다.'
-          }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-    }
-
-    // 4. 기본 응답
-    return new Response(
-      JSON.stringify({
-        status: "ok",
-        service: "TimeLink Backend API",
-        version: "4.0.0",
-        timestamp: new Date().toISOString(),
-        endpoints: [
-          { path: "/api/auth/signup", method: "POST", desc: "회원가입" },
-          { path: "/api/auth/login", method: "POST", desc: "로그인" },
-          { path: "/auth/send-verification", method: "POST", desc: "이메일 인증번호 발송" }
-        ],
-        cors: "enabled",
-        environment: env.ENVIRONMENT || "production"
-      }),
-      {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      }
-    );
+    
+    // 기본 응답
+    return new Response("TimeLink API Server v3.0", { 
+      status: 200,
+      headers: { "Content-Type": "text/plain" }
+    });
   }
 };
-    const method = request.method;
-    
-    // 기본 헤더 설정
-    const jsonHeaders = {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Max-Age': '86400',
-    };
-    
-    const textHeaders = {
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Max-Age': '86400',
-    };
 
-    // OPTIONS 요청 처리
-    if (method === 'OPTIONS') {
-      return new Response(null, { headers: jsonHeaders });
+// API 핸들러
+async function handleAPI(request, env, path, corsHeaders) {
+  try {
+    // 회원가입
+    if (path === "/api/signup" && request.method === "POST") {
+      return await handleSignup(request, env, corsHeaders);
     }
-
-    // 1. 루트 경로 접속 시 기본 메시지
-    if (path === '/' || path === '') {
-      return new Response('TimeLink 백엔드 작동중!', {
-        status: 200,
-        headers: textHeaders
-      });
+    
+    // 로그인
+    if (path === "/api/login" && request.method === "POST") {
+      return await handleLogin(request, env, corsHeaders);
     }
-
-    // 2. API 기본 정보
-    if (path === '/api' || path === '/api/') {
-      return Response.json({
-        name: 'TimeLink API',
-        version: '1.0.0',
-        status: 'online',
-        database: 'D1 connected',
+    
+    // 이메일 인증번호 확인
+    if (path === "/api/verify-email" && request.method === "POST") {
+      return await handleVerifyEmail(request, env, corsHeaders);
+    }
+    
+    // 인증번호 재발송
+    if (path === "/api/resend-verification" && request.method === "POST") {
+      return await handleResendVerification(request, env, corsHeaders);
+    }
+    
+    // 헬스 체크
+    if (path === "/api/health") {
+      return new Response(JSON.stringify({ 
+        status: "ok", 
         timestamp: new Date().toISOString(),
-        endpoints: {
-          auth: '/api/auth/*',
-          music: '/api/music/*',
-          marketplace: '/api/marketplace/*',
-          dashboard: '/api/dashboard/*'
-        }
-      }, { 
-        headers: jsonHeaders 
+        environment: env.ENVIRONMENT,
+        version: "3.0",
+        features: ["signup", "login", "email-verification", "resend-verification"]
+      }), { 
+        status: 200,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
       });
     }
-
-    // 3. 회원가입 API
-    if (path === '/api/auth/signup' && method === 'POST') {
-      try {
-        const { email, password, name } = await request.json();
-        
-        // 이메일 중복 체크
-        const existing = await env.DB.prepare(
-          'SELECT id FROM users WHERE email = ?'
-        ).bind(email).first();
-        
-        if (existing) {
-          return Response.json({
-            success: false,
-            message: '이미 등록된 이메일입니다.'
-          }, {
-            status: 400,
-            headers: jsonHeaders
-          });
-        }
-        
-        // 실제로는 비밀번호 해싱 필요
-        const result = await env.DB.prepare(
-          'INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)'
-        ).bind(email, password, name).run();
-        
-        return Response.json({
-          success: true,
-          message: '회원가입이 완료되었습니다.',
-          userId: result.meta.last_row_id
-        }, { 
-          headers: jsonHeaders 
-        });
-        
-      } catch (error) {
-        return Response.json({
-          success: false,
-          message: '회원가입 처리 중 오류가 발생했습니다.'
-        }, {
-          status: 500,
-          headers: jsonHeaders
-        });
-      }
+    
+    // API 디버그
+    if (path === "/api/debug/users" && request.method === "GET") {
+      return await debugUsers(env, corsHeaders);
     }
-
-    // 4. 로그인 API
-    if (path === '/api/auth/login' && method === 'POST') {
-      try {
-        const { email, password } = await request.json();
-        
-        // D1 데이터베이스에서 사용자 조회
-        const result = await env.DB.prepare(
-          'SELECT id, email, name, verified FROM users WHERE email = ?'
-        ).bind(email).first();
-        
-        if (!result) {
-          return Response.json({
-            success: false,
-            message: '이메일 또는 비밀번호가 잘못되었습니다.'
-          }, {
-            status: 401,
-            headers: jsonHeaders
-          });
-        }
-        
-        // 실제로는 비밀번호 검증 필요 (bcrypt 등)
-        const tokenData = {
-          userId: result.id,
-          email: result.email,
-          name: result.name,
-          exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60)
-        };
-        
-        const token = btoa(JSON.stringify(tokenData));
-        
-        return Response.json({
-          success: true,
-          token: token,
-          user: {
-            id: result.id,
-            email: result.email,
-            name: result.name,
-            verified: result.verified
-          }
-        }, { 
-          headers: jsonHeaders 
-        });
-        
-      } catch (error) {
-        return Response.json({
-          success: false,
-          message: '로그인 처리 중 오류가 발생했습니다.'
-        }, {
-          status: 500,
-          headers: jsonHeaders
-        });
-      }
-    }
-
-    // 5. 음원 목록 API
-    if (path === '/api/music/list' && method === 'GET') {
-      try {
-        const { results } = await env.DB.prepare(
-          `SELECT m.*, u.name as artist_name 
-           FROM music m 
-           LEFT JOIN users u ON m.uploader_id = u.id 
-           ORDER BY m.upload_date DESC 
-           LIMIT 50`
-        ).all();
-        
-        return Response.json({
-          success: true,
-          count: results.length,
-          music: results.map(item => ({
-            id: item.id,
-            title: item.title,
-            artist: item.artist_name || item.artist,
-            price: item.price,
-            genre: item.genre,
-            duration: item.duration,
-            description: item.description,
-            uploadDate: item.upload_date,
-            downloads: item.downloads,
-            rating: item.rating
-          }))
-        }, { 
-          headers: jsonHeaders 
-        });
-        
-      } catch (error) {
-        console.error('음원 목록 조회 오류:', error);
-        return Response.json({
-          success: true,
-          count: 6,
-          music: [
-            {
-              id: 1,
-              title: "Dreamy Sunrise",
-              artist: "Luna Waves",
-              price: 12.5,
-              genre: "Ambient",
-              duration: "4:15",
-              description: "아침 햇살을 담은 따뜻한 앰비언트 트랙",
-              uploadDate: "2024-12-15",
-              downloads: 234,
-              rating: 4.7
-            },
-            {
-              id: 2,
-              title: "Neon Streets", 
-              artist: "Cyber Pulse",
-              price: 15.0,
-              genre: "Synthwave",
-              duration: "3:45",
-              description: "사이버펑크 신스웨이브",
-              uploadDate: "2024-12-14",
-              downloads: 187,
-              rating: 4.8
-            }
-          ]
-        }, { 
-          headers: jsonHeaders 
-        });
-      }
-    }
-
-    // 6. 마켓플레이스 목록
-    if (path === '/api/marketplace/listings' && method === 'GET') {
-      return Response.json({
-        success: true,
-        count: 3,
-        listings: [
-          {
-            id: 101,
-            title: "Exclusive Beat Pack",
-            seller: { name: "ProducerX", rating: 4.9 },
-            price: 49.99,
-            genre: "Hip-Hop",
-            items: 10,
-            sales: 42,
-            rating: 4.8
-          },
-          {
-            id: 102,
-            title: "Cinematic Strings Collection",
-            seller: { name: "OrchestraMaster", rating: 4.7 },
-            price: 79.99,
-            genre: "Cinematic",
-            items: 50,
-            sales: 28,
-            rating: 4.9
-          }
-        ]
-      }, { 
-        headers: jsonHeaders 
-      });
-    }
-
-    // 7. 대시보드 통계
-    if (path === '/api/dashboard/stats' && method === 'GET') {
-      const authHeader = request.headers.get('Authorization');
-      
-      if (!authHeader?.startsWith('Bearer ')) {
-        return Response.json({
-          success: false,
-          message: '인증이 필요합니다.'
-        }, {
-          status: 401,
-          headers: jsonHeaders
-        });
-      }
-      
-      return Response.json({
-        success: true,
-        stats: {
-          totalEarnings: 1250.75,
-          totalDownloads: 342,
-          activeListings: 8,
-          monthlyGrowth: 15.5
-        }
-      }, { 
-        headers: jsonHeaders 
-      });
-    }
-
-    // 8. 음원 업로드
-    if (path === '/api/music/upload' && method === 'POST') {
-      const authHeader = request.headers.get('Authorization');
-      
-      if (!authHeader?.startsWith('Bearer ')) {
-        return Response.json({
-          success: false,
-          message: '인증이 필요합니다.'
-        }, {
-          status: 401,
-          headers: jsonHeaders
-        });
-      }
-      
-      try {
-        const formData = await request.formData();
-        const title = formData.get('title') || 'Untitled';
-        const description = formData.get('description') || '';
-        const price = parseFloat(formData.get('price') || '0');
-        const genre = formData.get('genre') || 'Other';
-        
-        // 실제로는 파일 업로드 처리 필요
-        return Response.json({
-          success: true,
-          message: '음원 업로드가 완료되었습니다.',
-          music: {
-            id: Date.now(),
-            title,
-            price,
-            genre,
-            status: 'active'
-          }
-        }, { 
-          headers: jsonHeaders 
-        });
-        
-      } catch (error) {
-        return Response.json({
-          success: false,
-          message: '업로드 처리 중 오류가 발생했습니다.'
-        }, {
-          status: 500,
-          headers: jsonHeaders
-        });
-      }
-    }
-
+    
     // 404 처리
-    return Response.json({
-      success: false,
-      message: '요청하신 API를 찾을 수 없습니다.',
-      path: path,
-      method: method
-    }, {
+    return new Response(JSON.stringify({ 
+      error: "API endpoint not found",
+      path: path 
+    }), { 
       status: 404,
-      headers: jsonHeaders
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error("API Error:", error);
+    return new Response(JSON.stringify({ 
+      error: "Internal server error",
+      message: error.message 
+    }), { 
+      status: 500,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
     });
   }
 }
+
+// ==================== 회원가입 처리 ====================
+async function handleSignup(request, env, corsHeaders) {
+    // 데이터베이스 테이블 확인 및 생성
+    try {
+        await env.DB.prepare(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                nickname TEXT NOT NULL,
+                real_name TEXT NOT NULL,
+                phone TEXT,
+                verification_code TEXT,
+                email_verified BOOLEAN DEFAULT false,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `).run();
+    } catch (error) {
+        console.error("Users 테이블 생성 실패:", error);
+    }
+  try {
+    const data = await request.json();
+    
+    // 1. 필수 필드 검증
+    if (!data.email || !data.password || !data.nickname || !data.realName) {
+      return new Response(JSON.stringify({ 
+        error: "필수 항목이 누락되었습니다" 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 2. 이메일 형식 검증
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(data.email)) {
+      return new Response(JSON.stringify({ 
+        error: "유효하지 않은 이메일 형식" 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 3. 비밀번호 길이 검증
+    if (data.password.length < 8) {
+      return new Response(JSON.stringify({ 
+        error: "비밀번호는 8자 이상이어야 합니다" 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 4. 이메일 중복 확인
+    const existingUser = await env.DB.prepare(
+      "SELECT id FROM users WHERE email = ?"
+    ).bind(data.email).first();
+    
+    if (existingUser) {
+      return new Response(JSON.stringify({ 
+        error: "이미 가입된 이메일입니다" 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 5. 6자리 인증번호 생성
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // 6. 비밀번호 해싱 (간단한 버전 - 실제로는 bcrypt 필요)
+    const passwordHash = await hashPassword(data.password);
+    
+    // 7. 데이터베이스에 사용자 저장
+    const result = await env.DB.prepare(
+      `INSERT INTO users (email, password_hash, nickname, real_name, phone, verification_code, email_verified, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime("now"))`
+    ).bind(
+      data.email,
+      passwordHash,
+      data.nickname,
+      data.realName,
+      data.phone || null,
+      verificationCode,
+      false
+    ).run();
+    
+    if (!result.success) {
+      throw new Error("데이터베이스 저장 실패");
+    }
+    
+    // 8. 이메일 발송 (SendGrid)
+    const emailResult = await sendVerificationEmail(data.email, verificationCode, env);
+    
+            // 이메일 발송 결과 확인
+                // 이메일 발송 결과 (개발 모드에서는 항상 성공)
+        console.log("이메일 발송 결과:", emailResult);
+        
+        // 계정 생성 성공 응답
+        return new Response(JSON.stringify({
+            success: true,
+            message: "계정 생성 완료!",
+            userId: result.meta.last_row_id,
+            email: data.email
+        }), {
+            status: 200,
+            headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+    
+    // 9. 성공 응답
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: "6자리 인증번호가 이메일로 발송되었습니다.",
+      userId: result.meta.last_row_id,
+      email: data.email,
+      note: "인증번호를 입력하여 이메일 인증을 완료해주세요."
+    }), { 
+      status: 200,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error("Signup error:", error);
+    return new Response(JSON.stringify({ 
+      error: "회원가입 처리 중 오류 발생",
+      message: error.message 
+    }), { 
+      status: 500,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+  }
+}
+
+// ==================== 로그인 처리 ====================
+async function handleLogin(request, env, corsHeaders) {
+    // 데이터베이스 테이블 확인 및 생성
+    try {
+        await env.DB.prepare(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                nickname TEXT NOT NULL,
+                real_name TEXT NOT NULL,
+                phone TEXT,
+                verification_code TEXT,
+                email_verified BOOLEAN DEFAULT false,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `).run();
+    } catch (error) {
+        console.error("Users 테이블 생성 실패:", error);
+    }
+  try {
+    const data = await request.json();
+    
+    if (!data.email || !data.password) {
+      return new Response(JSON.stringify({ 
+        error: "이메일과 비밀번호를 입력해주세요" 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 데이터베이스에서 사용자 조회
+    const user = await env.DB.prepare(
+      "SELECT id, email, password_hash, nickname, email_verified FROM users WHERE email = ?"
+    ).bind(data.email).first();
+    
+    if (!user) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: "이메일 또는 비밀번호가 일치하지 않습니다"
+      }), { 
+        status: 401,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 비밀번호 검증
+    const passwordValid = await verifyPassword(data.password, user.password_hash);
+    
+    if (!passwordValid) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: "이메일 또는 비밀번호가 일치하지 않습니다"
+      }), { 
+        status: 401,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 이메일 인증 확인
+    if (!user.email_verified) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: "이메일 인증이 필요합니다. 가입한 이메일의 인증번호를 확인해주세요.",
+        requiresVerification: true
+      }), { 
+        status: 401,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // JWT 토큰 생성 (임시)
+    const token = generateToken(user);
+    
+    return new Response(JSON.stringify({
+      success: true,
+      message: "로그인 성공",
+      token: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        nickname: user.nickname,
+        verified: user.email_verified
+      }
+    }), { 
+      status: 200,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error("Login error:", error);
+    return new Response(JSON.stringify({
+      error: "로그인 처리 중 오류 발생",
+      message: error.message
+    }), { 
+      status: 500,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+  }
+}
+
+// ==================== 이메일 인증 확인 ====================
+async function handleVerifyEmail(request, env, corsHeaders) {
+  try {
+    const data = await request.json();
+    
+    if (!data.email || !data.verificationCode) {
+      return new Response(JSON.stringify({ 
+        error: "이메일과 인증번호를 입력해주세요" 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 인증번호 확인
+    const user = await env.DB.prepare(
+      "SELECT id, verification_code FROM users WHERE email = ? AND email_verified = false"
+    ).bind(data.email).first();
+    
+    if (!user) {
+      return new Response(JSON.stringify({ 
+        error: "사용자를 찾을 수 없거나 이미 인증된 이메일입니다." 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    if (user.verification_code !== data.verificationCode) {
+      return new Response(JSON.stringify({ 
+        error: "인증번호가 일치하지 않습니다." 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 인증 완료 처리
+    await env.DB.prepare(
+      "UPDATE users SET email_verified = true, verification_code = NULL WHERE id = ?"
+    ).bind(user.id).run();
+    
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: "이메일 인증이 완료되었습니다! 이제 로그인하실 수 있습니다." 
+    }), { 
+      status: 200,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error("Verify email error:", error);
+    return new Response(JSON.stringify({ 
+      error: "인증 처리 중 오류 발생",
+      message: error.message 
+    }), { 
+      status: 500,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+  }
+}
+
+// ==================== 인증번호 재발송 ====================
+async function handleResendVerification(request, env, corsHeaders) {
+  try {
+    const data = await request.json();
+    
+    if (!data.email) {
+      return new Response(JSON.stringify({ 
+        error: "이메일을 입력해주세요" 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 사용자 확인
+    const user = await env.DB.prepare(
+      "SELECT id, email_verified FROM users WHERE email = ?"
+    ).bind(data.email).first();
+    
+    if (!user) {
+      return new Response(JSON.stringify({ 
+        error: "가입되지 않은 이메일입니다." 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    if (user.email_verified) {
+      return new Response(JSON.stringify({ 
+        error: "이미 인증된 이메일입니다." 
+      }), { 
+        status: 400,
+        headers: { "Content-Type": "application/json", ...corsHeaders }
+      });
+    }
+    
+    // 새 인증번호 생성
+    const newVerificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // 데이터베이스 업데이트
+    await env.DB.prepare(
+      "UPDATE users SET verification_code = ? WHERE email = ?"
+    ).bind(newVerificationCode, data.email).run();
+    
+    // 이메일 재발송
+    const emailResult = await sendVerificationEmail(data.email, newVerificationCode, env);
+    
+            // 이메일 발송 결과 확인
+                // 이메일 발송 결과 (개발 모드에서는 항상 성공)
+        console.log("이메일 발송 결과:", emailResult);
+        
+        // 계정 생성 성공 응답
+        return new Response(JSON.stringify({
+            success: true,
+            message: "계정 생성 완료!",
+            userId: result.meta.last_row_id,
+            email: data.email
+        }), {
+            status: 200,
+            headers: { "Content-Type": "application/json", ...corsHeaders }
+        });
+    
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: "새 인증번호가 이메일로 재발송되었습니다."
+    }), { 
+      status: 200,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error("Resend verification error:", error);
+    return new Response(JSON.stringify({ 
+      error: "인증번호 재발송 중 오류 발생",
+      message: error.message 
+    }), { 
+      status: 500,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+  }
+}
+
+// ==================== 유틸리티 함수 ====================
+
+// SendGrid 이메일 발송 (수정됨)
+async function sendVerificationEmail(email, verificationCode, env) {
+    console.log("📧 [개발모드] 인증번호: " + verificationCode + " for " + email);
+    // 개발 모드: 항상 성공
+    return { success: true };
+}, 인증번호: ${verificationCode}\`);
+    
+    // 테스트/개발 모드에서는 실제 발송하지 않음
+    if (env.ENVIRONMENT === "development" || !env.SENDGRID_API_KEY || env.SENDGRID_API_KEY.includes("test")) {
+        console.log(\`✅ [테스트] 인증번호 생성됨: ${verificationCode} (이메일: ${email})\`);
+        return { success: true };
+    }
+    
+    // 실제 SendGrid API 호출
+    try {
+        const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+            method: "POST",
+            headers: {
+                "Authorization": \`Bearer ${env.SENDGRID_API_KEY}\`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                personalizations: [{ to: [{ email: email }] }],
+                from: { email: env.EMAIL_FROM },
+                subject: "TimeLink 이메일 인증번호",
+                content: [
+                    {
+                        type: "text/plain",
+                        value: \`TimeLink 이메일 인증번호: ${verificationCode}\\n인증번호를 입력하여 이메일 인증을 완료해주세요.\`
+                    }
+                ]
+            })
+        });
+        
+        if (response.ok) {
+            console.log(\`✅ 이메일 발송 성공: ${email}\`);
+            return { success: true };
+        } else {
+            const errorText = await response.text();
+            console.error(\`❌ 이메일 발송 실패: ${errorText}\`);
+            return { success: false, error: errorText };
+        }
+    } catch (error) {
+        console.error("이메일 발송 오류:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+// 비밀번호 해싱 (간단한 버전 - 실제 프로덕션에서는 bcrypt 사용)
+async function hashPassword(password) {
+  // 간단한 해싱 (실제로는 @node-rs/bcrypt 같은 라이브러리 사용)
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + "timelink_salt");
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function verifyPassword(password, hash) {
+  const newHash = await hashPassword(password);
+  return newHash === hash;
+}
+
+// JWT 토큰 생성 (간단한 버전)
+function generateToken(user) {
+  const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payload = btoa(JSON.stringify({
+    userId: user.id,
+    email: user.email,
+    exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24) // 24시간
+  }));
+  const signature = btoa("timelink_secret_key");
+  return `${header}.${payload}.${signature}`;
+}
+
+// 디버그용: 저장된 사용자 확인
+async function debugUsers(env, corsHeaders) {
+  try {
+    const users = await env.DB.prepare(
+      "SELECT id, email, nickname, email_verified, created_at FROM users ORDER BY created_at DESC"
+    ).all();
+    
+    return new Response(JSON.stringify({
+      success: true,
+      count: users.results.length,
+      users: users.results
+    }), { 
+      status: 200,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      error: "사용자 조회 실패",
+      details: error.message
+    }), { 
+      status: 500,
+      headers: { "Content-Type": "application/json", ...corsHeaders }
+    });
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
