@@ -1,0 +1,25 @@
+name = "timelink-api"
+main = "worker.js"
+compatibility_date = "2025-12-22"
+
+# KV 네임스페이스 (실제 ID는 배포시 사용)
+[[kv_namespaces]]
+binding = "TL_USERS"
+id = "YOUR_KV_USERS_ID_HERE"
+
+[[kv_namespaces]]
+binding = "TL_SESSIONS"
+id = "YOUR_KV_SESSIONS_ID_HERE"
+
+# D1 데이터베이스
+[[d1_databases]]
+binding = "TL_DB"
+database_name = "timelink-db"
+database_id = "YOUR_D1_DATABASE_ID_HERE"
+
+# 환경 변수 (실제 값은 .env 파일에)
+[vars]
+ENVIRONMENT = "production"
+EMAIL_FROM = "noreply@timelink.digital"
+APP_URL = "https://timelink.digital"
+# SENDGRID_API_KEY는 .env에 저장

@@ -1,0 +1,42 @@
+export async function handleSignup(request, env) {
+    console.log("✅ handleSignup 함수 실행됨");
+    
+    try {
+        console.log("📦 요청 파싱 시도...");
+        const body = await request.json();
+        console.log("📦 파싱 성공:", body);
+        
+        return new Response(
+            JSON.stringify({
+                success: true,
+                message: '회원가입 성공!',
+                data: body
+            }),
+            {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+            }
+        );
+    } catch (error) {
+        console.error("🔥 오류 발생:", error);
+        console.error("🔥 오류 스택:", error.stack);
+        
+        return new Response(
+            JSON.stringify({
+                success: false,
+                message: '오류: ' + error.message
+            }),
+            {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' }
+            }
+        );
+    }
+}
+
+export async function handleLogin(request, env) {
+    return new Response(
+        JSON.stringify({ success: true, message: '로그인' }),
+        { headers: { 'Content-Type': 'application/json' } }
+    );
+}
