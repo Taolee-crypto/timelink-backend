@@ -1,13 +1,30 @@
-name = "deconomic-api"
-compatibility_date = "2024-01-15"
-main = "src/index.js"
+# wrangler.toml
+name = "timelink-api"
+main = "worker.js"
+compatibility_date = "2025-12-22"
 
-# 실제 작동할 것 같은 KV들만 연결
+# Cloudflare 계정 ID 추가 (선택사항)
+account_id = "a056839cbee168dca5a9439167f98143"
+
+# KV 네임스페이스
 [[kv_namespaces]]
-binding = "USERS"
-id = "707458ee138248fdace69850e2fc2b8c"  # timelink_users - 제일 정상적
+binding = "TL_USERS"
+id = "707458ee138248fdace69850e2fc2b8c"
 
 [[kv_namespaces]]
-binding = "SESSIONS"
-id = "ea2f9eacaac44899a621dc0315debf01"  # TL_SESSIONS - 이미 사용 중
+binding = "TL_SESSIONS"
+id = "ea2f9eacaac44899a621dc0315debf01"
 
+# D1 데이터베이스
+[[d1_databases]]
+binding = "TL_DB"
+database_name = "timelink-db"
+database_id = "6bf79312-9d17-403b-81a9-d014acf786db"
+
+# 환경 변수 (공개해도 안전한 변수들)
+[vars]
+ENVIRONMENT = "production"
+EMAIL_FROM = "noreply@timelink.digital"
+APP_URL = "https://timelink.digital"
+
+# 비밀 변수들은 wrangler secret으로 설정
