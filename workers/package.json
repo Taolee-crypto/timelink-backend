@@ -9,7 +9,7 @@
     "test": "echo \"No tests specified\""
   },
   "devDependencies": {
-    "wrangler": "^3.114.15"
+    "wrangler": "^4.54.0"
   },
   "description": "",
   "main": "index.js",
