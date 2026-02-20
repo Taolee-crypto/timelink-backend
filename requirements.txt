@@ -9,3 +9,8 @@ redis
 python-dotenv
 requests
 celery
+pytest
+pytest-asyncio
+httpx
+pytest-mock
+slowapi
