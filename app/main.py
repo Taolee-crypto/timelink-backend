@@ -1,44 +1,29 @@
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from app.database import get_db, User
+# main.py
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="TimeLink MVP Backend")
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 프론트 어디서든 호출 가능 (나중엔 도메인 제한)
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 모의 데이터 (나중에 DB로 교체)
+tracks = [
+    {"id": 1, "title": "Midnight Rain", "creator": "@soyeon", "live": 1842, "earnings": 4920},
+    {"id": 2, "title": "Dawn Breaker", "creator": "@minho", "live": 932, "earnings": 2780},
+    # ... 더 추가
+]
 
-@app.get("/health")
-def health_check():
-    return {"status": "healthy", "message": "TimeLink Backend is running!"}
+@app.get("/", response_class=HTMLResponse)
+async def pulse_home(request: Request):
+    return templates.TemplateResponse(
+        "pulse.html",
+        {"request": request, "tracks": tracks}
+    )
 
-@app.get("/tl/balance")
-def get_balance(db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == "testuser").first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {
-        "user_id": user.username,
-        "tl_balance": user.tl_balance,
-        "tlc_balance": user.tlc_balance
-    }
-
-@app.post("/tl/charge")
-def charge_tl(amount: int, db: Session = Depends(get_db)):
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be positive")
-    user = db.query(User).filter(User.username == "testuser").first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    user.tl_balance += amount
-    db.commit()
-    db.refresh(user)
-    return {
-        "message": f"{amount} TL 충전 완료!",
-        "new_balance": user.tl_balance
-    }
+# Boost API 예시 (HTMX로 호출)
+@app.post("/boost/{track_id}")
+async def boost_track(track_id: int):
+    # 실제로는 DB 업데이트 + 웹소켓 브로드캐스트
+    return {"message": f"Boosted track {track_id} +100 TL!"}
