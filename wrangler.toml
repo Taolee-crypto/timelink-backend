@@ -1,0 +1,6 @@
+name = "pulse-frontend"
+compatibility_date = "2025-02-21"
+main = "dist/worker.js"   # Vite 빌드 결과물
+
+[build]
+command = "npm run build"  # 또는 yarn build, pnpm build
