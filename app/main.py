@@ -1,12 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+from app.database import get_db, User
 
 app = FastAPI(title="TimeLink MVP Backend")
 
-# CORS 설정 (프론트엔드 연결용)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 나중엔 timelink.digital로 제한
+    allow_origins=["*"],  # 프론트 어디서든 호출 가능 (나중엔 도메인 제한)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -17,6 +18,27 @@ def health_check():
     return {"status": "healthy", "message": "TimeLink Backend is running!"}
 
 @app.get("/tl/balance")
-def get_balance():
-    # 가짜 데이터 (나중 DB 연결)
-    return {"user_id": "testuser", "tl_balance": 10000, "tlc_balance": 5.25}
+def get_balance(db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == "testuser").first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "user_id": user.username,
+        "tl_balance": user.tl_balance,
+        "tlc_balance": user.tlc_balance
+    }
+
+@app.post("/tl/charge")
+def charge_tl(amount: int, db: Session = Depends(get_db)):
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    user = db.query(User).filter(User.username == "testuser").first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.tl_balance += amount
+    db.commit()
+    db.refresh(user)
+    return {
+        "message": f"{amount} TL 충전 완료!",
+        "new_balance": user.tl_balance
+    }
