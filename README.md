@@ -47,3 +47,14 @@ MIT License
 
 X: @Taolee_crypto
 Issue/PR 환영합니다!
+
+## 현재 MVP 작동 상태 (2026.02.21 기준)
+
+- `/health` 엔드포인트 정상
+- `/tl/balance` 엔드포인트 정상 (DB에서 실제 잔고 읽기)
+- 프론트 index.html 버튼 클릭 → 실시간 잔고 표시 성공
+- SQLite DB 연결 완료 (timelink.db 파일 생성됨)
+
+테스트 방법:
+1. 백엔드 실행: `uvicorn app.main:app --reload`
+2. 브라우저에서 index.html 열기 → "TL 잔고 확인하기" 버튼 클릭
