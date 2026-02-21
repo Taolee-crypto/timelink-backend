@@ -14,3 +14,9 @@ pytest-asyncio
 httpx
 pytest-mock
 slowapi
+pytest
+pytest-asyncio
+httpx
+pytest
+pytest-asyncio
+httpx
