@@ -37,3 +37,16 @@ copy .env.example .env
 
 # 4. 서버 실행
 uvicorn app.main:app --reload --port 8000
+
+4. **Commit directly to the main branch** 체크 → **Commit changes** 클릭
+
+이제 저장소 메인 페이지에 README가 제대로 뜨고, CI 배지도 초록색으로 보일 거야.
+
+### 다음으로 할 일 (순서 추천)
+1. README.md 업데이트 후 바로 커밋 (위에서 했으면 완료)
+2. **requirements.txt**에 누락된 패키지 추가 (pytest-cov 등)
+3. **간단한 테스트 파일** 더 넣어서 CI 커버리지 10% 이상 만들기
+4. **PR 연습** (새 브랜치 만들어서 PR 올려보기)
+
+README 업데이트 끝나면 캡처나 링크 공유해줘.  
+바로 다음 단계(예: CI 커버리지 올리기, Docker 설정 등) 이어갈게! 😄
