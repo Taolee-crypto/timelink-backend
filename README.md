@@ -58,3 +58,10 @@ Issue/PR 환영합니다!
 테스트 방법:
 1. 백엔드 실행: `uvicorn app.main:app --reload`
 2. 브라우저에서 index.html 열기 → "TL 잔고 확인하기" 버튼 클릭
+## MVP 작동 데모 (2026.02.21 기준)
+
+<image-card alt="잔고 확인 & 충전 데모" src="https://user-images.githubusercontent.com/너의아이디/캡처이미지링크.png" ></image-card>
+
+- TL 잔고 확인 버튼 → 실시간 조회 성공
+- 충전 입력 후 버튼 클릭 → 잔고 증가 & 자동 갱신
+- 백엔드 API 연결 + SQLite DB 실제 저장 확인
