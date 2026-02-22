@@ -1,49 +1,35 @@
-from fastapi import FastAPI, Form, File, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.api.v1.endpoints import users, timeline, auth, health
+from app.core.config import settings
 
-app = FastAPI()
+app = FastAPI(
+    title="Timelink API",
+    description="Timelink Platform Backend API - Suno AI 연동",
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+)
 
-# CORS 허용 (프론트 모든 포트/도메인 허용)
+# CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발 중엔 *로 풀어줌 (배포 시 제한)
+    allow_origins=settings.BACKEND_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 모의 데이터 (tracks 배열)
-tracks = []
+# 라우터 등록
+app.include_router(health.router, prefix="/api/health", tags=["health"])
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+app.include_router(timeline.router, prefix="/api/v1/timeline", tags=["timeline"])
 
-@app.get("/tracks")
-def get_tracks():
-    return tracks
-
-@app.post("/create")
-def create(
-    title: str = Form(...),
-    creator: str = Form(...),
-    file: UploadFile = File(...)
-):
-    track = {
-        "id": len(tracks) + 1,
-        "title": title,
-        "creator": creator,
-        "creator_handle": f"@{creator.lower().replace(' ', '')}",
-        "earnings": 0
+@app.get("/")
+async def root():
+    return {
+        "message": "Timelink API is running",
+        "version": "1.0.0",
+        "features": ["Suno AI Integration", "TL3/TL4 Tokens", "Car Mode"]
     }
-    tracks.append(track)
-    return JSONResponse({"success": True, "track": track})
-
-@app.post("/boost/{track_id}")
-def boost(track_id: int):
-    for t in tracks:
-        if t["id"] == track_id:
-            t["earnings"] += 100
-            return {"success": True, "earnings": t["earnings"]}
-    return {"success": False, "message": "Track not found"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
