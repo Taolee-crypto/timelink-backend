@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./timelink.db
+      - SECRET_KEY=${SECRET_KEY}
+      - ENVIRONMENT=development
+      - DEBUG=true
+    volumes:
+      - .:/app
+      - sqlite_data:/app/timelink.db
+
+  # PostgreSQL 사용시 (선택사항)
+  # db:
+  #   image: postgres:15
+  #   environment:
+  #     - POSTGRES_USER=user
+  #     - POSTGRES_PASSWORD=password
+  #     - POSTGRES_DB=timelink
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  sqlite_data:
+  # postgres_data:

@@ -1,0 +1,9 @@
+name = "timelink-api"
+main = "main.py"                          # 파이썬 파일 직접 지정
+compatibility_date = "2025-02-21"
+
+# 파이썬 Workers 지원 플래그 (필수, 이게 없으면 안 됨)
+compatibility_flags = [ "python_workers" ]
+
+# [build] 섹션은 절대 넣지 마세요
+# npm run build, wrangler deploy 같은 명령어는 제거
