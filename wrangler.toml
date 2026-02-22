@@ -1,9 +1,3 @@
 name = "timelink-api"
-main = "main.py"                          # 파이썬 파일 직접 지정
+main = "src/index.ts"
 compatibility_date = "2025-02-21"
-
-# 파이썬 Workers 지원 플래그 (필수)
-compatibility_flags = [ "python_workers" ]
-
-# [build] 섹션은 절대 넣지 마세요
-# npm run build 같은 명령어는 파이썬 프로젝트에 필요 없음
