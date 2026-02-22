@@ -1,11 +1,9 @@
 name = "timelink-api"
-main = "main.py"                      # 파이썬 파일 직접 지정
+main = "main.py"                          # 파이썬 파일 직접 지정
 compatibility_date = "2025-02-21"
 
-# [build] 섹션은 완전히 삭제 (npm run build 필요 없음)
-# 아래 줄들은 절대 넣지 마세요
-# [build]
-# command = "npm run build"
+# 빌드 명령어 제거 (npm run build 필요 없음)
+# [build] 섹션은 절대 넣지 마세요
 
-# 필요 시 추가 (지금은 최소로)
-compatibility_flags = [ "python_workers" ]  # 파이썬 Workers 지원 (실험적, 필요 시)
+# 파이썬 Workers 지원 (필수)
+compatibility_flags = [ "python_workers" ]
