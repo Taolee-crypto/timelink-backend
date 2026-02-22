@@ -65,3 +65,44 @@ Issue/PR 환영합니다!
 - TL 잔고 확인 버튼 → 실시간 조회 성공
 - 충전 입력 후 버튼 클릭 → 잔고 증가 & 자동 갱신
 - 백엔드 API 연결 + SQLite DB 실제 저장 확인
+
+# Timelink Backend API
+
+FastAPI 기반 Timelink 플랫폼 백엔드 API (Suno AI 연동)
+
+## 주요 기능
+
+- 🔐 JWT 인증 (로그인/회원가입)
+- 🎵 타임라인 포스트 CRUD
+- 🤖 Suno AI 음원 변환 (TL3 토큰)
+- 💰 TL 토큰 시스템 (충전/전송/락)
+- 🚗 Car Mode (2배 보상)
+- 📊 신뢰 점수 시스템 (Trust/LVS)
+
+## 기술 스택
+
+- FastAPI
+- SQLAlchemy (Async)
+- SQLite (개발) / PostgreSQL (프로덕션)
+- Alembic (마이그레이션)
+- JWT 인증
+- Docker
+
+## 설치 및 실행
+
+### 로컬 개발
+
+```bash
+# 가상환경 생성
+python -m venv venv
+source venv/bin/activate  # Mac/Linux
+# venv\Scripts\activate  # Windows
+
+# 패키지 설치
+pip install -r requirements.txt
+
+# 데이터베이스 마이그레이션
+alembic upgrade head
+
+# 서버 실행
+uvicorn app.main:app --reload
