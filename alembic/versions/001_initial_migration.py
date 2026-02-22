@@ -69,4 +69,29 @@ def upgrade() -> None:
         sa.Column('user_id', sa.Integer(), nullable=False),
         sa.Column('post_id', sa.Integer(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP')),
-        sa.ForeignKeyConstraint(['post_id'], ['
+        sa.ForeignKeyConstraint(['post_id'], ['timeline_posts.id'], ),
+        sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+        sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_likes_id'), 'likes', ['id'], unique=False)
+
+    # comments 테이블
+    op.create_table(
+        'comments',
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.Column('user_id', sa.Integer(), nullable=False),
+        sa.Column('post_id', sa.Integer(), nullable=False),
+        sa.Column('content', sa.Text(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('updated_at', sa.DateTime(timezone=True), onupdate=sa.text('CURRENT_TIMESTAMP')),
+        sa.ForeignKeyConstraint(['post_id'], ['timeline_posts.id'], ),
+        sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+        sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_comments_id'), 'comments', ['id'], unique=False)
+
+def downgrade() -> None:
+    op.drop_table('comments')
+    op.drop_table('likes')
+    op.drop_table('timeline_posts')
+    op.drop_table('users')
