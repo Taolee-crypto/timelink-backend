@@ -1,47 +1,55 @@
-// src/index.ts - TimeLink API 기본 Worker (TypeScript)
+// src/index.ts - CORS 완전 지원 버전
 
-export interface Env {
-  // 필요 시 KV, D1 등 바인딩 추가
-}
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",  // 테스트용 전체 허용 (운영 시 "https://timelink.digital"로 변경)
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Max-Age": "86400",  // preflight 캐시 1일
+};
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request): Promise<Response> {
+    // 1. OPTIONS preflight 요청 처리 (브라우저가 CORS 확인용으로 자동 보냄)
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders,
+      });
+    }
+
+    // 2. 실제 요청 처리
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // 루트 경로: 기본 메시지 (기존처럼)
+    // 모든 응답에 CORS 헤더 강제 추가
+    const headers = new Headers(corsHeaders);
+    headers.set("Content-Type", "application/json");
+
     if (path === "/" || path === "") {
       return new Response(
-        "Pulse Worker Ready! Use /tracks, /create, /boost/:id",
-        { status: 200, headers: { "Content-Type": "text/plain" } }
+        JSON.stringify({ message: "Pulse Worker Ready! Use /tracks, /create, /boost/:id" }),
+        { status: 200, headers }
       );
     }
 
-    // /pulse - 실시간 Pulse 카운트 (임시 더미 데이터)
-    if (path === "/pulse") {
-      return new Response(
-        JSON.stringify({ live: 2847, message: "Pulse count from Worker" }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    }
-
-    // /tracks - Hot Pulse 트랙 리스트 (임시 빈 배열)
     if (path === "/tracks") {
+      // 임시 빈 트랙 리스트 (나중에 실제 데이터로 교체)
       return new Response(
         JSON.stringify([]),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { status: 200, headers }
       );
     }
 
-    // /create - 트랙 생성 (임시 성공 응답)
-    if (path === "/create" && request.method === "POST") {
+    if (path === "/pulse") {
       return new Response(
-        JSON.stringify({ success: true, id: "new-track-001" }),
-        { status: 201, headers: { "Content-Type": "application/json" } }
+        JSON.stringify({ live: 2847 }),
+        { status: 200, headers }
       );
     }
 
-    // 404 Not Found
-    return new Response("Not Found", { status: 404 });
+    return new Response(
+      JSON.stringify({ error: "Not Found" }),
+      { status: 404, headers }
+    );
   },
 };
