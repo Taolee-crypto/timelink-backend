@@ -1,54 +1,34 @@
+# 환경변수 (절대 커밋 금지)
+.env
+.env.local
+.env.production
+
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-env/
+*.pyo
 venv/
-ENV/
-env.bak/
-venv.bak/
-pythonenv*
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Database
-*.db
-*.sqlite3
-
-# Environment
-.env
-.venv
-.env.local
-.env.*
+# Node (혼재 정리)
+node_modules/
+dist/
+*.js.map
 
 # IDE
 .vscode/
 .idea/
 *.swp
-*.swo
 
-# OS
-.DS_Store
-Thumbs.db
+# DB 파일
+*.db
+*.sqlite3
 
-# Alembic
-alembic/versions/*.pyc
-
-# Logs
-logs/
-*.log
-
-# Coverage
-htmlcov/
-.coverage
-.coverage.*
-.cache
-coverage.xml
-
-# Distributions
-dist/
-build/
-*.egg-info/
-
-# Docker
-.dockerignore
+# 업로드 임시파일
+uploads/
