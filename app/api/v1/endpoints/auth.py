@@ -1,85 +1,66 @@
-from fastapi import APIRouter, HTTPException, Depends
-from fastapi.security import OAuth2PasswordBearer
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.database import get_db
-from app.core.security import create_access_token, verify_password, get_password_hash
+from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token
 from app.models.user import User
-from app.schemas.auth import LoginRequest, SignupRequest, TokenResponse
+from app.models.transaction import Transaction, TxType
+from app.schemas.user import UserRegister, UserLogin, TokenResponse
+from app.core.config import settings
 
 router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
-@router.post("/login", response_model=TokenResponse)
-async def login(
-    request: LoginRequest,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    사용자 로그인
-    """
-    # 사용자 조회
-    result = await db.execute(
-        select(User).where(User.email == request.email)
-    )
-    user = result.scalar_one_or_none()
-    
-    if not user or not verify_password(request.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다")
-    
-    # 토큰 생성
-    access_token = create_access_token(subject=user.id)
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer"
-    }
 
-@router.post("/signup", response_model=TokenResponse)
-async def signup(
-    request: SignupRequest,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    회원가입
-    """
-    # 이메일 중복 확인
-    result = await db.execute(
-        select(User).where(User.email == request.email)
-    )
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="이미 사용중인 이메일입니다")
-    
-    # 사용자명 중복 확인
-    result = await db.execute(
-        select(User).where(User.username == request.username)
-    )
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="이미 사용중인 사용자명입니다")
-    
-    # 사용자 생성
+@router.post("/register", response_model=TokenResponse, status_code=201)
+async def register(body: UserRegister, db: AsyncSession = Depends(get_db)):
+    # 중복 확인
+    existing = await db.execute(select(User).where(User.email == body.email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    existing_u = await db.execute(select(User).where(User.username == body.username))
+    if existing_u.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Username already taken")
+
     user = User(
-        email=request.email,
-        username=request.username,
-        hashed_password=get_password_hash(request.password),
-        tl_balance=10000,  # 초기 TL 지급
+        email=body.email,
+        username=body.username,
+        password_hash=hash_password(body.password),
+        tl_balance=float(settings.TL_INITIAL_BONUS),
+        poc_index=1.0,
     )
-    
     db.add(user)
+    await db.flush()
+
+    # 가입 보너스 TL 트랜잭션
+    tx = Transaction(
+        user_id=user.id,
+        tx_type=TxType.INITIAL,
+        amount=float(settings.TL_INITIAL_BONUS),
+        balance_after=float(settings.TL_INITIAL_BONUS),
+        description=f"가입 보너스 {settings.TL_INITIAL_BONUS} TL",
+    )
+    db.add(tx)
     await db.commit()
     await db.refresh(user)
-    
-    # 토큰 생성
-    access_token = create_access_token(subject=user.id)
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer"
-    }
 
-@router.post("/logout")
-async def logout():
-    """
-    로그아웃 (클라이언트에서 토큰 삭제)
-    """
-    return {"message": "Logged out successfully"}
+    return TokenResponse(
+        access_token=create_access_token(str(user.id)),
+        refresh_token=create_refresh_token(str(user.id)),
+    )
+
+
+@router.post("/login", response_model=TokenResponse)
+async def login(body: UserLogin, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+
+    if not user or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account deactivated")
+
+    return TokenResponse(
+        access_token=create_access_token(str(user.id)),
+        refresh_token=create_refresh_token(str(user.id)),
+    )

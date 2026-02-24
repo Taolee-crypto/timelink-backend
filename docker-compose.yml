@@ -1,31 +1,32 @@
-version: '3.8'
+version: "3.9"
 
 services:
   api:
     build: .
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=sqlite+aiosqlite:///./timelink.db
-      - SECRET_KEY=${SECRET_KEY}
-      - ENVIRONMENT=development
-      - DEBUG=true
     volumes:
       - .:/app
-      - sqlite_data:/app/timelink.db
+      - uploads:/app/uploads
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./timelink.db
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
 
-  # PostgreSQL 사용시 (선택사항)
+  # ── PostgreSQL (프로덕션 전환 시 활성화) ──
   # db:
-  #   image: postgres:15
+  #   image: postgres:15-alpine
   #   environment:
-  #     - POSTGRES_USER=user
-  #     - POSTGRES_PASSWORD=password
-  #     - POSTGRES_DB=timelink
+  #     POSTGRES_DB: timelink
+  #     POSTGRES_USER: timelink
+  #     POSTGRES_PASSWORD: changethis
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
   #   ports:
   #     - "5432:5432"
-  #   volumes:
-  #     - postgres_data:/var/lib/postgresql/data
 
 volumes:
-  sqlite_data:
-  # postgres_data:
+  uploads:
+  # pgdata:

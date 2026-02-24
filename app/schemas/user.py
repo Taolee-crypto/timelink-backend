@@ -1,49 +1,67 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional
 from datetime import datetime
 
-# 공통 속성
-class UserBase(BaseModel):
+
+class UserRegister(BaseModel):
     email: EmailStr
     username: str
-    bio: Optional[str] = None
-    profile_image: Optional[str] = None
-
-# 생성 시
-class UserCreate(UserBase):
     password: str
 
-# 업데이트 시
-class UserUpdate(BaseModel):
-    username: Optional[str] = None
-    bio: Optional[str] = None
-    profile_image: Optional[str] = None
-    car_mode_enabled: Optional[bool] = None
-    auto_recharge_enabled: Optional[bool] = None
-    auto_recharge_threshold: Optional[int] = None
-    auto_recharge_amount: Optional[int] = None
+    @field_validator("username")
+    @classmethod
+    def username_valid(cls, v):
+        if len(v) < 2 or len(v) > 30:
+            raise ValueError("Username must be 2-30 characters")
+        return v
 
-# 응답
-class UserResponse(UserBase):
+    @field_validator("password")
+    @classmethod
+    def password_valid(cls, v):
+        if len(v) < 6:
+            raise ValueError("Password must be at least 6 characters")
+        return v
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class UserOut(BaseModel):
     id: int
-    tl_balance: int
-    tl_locked: int
-    trust_score: float
-    lvs_score: float
-    car_mode_enabled: bool
-    auto_recharge_enabled: bool
-    auto_recharge_threshold: int
-    auto_recharge_amount: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    
-    class Config:
-        from_attributes = True
+    email: str
+    username: str
+    tl_balance: float
+    tlc_balance: float
+    tl_locked: float
+    tl_suspended: bool
+    poc_index: float
+    false_dispute_strikes: int
+    account_forfeited: bool
+    exchangeable_tl: float
+    created_at: Optional[datetime]
 
-# TL 토큰 관련
-class TLChargeRequest(BaseModel):
-    amount: int = Field(..., ge=100, le=100000)
+    model_config = {"from_attributes": True}
 
-class TLTransferRequest(BaseModel):
-    to_user_id: int
-    amount: int = Field(..., ge=1)
+
+class WalletSummary(BaseModel):
+    tl_balance: float
+    tl_locked: float
+    tlc_balance: float
+    total_tl_spent: float
+    total_tl_earned: float
+    total_tl_exchanged: float
+    exchangeable_tl: float
+    poc_index: float
+    tl_suspended: bool
+    false_dispute_strikes: int
+    account_forfeited: bool
+
+    model_config = {"from_attributes": True}

@@ -1,37 +1,49 @@
-from typing import List, Optional
 from pydantic_settings import BaseSettings
-from pydantic import AnyHttpUrl, validator
+from pydantic import field_validator
+from typing import List
+import json
+
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "Timelink"
-    VERSION: str = "1.0.0"
-    API_V1_STR: str = "/api/v1"
-    
-    # CORS
-    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = [
-        "http://localhost:3000",  # React 개발 서버
-        "https://timelink.digital",  # 프론트엔드 도메인
-    ]
-    
-    # Database (Cloudflare D1 사용시 SQLite 호환)
+    APP_VERSION: str = "2.0.0"
+    ENVIRONMENT: str = "development"
+    DEBUG: bool = True
+
     DATABASE_URL: str = "sqlite+aiosqlite:///./timelink.db"
-    
-    # JWT
-    SECRET_KEY: str = "your-secret-key-here-change-in-production"
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def fix_db_url(cls, v):
+        # postgres:// → postgresql+asyncpg:// (Heroku 등 구버전 URL 호환)
+        if isinstance(v, str) and v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+        return v
+
+    SECRET_KEY: str = "changethis"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    
-    # Suno AI 설정
-    SUNO_API_BASE_URL: str = "https://api.suno.ai/v1"
-    SUNO_API_KEY: Optional[str] = None
-    
-    # TL 토큰 설정
-    TL3_INITIAL_BALANCE: int = 1000
-    TL_RELEASE_RATE: int = 10  # 10초마다 해제되는 TL
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+
+    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://127.0.0.1:5500"]
+
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
+
+    UPLOAD_DIR: str = "./uploads"
+    MAX_FILE_SIZE_MB: int = 500
+
+    TL_INITIAL_BONUS: int = 1000
     CAR_MODE_MULTIPLIER: float = 2.0
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    REVENUE_SHARE_RATE: float = 0.7
+    EXCHANGE_RATE: float = 0.5
+
+    ANTHROPIC_API_KEY: str = ""
+
+    model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}
+
 
 settings = Settings()

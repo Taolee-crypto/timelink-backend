@@ -1,34 +1,54 @@
-# 환경변수 (절대 커밋 금지)
+# ── 절대 커밋 금지 ──
 .env
 .env.local
 .env.production
+*.env
 
-# Python
+# ── Python ──
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyd
+.Python
 venv/
 .venv/
+env/
 *.egg-info/
 dist/
 build/
 .pytest_cache/
 .coverage
 htmlcov/
+.mypy_cache/
 
-# Node (혼재 정리)
+# ── Node (혼재 방지) ──
 node_modules/
-dist/
-*.js.map
+npm-debug.log*
 
-# IDE
+# ── DB 파일 ──
+*.db
+*.sqlite3
+timelink.db
+
+# ── 업로드 파일 ──
+uploads/
+
+# ── IDE ──
 .vscode/
 .idea/
 *.swp
+*.swo
+.DS_Store
+Thumbs.db
 
-# DB 파일
-*.db
-*.sqlite3
+# ── Cloudflare (제거 완료) ──
+.wrangler/
+dist/
+src/
+wrangler.toml
+cf-requirements.txt
 
-# 업로드 임시파일
-uploads/
+# ── 테스트 산출물 ──
+.coverage
+htmlcov/
+pytest.ini
