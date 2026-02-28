@@ -1,0 +1,11 @@
+name = "timelink-backend"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+timezone = "Asia/Seoul"
+
+
+[[d1_databases]]
+binding = "DB"
+database_name = "timelink-db"
+database_id = "7a61cb9f-d368-439e-b175-f3e958aeb84f"

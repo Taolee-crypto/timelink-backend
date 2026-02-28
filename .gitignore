@@ -1,54 +1,5 @@
-# ── 절대 커밋 금지 ──
-.env
-.env.local
-.env.production
-*.env
-
-# ── Python ──
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
-venv/
-.venv/
-env/
-*.egg-info/
-dist/
-build/
-.pytest_cache/
-.coverage
-htmlcov/
-.mypy_cache/
-
-# ── Node (혼재 방지) ──
 node_modules/
-npm-debug.log*
-
-# ── DB 파일 ──
-*.db
-*.sqlite3
-timelink.db
-
-# ── 업로드 파일 ──
-uploads/
-
-# ── IDE ──
-.vscode/
-.idea/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
-
-# ── Cloudflare (제거 완료) ──
-.wrangler/
 dist/
-src/
-wrangler.toml
-cf-requirements.txt
-
-# ── 테스트 산출물 ──
-.coverage
-htmlcov/
-pytest.ini
+.wrangler/
+.dev.vars
+*.local
