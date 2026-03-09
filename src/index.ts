@@ -154,6 +154,31 @@ app.post('/api/tracks/:id/play', async (c) => {
   }
 });
 
+// ── 파일 업로드 (R2) ─────────────────────────────────────
+app.post('/api/upload', async (c) => {
+  if (!c.env.R2) return c.json({ error: 'R2 미설정' }, 500);
+  try {
+    const formData = await c.req.parseBody();
+    const file = formData['file'] as File;
+    const trackId = formData['trackId'] as string;
+    if (!file || !trackId) return c.json({ error: 'file, trackId 필수' }, 400);
+    if (file.size > 500 * 1024 * 1024) return c.json({ error: '500MB 초과' }, 400);
+
+    const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
+    const key = `tracks/${trackId}.${ext}`;
+
+    await c.env.R2.put(key, file.stream(), {
+      httpMetadata: { contentType: file.type },
+      customMetadata: { trackId, uploadedAt: Date.now().toString() }
+    });
+
+    const publicUrl = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${key}`;
+    return c.json({ ok: true, url: publicUrl, key });
+  } catch(e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 // ── Spotify 검색 ──────────────────────────────────────────
 let _spToken: string | null = null;
 let _spExp = 0;
