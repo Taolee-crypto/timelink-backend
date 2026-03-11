@@ -529,63 +529,20 @@ app.post('/api/auth/signup', async (c) => {
   }
 });
 
-// 오디오 프록시 (CORS + Range 요청 처리)
+// 오디오 프록시 — R2 직접 스트리밍 (Workers 메모리 0 사용)
+// 방식: Workers는 파일 존재 확인만 → 302 redirect → 브라우저가 R2에서 직접 수신
 app.get('/api/audio/:filename', async (c) => {
   try {
     const filename = c.req.param('filename');
     const key = 'tracks/' + filename;
-    const rangeHeader = c.req.header('Range');
 
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-      'Access-Control-Allow-Headers': 'Range, Content-Type',
-      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
-      'Cache-Control': 'public, max-age=86400',
-    };
-
-    // 파일 전체 메타 먼저 조회 (size 확인용)
+    // 파일 존재 확인 (head만 — 본문 로드 없음)
     const meta = await c.env.R2.head(key);
     if (!meta) return c.json({ error: 'Not found' }, 404);
 
-    const totalSize = meta.size;
-    const contentType = meta.httpMetadata?.contentType || 'audio/mpeg';
-
-    if (rangeHeader) {
-      // Range: bytes=start-end 파싱
-      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-      if (!match) return c.json({ error: 'Invalid Range' }, 416);
-
-      const start = parseInt(match[1]);
-      const end = match[2] ? parseInt(match[2]) : totalSize - 1;
-      const length = end - start + 1;
-
-      const object = await c.env.R2.get(key, {
-        range: { offset: start, length },
-      });
-      if (!object) return c.json({ error: 'Not found' }, 404);
-
-      const headers = new Headers({
-        ...corsHeaders,
-        'Content-Type': contentType,
-        'Accept-Ranges': 'bytes',
-        'Content-Range': `bytes ${start}-${end}/${totalSize}`,
-        'Content-Length': String(length),
-      });
-      return new Response(object.body, { status: 206, headers });
-    }
-
-    // Range 없는 일반 요청
-    const object = await c.env.R2.get(key);
-    if (!object) return c.json({ error: 'Not found' }, 404);
-
-    const headers = new Headers({
-      ...corsHeaders,
-      'Content-Type': contentType,
-      'Accept-Ranges': 'bytes',
-      'Content-Length': String(totalSize),
-    });
-    return new Response(object.body, { status: 200, headers });
+    // R2 Public URL로 직접 redirect (브라우저가 R2에서 스트리밍)
+    const r2PublicUrl = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${key}`;
+    return c.redirect(r2PublicUrl, 302);
 
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
