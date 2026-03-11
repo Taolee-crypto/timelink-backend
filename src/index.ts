@@ -371,33 +371,7 @@ app.post('/api/shares/:id/pulse', async (c) => {
   } catch (e) { return c.json({ ok: true, pulse: 0 }); }
 });
 
-// consume v1 제거됨 — tl_user_files 기반 v2 사용
-
-app.post('/api/shares/:id/charge', async (c) => {
-  try {
-    const body = await c.req.json<any>();
-    const amount = Number(body.amount || 0);
-    const email  = body.email || '';
-    if (amount <= 0) return c.json({ error: 'amount 필요' }, 400);
-
-    if (email) {
-      const u = await c.env.DB.prepare('SELECT * FROM users WHERE email=?').bind(email).first<any>().catch(()=>null);
-      if (u) {
-        const col = u.tl !== undefined ? 'tl' : 'tl_balance';
-        if ((u[col]||0) < amount) return c.json({ error: 'TL 부족', current: u[col]||0 }, 402);
-        await c.env.DB.prepare(`UPDATE users SET ${col}=${col}-? WHERE email=?`).bind(amount, email).run();
-      }
-    }
-
-    await c.env.DB.prepare(
-      'UPDATE tl_shares SET file_tl=file_tl+?, pulse=pulse+1 WHERE id=?'
-    ).bind(amount, c.req.param('id')).run();
-
-    const row = await c.env.DB.prepare('SELECT file_tl, pulse FROM tl_shares WHERE id=?')
-      .bind(c.req.param('id')).first<any>();
-    return c.json({ ok: true, file_tl: row?.file_tl||0, pulse: row?.pulse||0 });
-  } catch(e: any) { return c.json({ ok: false, error: e.message }, 500); }
-});
+// charge/consume v1 제거됨 — tl_user_files 기반 v2 사용 (아래에 등록)
 
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
@@ -555,7 +529,11 @@ app.get('/api/audio/:filename', async (c) => {
 
       const total = meta.size;
       const start = parseInt(m[1]);
-      const end   = m[2] ? parseInt(m[2]) : total - 1;
+      // 최대 5MB 청크 — Workers 메모리 초과 방지
+      // 브라우저가 자동으로 다음 Range 요청을 보냄
+      const MAX_CHUNK = 5 * 1024 * 1024;
+      const reqEnd = m[2] !== '' ? parseInt(m[2]) : total - 1;
+      const end = Math.min(reqEnd, start + MAX_CHUNK - 1, total - 1);
       const length = end - start + 1;
 
       // R2에서 해당 구간만 스트리밍 (메모리 적재 없음)
@@ -752,53 +730,8 @@ app.get('/api/user/file-tl', async (c) => {
 });
 
 // 유저-파일 TL 충전 (1:1)
-app.post('/api/shares/:id/charge', async (c) => {
-  try {
-    const share_id = c.req.param('id');
-    const { amount, user_id, email } = await c.req.json();
-    if(!amount || amount <= 0) return c.json({error:'Invalid amount'}, 400);
-    // 유저 TL 차감
-    await c.env.DB.prepare('UPDATE users SET tl=tl-? WHERE id=? AND tl>=?')
-      .bind(amount, user_id, amount).run();
-    // 파일별 TL 적립
-    await c.env.DB.prepare(`INSERT INTO tl_user_files (user_id,share_id,tl_balance,total_charged)
-      VALUES (?,?,?,?) ON CONFLICT(user_id,share_id) DO UPDATE SET
-      tl_balance=tl_balance+excluded.tl_balance,
-      total_charged=total_charged+excluded.total_charged,
-      updated_at=datetime('now')`)
-      .bind(user_id, share_id, amount, amount).run();
-    // 파일 전체 pulse 증가
-    await c.env.DB.prepare('UPDATE tl_shares SET pulse=pulse+1 WHERE id=?').bind(share_id).run();
-    const row = await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user_id, share_id).first();
-    return c.json({ok:true, user_tl: row?.tl_balance || 0});
-  } catch(e:any){ return c.json({error:e.message},500); }
-});
 
 // 유저-파일 TL 소비 (재생 시)
-app.post('/api/shares/:id/consume', async (c) => {
-  try {
-    const share_id = c.req.param('id');
-    const { seconds, user_id } = await c.req.json();
-    if(!user_id) return c.json({error:'user_id required'},400);
-    const consume = seconds || 5;
-    await c.env.DB.prepare(`UPDATE tl_user_files SET
-      tl_balance=MAX(0,tl_balance-?),
-      total_consumed=total_consumed+?,
-      last_played=datetime('now'),
-      updated_at=datetime('now')
-      WHERE user_id=? AND share_id=?`)
-      .bind(consume, consume, user_id, share_id).run();
-    // 크리에이터에게 수익 배분 (플랜에 따라)
-    const share = await c.env.DB.prepare('SELECT user_id,plan FROM tl_shares WHERE id=?').bind(share_id).first();
-    if(share){
-      const rate = share.plan==='B' ? 0.5 : 0.7;
-      const earn = Math.floor(consume * rate);
-      if(earn>0) await c.env.DB.prepare('UPDATE users SET tl=tl+? WHERE id=?').bind(earn, share.user_id).run();
-    }
-    const row = await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user_id, share_id).first();
-    return c.json({ok:true, user_tl: row?.tl_balance || 0});
-  } catch(e:any){ return c.json({error:e.message},500); }
-});
 
 // 내 파일별 TL 잔량 조회
 app.get('/api/user/file-tl', async (c) => {
