@@ -536,42 +536,57 @@ app.get('/api/audio/:filename', async (c) => {
     const key = 'tracks/' + filename;
     const rangeHeader = c.req.header('Range');
 
-    // Range 요청 처리 (브라우저 오디오 스트리밍 필수)
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range, Content-Type',
+      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+      'Cache-Control': 'public, max-age=86400',
+    };
+
+    // 파일 전체 메타 먼저 조회 (size 확인용)
+    const meta = await c.env.R2.head(key);
+    if (!meta) return c.json({ error: 'Not found' }, 404);
+
+    const totalSize = meta.size;
+    const contentType = meta.httpMetadata?.contentType || 'audio/mpeg';
+
     if (rangeHeader) {
+      // Range: bytes=start-end 파싱
+      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      if (!match) return c.json({ error: 'Invalid Range' }, 416);
+
+      const start = parseInt(match[1]);
+      const end = match[2] ? parseInt(match[2]) : totalSize - 1;
+      const length = end - start + 1;
+
       const object = await c.env.R2.get(key, {
-        range: rangeHeader,
+        range: { offset: start, length },
       });
       if (!object) return c.json({ error: 'Not found' }, 404);
-      const headers = new Headers();
-      headers.set('Access-Control-Allow-Origin', '*');
-      headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-      headers.set('Access-Control-Allow-Headers', 'Range, Content-Type');
-      headers.set('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
-      headers.set('Content-Type', object.httpMetadata?.contentType || 'audio/mpeg');
-      headers.set('Accept-Ranges', 'bytes');
-      headers.set('Cache-Control', 'public, max-age=86400');
-      // Content-Range 헤더 설정
-      if (object.range && object.size) {
-        const { offset = 0, length = object.size } = object.range as any;
-        headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${object.size}`);
-        headers.set('Content-Length', String(length));
-      }
+
+      const headers = new Headers({
+        ...corsHeaders,
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes',
+        'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+        'Content-Length': String(length),
+      });
       return new Response(object.body, { status: 206, headers });
     }
 
-    // 일반 요청
+    // Range 없는 일반 요청
     const object = await c.env.R2.get(key);
     if (!object) return c.json({ error: 'Not found' }, 404);
-    const headers = new Headers();
-    headers.set('Access-Control-Allow-Origin', '*');
-    headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    headers.set('Access-Control-Allow-Headers', 'Range, Content-Type');
-    headers.set('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
-    headers.set('Content-Type', object.httpMetadata?.contentType || 'audio/mpeg');
-    headers.set('Accept-Ranges', 'bytes');
-    headers.set('Content-Length', String(object.size));
-    headers.set('Cache-Control', 'public, max-age=86400');
+
+    const headers = new Headers({
+      ...corsHeaders,
+      'Content-Type': contentType,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': String(totalSize),
+    });
     return new Response(object.body, { status: 200, headers });
+
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
