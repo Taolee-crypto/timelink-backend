@@ -256,9 +256,14 @@ function parseJWT(token: string): { userId: number; username: string } {
 
 app.get('/api/shares', async (c) => {
   try {
-    const { results } = await c.env.DB.prepare(
-      'SELECT * FROM tl_shares ORDER BY created_at DESC LIMIT 100'
-    ).all();
+    const { results } = await c.env.DB.prepare(`
+      SELECT s.*,
+        COALESCE(u.username, s.username, 'User') as username,
+        COALESCE(u.email, '') as user_email
+      FROM tl_shares s
+      LEFT JOIN users u ON CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT)
+      ORDER BY s.created_at DESC LIMIT 200
+    `).all();
     return c.json({ shares: results || [] });
   } catch (e: any) {
     return c.json({ shares: [], _note: e.message });
@@ -330,12 +335,11 @@ app.post('/api/shares', async (c) => {
   await c.env.DB.prepare(`
     INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,
       category,file_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,pulse,created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+    VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,0,?)
   `).bind(
     id, String(realId), username,
     body.title, body.artist || '', body.album || '',
     body.duration || 0,
-    body.file_tl || 0,
     body.category || 'Music', body.file_type || '',
     body.description || '', body.plan || 'A',
     body.spotify_id || null, body.spotify_url || null,
@@ -529,59 +533,19 @@ app.post('/api/auth/signup', async (c) => {
   }
 });
 
-// 오디오 프록시 — Workers 스트리밍 (Range 지원)
+// 오디오 프록시 (CORS 우회)
 app.get('/api/audio/:filename', async (c) => {
   try {
     const filename = c.req.param('filename');
-    const key = 'tracks/' + filename;
-    const rangeHeader = c.req.header('Range');
-
-    const cors: Record<string,string> = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-      'Access-Control-Allow-Headers': 'Range, Content-Type',
-      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
-      'Cache-Control': 'public, max-age=3600',
-      'Accept-Ranges': 'bytes',
-    };
-
-    if (rangeHeader) {
-      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-      if (!match) return new Response('Invalid Range', { status: 416 });
-      const start = parseInt(match[1]);
-
-      // size 파악을 위해 head 먼저
-      const meta = await c.env.R2.head(key);
-      if (!meta) return c.json({ error: 'Not found' }, 404);
-      const total = meta.size;
-      const end = match[2] !== '' ? Math.min(parseInt(match[2]), total - 1) : Math.min(start + 2 * 1024 * 1024, total - 1);
-      const length = end - start + 1;
-
-      const obj = await c.env.R2.get(key, { range: { offset: start, length } });
-      if (!obj) return c.json({ error: 'Not found' }, 404);
-
-      const h = new Headers(cors);
-      h.set('Content-Type', meta.httpMetadata?.contentType || 'audio/mpeg');
-      h.set('Content-Range', `bytes ${start}-${end}/${total}`);
-      h.set('Content-Length', String(length));
-      return new Response(obj.body, { status: 206, headers: h });
-    }
-
-    // 일반 요청 — 첫 2MB만 반환 후 브라우저가 Range로 이어받음
-    const meta = await c.env.R2.head(key);
-    if (!meta) return c.json({ error: 'Not found' }, 404);
-    const total = meta.size;
-    const chunkEnd = Math.min(2 * 1024 * 1024 - 1, total - 1);
-
-    const obj = await c.env.R2.get(key, { range: { offset: 0, length: chunkEnd + 1 } });
-    if (!obj) return c.json({ error: 'Not found' }, 404);
-
-    const h = new Headers(cors);
-    h.set('Content-Type', meta.httpMetadata?.contentType || 'audio/mpeg');
-    h.set('Content-Range', `bytes 0-${chunkEnd}/${total}`);
-    h.set('Content-Length', String(chunkEnd + 1));
-    return new Response(obj.body, { status: 206, headers: h });
-
+    const object = await c.env.R2.get('tracks/' + filename);
+    if (!object) return c.json({ error: 'Not found' }, 404);
+    const headers = new Headers();
+    headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Access-Control-Allow-Methods', 'GET, HEAD');
+    headers.set('Content-Type', object.httpMetadata?.contentType || 'audio/mpeg');
+    headers.set('Accept-Ranges', 'bytes');
+    headers.set('Cache-Control', 'public, max-age=86400');
+    return new Response(object.body, { headers });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
