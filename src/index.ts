@@ -12,7 +12,6 @@ import chartsRouter from './routes/charts';
 
 const app = new Hono<{ Bindings: Env }>();
 
-// CORS
 app.use('*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -22,7 +21,6 @@ app.use('*', cors({
 
 app.options('*', (c) => c.text('', 204));
 
-// Health check
 app.get('/api/v1/health', async (c) => {
   try {
     await c.env.DB.prepare('SELECT 1').first();
@@ -31,13 +29,9 @@ app.get('/api/v1/health', async (c) => {
       environment: c.env.ENVIRONMENT,
       database: 'ok',
       endpoints: {
-        auth: '/api/v1/auth',
-        users: '/api/v1/users',
-        files: '/api/v1/files',
-        playback: '/api/v1/playback',
-        shareplace: '/api/v1/shareplace',
-        disputes: '/api/v1/disputes',
-        charts: '/api/v1/charts',
+        auth: '/api/v1/auth', users: '/api/v1/users', files: '/api/v1/files',
+        playback: '/api/v1/playback', shareplace: '/api/v1/shareplace',
+        disputes: '/api/v1/disputes', charts: '/api/v1/charts',
       }
     });
   } catch {
@@ -45,7 +39,6 @@ app.get('/api/v1/health', async (c) => {
   }
 });
 
-// ── 기존 Routes ───────────────────────────────────────────
 app.route('/api/v1/auth', authRouter);
 app.route('/api/v1/users', usersRouter);
 app.route('/api/v1/files', filesRouter);
@@ -53,8 +46,6 @@ app.route('/api/v1/playback', playbackRouter);
 app.route('/api/v1/shareplace', shareplaceRouter);
 app.route('/api/v1/disputes', disputesRouter);
 app.route('/api/v1/charts', chartsRouter);
-
-// ── Public endpoints ──────────────────────────────────────
 
 // GET /api/tracks
 app.get('/api/tracks', async (c) => {
@@ -155,27 +146,45 @@ app.post('/api/tracks/:id/play', async (c) => {
 });
 
 // ── 파일 업로드 (R2) ─────────────────────────────────────
+// FIX: file.stream() → file.arrayBuffer()
+// Cloudflare Workers FormData의 File.stream()은 불안정 — arrayBuffer() 사용
 app.post('/api/upload', async (c) => {
-  if (!c.env.R2) return c.json({ error: 'R2 미설정' }, 500);
+  if (!c.env.R2) {
+    return c.json({ ok: false, error: 'R2 바인딩 없음 — wrangler.toml [[r2_buckets]] 확인' }, 500);
+  }
   try {
     const formData = await c.req.parseBody();
     const file = formData['file'] as File;
     const trackId = formData['trackId'] as string;
-    if (!file || !trackId) return c.json({ error: 'file, trackId 필수' }, 400);
-    if (file.size > 500 * 1024 * 1024) return c.json({ error: '500MB 초과' }, 400);
+
+    if (!file || !trackId) {
+      return c.json({ ok: false, error: 'file, trackId 필수' }, 400);
+    }
+    if (file.size > 200 * 1024 * 1024) {
+      return c.json({ ok: false, error: '200MB 초과 불가' }, 400);
+    }
 
     const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
     const key = `tracks/${trackId}.${ext}`;
+    const contentType = file.type || 'application/octet-stream';
 
-    await c.env.R2.put(key, file.stream(), {
-      httpMetadata: { contentType: file.type },
-      customMetadata: { trackId, uploadedAt: Date.now().toString() }
+    // stream() 대신 arrayBuffer() 사용
+    const buffer = await file.arrayBuffer();
+
+    await c.env.R2.put(key, buffer, {
+      httpMetadata: { contentType },
+      customMetadata: {
+        originalName: file.name,
+        trackId,
+        uploadedAt: Date.now().toString(),
+      },
     });
 
     const publicUrl = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${key}`;
-    return c.json({ ok: true, url: publicUrl, key });
-  } catch(e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ ok: true, url: publicUrl, key, size: file.size });
+
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
   }
 });
 
@@ -211,8 +220,7 @@ app.get('/api/spotify/search', async (c) => {
     );
     const d: any = await r.json();
     const tracks = (d.tracks?.items || []).map((t: any) => ({
-      id: t.id,
-      title: t.name,
+      id: t.id, title: t.name,
       artist: t.artists.map((a: any) => a.name).join(', '),
       album: t.album?.name || '',
       duration: Math.round(t.duration_ms / 1000),
@@ -227,16 +235,9 @@ app.get('/api/spotify/search', async (c) => {
   }
 });
 
-// ── SharePlace API (/api/shares) ──────────────────────────
+// ── SharePlace API ──────────────────────────────────────
 
-// JWT / fallback 토큰 파싱 헬퍼
-// 지원 형식:
-//   JWT:      xxxxx.yyyyy.zzzzz
-//   fallback: fallback_{userId}_{timestamp}
-//   local:    local_{timestamp}  → body의 user_id 사용
-//   token:    token_{userId}_{timestamp}
 function parseJWT(token: string): { userId: number; username: string } {
-  // 1) JWT 형식
   if (token.split('.').length === 3) {
     try {
       const payload = JSON.parse(atob(token.split('.')[1]));
@@ -247,15 +248,12 @@ function parseJWT(token: string): { userId: number; username: string } {
       };
     } catch(e) { throw new Error('Invalid JWT'); }
   }
-  // 2) fallback_{userId}_{ts} 또는 token_{userId}_{ts}
   const m = token.match(/(?:fallback|token)_(\d+)/);
   if (m) return { userId: Number(m[1]), username: 'User' };
-  // 3) local_{ts} — userId를 body에서 받아야 함
-  if (token.startsWith('local_')) return { userId: 0, username: 'User' };
+  if (/^(demo|local|guest)_/.test(token)) return { userId: 0, username: 'User' };
   throw new Error('Unknown token format: ' + token.slice(0, 20));
 }
 
-// GET /api/shares — 인증 불필요
 app.get('/api/shares', async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
@@ -267,7 +265,6 @@ app.get('/api/shares', async (c) => {
   }
 });
 
-// POST /api/shares — 인증 필요, 5000 TL 차감
 app.post('/api/shares', async (c) => {
   const auth = (c.req.header('Authorization') || '').replace('Bearer ', '').trim();
   if (!auth) return c.json({ error: '인증 필요' }, 401);
@@ -278,19 +275,33 @@ app.post('/api/shares', async (c) => {
     userId = p.userId; username = p.username;
   } catch (e) { return c.json({ error: 'Invalid token: ' + (e as Error).message }, 401); }
 
-  // body에서 user_id/username 보충 (fallback/local 토큰 대응)
   const bodyRaw = await c.req.json<any>();
+
   if (!userId || userId === 0) {
     userId = Number(bodyRaw.user_id || bodyRaw.userId || 0);
     username = bodyRaw.username || username || 'User';
   }
   if (!userId) return c.json({ error: 'user_id 확인 불가' }, 401);
 
-  // TL 잔액 확인 (tl 또는 tl_balance 컬럼 모두 시도)
-  // fallback 토큰은 id가 timestamp이므로 email로도 검색
-  const userRow = await c.env.DB.prepare('SELECT * FROM users WHERE id=? OR email=?')
+  let userRow = await c.env.DB.prepare('SELECT * FROM users WHERE id=? OR email=?')
     .bind(userId, bodyRaw.email || '').first<any>().catch(() => null);
-  if (!userRow) return c.json({ error: '유저 없음' }, 404);
+
+  // fallback 유저 자동 생성 — tl_balance 먼저, 실패시 tl 컬럼으로 재시도
+  if (!userRow && bodyRaw.email) {
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO users (username, email, password_hash, tl_balance)
+       VALUES (?, ?, 'fallback', 10000)`
+    ).bind(bodyRaw.username || 'User', bodyRaw.email).run()
+      .catch(() =>
+        c.env.DB.prepare(
+          `INSERT OR IGNORE INTO users (username, email, password_hash, tl)
+           VALUES (?, ?, 'fallback', 10000)`
+        ).bind(bodyRaw.username || 'User', bodyRaw.email).run().catch(() => {})
+      );
+    userRow = await c.env.DB.prepare('SELECT * FROM users WHERE email=?')
+      .bind(bodyRaw.email).first<any>().catch(() => null);
+  }
+  if (!userRow) return c.json({ error: '유저 없음 — 로그인 후 이용하세요' }, 404);
 
   const tl = userRow.tl ?? userRow.tl_balance ?? 0;
   if (tl < 5000) return c.json({ error: 'TL 부족', required: 5000, current: tl }, 402);
@@ -298,7 +309,6 @@ app.post('/api/shares', async (c) => {
   const body = bodyRaw;
   if (!body.title) return c.json({ error: 'title 필요' }, 400);
 
-  // tl_shares 테이블 자동 생성
   await c.env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS tl_shares (
       id TEXT PRIMARY KEY, user_id TEXT, username TEXT,
@@ -312,7 +322,6 @@ app.post('/api/shares', async (c) => {
     )
   `).run().catch(() => {});
 
-  // TL 차감 — userRow.id 사용 (fallback token의 userId는 타임스탬프로 DB id와 다를 수 있음)
   const tlCol = userRow.tl !== undefined ? 'tl' : 'tl_balance';
   const realId = userRow.id;
   await c.env.DB.prepare(`UPDATE users SET ${tlCol}=${tlCol}-5000 WHERE id=?`).bind(realId).run();
@@ -321,11 +330,12 @@ app.post('/api/shares', async (c) => {
   await c.env.DB.prepare(`
     INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,
       category,file_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,pulse,created_at)
-    VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,0,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
   `).bind(
     id, String(realId), username,
     body.title, body.artist || '', body.album || '',
     body.duration || 0,
+    body.file_tl || 0,
     body.category || 'Music', body.file_type || '',
     body.description || '', body.plan || 'A',
     body.spotify_id || null, body.spotify_url || null,
@@ -338,7 +348,6 @@ app.post('/api/shares', async (c) => {
   return c.json({ ok: true, id, tl_remaining: updated?.tl || 0 });
 });
 
-// DELETE /api/shares/:id
 app.delete('/api/shares/:id', async (c) => {
   const auth = (c.req.header('Authorization') || '').replace('Bearer ', '').trim();
   if (!auth) return c.json({ error: '인증 필요' }, 401);
@@ -349,7 +358,6 @@ app.delete('/api/shares/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-// POST /api/shares/:id/pulse
 app.post('/api/shares/:id/pulse', async (c) => {
   try {
     await c.env.DB.prepare('UPDATE tl_shares SET pulse=pulse+1 WHERE id=?').bind(c.req.param('id')).run();
@@ -359,25 +367,19 @@ app.post('/api/shares/:id/pulse', async (c) => {
   } catch (e) { return c.json({ ok: true, pulse: 0 }); }
 });
 
-// POST /api/shares/:id/consume — 재생 중 초당 TL 차감
 app.post('/api/shares/:id/consume', async (c) => {
   try {
     const body = await c.req.json<any>();
     const seconds = Number(body.seconds || 1);
-    const cost = seconds; // 1초 = 1TL
-
-    // file_tl 차감
     await c.env.DB.prepare(
       'UPDATE tl_shares SET file_tl=MAX(0, file_tl-?), pulse=pulse+? WHERE id=?'
-    ).bind(cost, seconds, c.req.param('id')).run();
-
+    ).bind(seconds, seconds, c.req.param('id')).run();
     const row = await c.env.DB.prepare('SELECT file_tl, pulse FROM tl_shares WHERE id=?')
       .bind(c.req.param('id')).first<any>();
     return c.json({ ok: true, file_tl: row?.file_tl || 0, pulse: row?.pulse || 0 });
   } catch(e: any) { return c.json({ ok: false, error: e.message }, 500); }
 });
 
-// POST /api/shares/:id/charge — 리스너 TL 충전
 app.post('/api/shares/:id/charge', async (c) => {
   try {
     const body = await c.req.json<any>();
@@ -385,7 +387,6 @@ app.post('/api/shares/:id/charge', async (c) => {
     const email  = body.email || '';
     if (amount <= 0) return c.json({ error: 'amount 필요' }, 400);
 
-    // 충전자 TL 차감 (email 기반)
     if (email) {
       const u = await c.env.DB.prepare('SELECT * FROM users WHERE email=?').bind(email).first<any>().catch(()=>null);
       if (u) {
@@ -395,7 +396,6 @@ app.post('/api/shares/:id/charge', async (c) => {
       }
     }
 
-    // tl_shares file_tl 증가 + pulse +1
     await c.env.DB.prepare(
       'UPDATE tl_shares SET file_tl=file_tl+?, pulse=pulse+1 WHERE id=?'
     ).bind(amount, c.req.param('id')).run();
@@ -406,7 +406,502 @@ app.post('/api/shares/:id/charge', async (c) => {
   } catch(e: any) { return c.json({ ok: false, error: e.message }, 500); }
 });
 
-// ─────────────────────────────────────────────────────────
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
+
+// ADMIN: 유저 목록
+app.get('/api/users', async (c) => {
+  try {
+    const result = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance, tlc_balance as tlc, created_at FROM users ORDER BY id ASC').all();
+    return c.json({ users: result.results || [] });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ADMIN: SQL 실행
+app.post('/api/admin/sql', async (c) => {
+  try {
+    const { sql } = await c.req.json();
+    if (!sql) return c.json({ error: 'sql required' }, 400);
+    const upper = sql.trim().toUpperCase();
+    if (upper.startsWith('SELECT')) {
+      const result = await c.env.DB.prepare(sql).all();
+      return c.json({ results: result.results, count: result.results?.length || 0 });
+    } else {
+      const result = await c.env.DB.prepare(sql).run();
+      return c.json({ success: true, meta: result.meta });
+    }
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ADMIN: 유저 목록
+app.get('/api/users', async (c) => {
+  try {
+    const result = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance, tlc_balance as tlc, created_at FROM users ORDER BY id ASC').all();
+    return c.json({ users: result.results || [] });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ADMIN: SQL 실행
+app.post('/api/admin/sql', async (c) => {
+  try {
+    const { sql } = await c.req.json();
+    if (!sql) return c.json({ error: 'sql required' }, 400);
+    const upper = sql.trim().toUpperCase();
+    if (upper.startsWith('SELECT')) {
+      const result = await c.env.DB.prepare(sql).all();
+      return c.json({ results: result.results, count: result.results?.length || 0 });
+    } else {
+      const result = await c.env.DB.prepare(sql).run();
+      return c.json({ success: true, meta: result.meta });
+    }
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 회원가입
+app.post('/api/auth/register', async (c) => {
+  try {
+    const { email, password, username } = await c.req.json();
+    if (!email || !password || !username) return c.json({ error: '필수 항목 누락' }, 400);
+
+    const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
+    if (exists) return c.json({ error: '이미 가입된 이메일입니다' }, 409);
+
+    const now = new Date().toISOString().replace('T',' ').substring(0,19);
+    const result = await c.env.DB.prepare(
+      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at) VALUES (?,?,?,10000,10000,0,?)'
+    ).bind(email, username, password, now).run();
+
+    const user = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance, tlc_balance as tlc FROM users WHERE email=?').bind(email).first();
+    const token = 'token_' + user.id + '_' + Date.now();
+    return c.json({ ok: true, token, user });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 로그인
+app.post('/api/auth/login', async (c) => {
+  try {
+    const { email, password } = await c.req.json();
+    if (!email || !password) return c.json({ error: '이메일/비밀번호 필요' }, 400);
+
+    const user = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance, tlc_balance as tlc FROM users WHERE email=? AND password_hash=?').bind(email, password).first();
+    if (!user) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
+
+    const token = 'token_' + user.id + '_' + Date.now();
+    return c.json({ ok: true, token, user });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 회원가입 (signup)
+app.post('/api/auth/signup', async (c) => {
+  try {
+    const { email, password, username } = await c.req.json();
+    if (!email || !username) return c.json({ error: '필수 항목 누락' }, 400);
+
+    const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
+    if (exists) {
+      const user = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance, tlc_balance as tlc FROM users WHERE email=?').bind(email).first();
+      const token = 'token_' + user.id + '_' + Date.now();
+      return c.json({ ok: true, token, user });
+    }
+
+    const now = new Date().toISOString().replace('T',' ').substring(0,19);
+    await c.env.DB.prepare(
+      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at) VALUES (?,?,?,10000,10000,0,?)'
+    ).bind(email, username, password||'', now).run();
+
+    const user = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance, tlc_balance as tlc FROM users WHERE email=?').bind(email).first();
+    const token = 'token_' + user.id + '_' + Date.now();
+    return c.json({ ok: true, token, user });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 오디오 프록시 (CORS + Range 요청 처리)
+app.get('/api/audio/:filename', async (c) => {
+  try {
+    const filename = c.req.param('filename');
+    const key = 'tracks/' + filename;
+    const rangeHeader = c.req.header('Range');
+
+    // Range 요청 처리 (브라우저 오디오 스트리밍 필수)
+    if (rangeHeader) {
+      const object = await c.env.R2.get(key, {
+        range: rangeHeader,
+      });
+      if (!object) return c.json({ error: 'Not found' }, 404);
+      const headers = new Headers();
+      headers.set('Access-Control-Allow-Origin', '*');
+      headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      headers.set('Access-Control-Allow-Headers', 'Range, Content-Type');
+      headers.set('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
+      headers.set('Content-Type', object.httpMetadata?.contentType || 'audio/mpeg');
+      headers.set('Accept-Ranges', 'bytes');
+      headers.set('Cache-Control', 'public, max-age=86400');
+      // Content-Range 헤더 설정
+      if (object.range && object.size) {
+        const { offset = 0, length = object.size } = object.range as any;
+        headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${object.size}`);
+        headers.set('Content-Length', String(length));
+      }
+      return new Response(object.body, { status: 206, headers });
+    }
+
+    // 일반 요청
+    const object = await c.env.R2.get(key);
+    if (!object) return c.json({ error: 'Not found' }, 404);
+    const headers = new Headers();
+    headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Range, Content-Type');
+    headers.set('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
+    headers.set('Content-Type', object.httpMetadata?.contentType || 'audio/mpeg');
+    headers.set('Accept-Ranges', 'bytes');
+    headers.set('Content-Length', String(object.size));
+    headers.set('Cache-Control', 'public, max-age=86400');
+    return new Response(object.body, { status: 200, headers });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+app.options('/api/audio/:filename', (c) => {
+  return new Response(null, {
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD',
+      'Access-Control-Allow-Headers': '*',
+    }
+  });
+});
+
+// 카페 채널 개설
+app.post('/api/cafe/channel', async (c) => {
+  try {
+    const { channel_id, name, owner_id, biz_no, owner_name, addr, addr_detail, description, playlist, schedules } = await c.req.json();
+    if (!channel_id || !name || !owner_id) return c.json({ error: '필수 항목 누락' }, 400);
+
+    // 채널 ID 중복 확인
+    const exists = await c.env.DB.prepare('SELECT id FROM cafe_channels WHERE channel_id=?').bind(channel_id).first();
+    if (exists) return c.json({ error: '이미 사용 중인 채널 ID입니다' }, 409);
+
+    // 유저 TL 잔액 확인
+    const user = await c.env.DB.prepare('SELECT id, tl FROM users WHERE id=?').bind(owner_id).first();
+    if (!user) return c.json({ error: '유저를 찾을 수 없습니다' }, 404);
+    if ((user.tl as number) < 50000) return c.json({ error: 'TL 잔액 부족 (필요: 50,000 TL)' }, 402);
+
+    // TL 차감
+    await c.env.DB.prepare('UPDATE users SET tl=tl-50000 WHERE id=?').bind(owner_id).run();
+
+    // 채널 생성
+    const now = new Date().toISOString().replace('T',' ').substring(0,19);
+    const expires = new Date(Date.now()+30*24*60*60*1000).toISOString().replace('T',' ').substring(0,19);
+    await c.env.DB.prepare(
+      'INSERT INTO cafe_channels (channel_id, name, owner_id, biz_no, owner_name, addr, addr_detail, description, playlist, schedules, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+    ).bind(channel_id, name, owner_id, biz_no||'', owner_name||'', addr||'', addr_detail||'', description||'', JSON.stringify(playlist||[]), JSON.stringify(schedules||[]), now, expires).run();
+
+    // 업데이트된 유저 TL 반환
+    const updated = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance, tlc FROM users WHERE id=?').bind(owner_id).first();
+    return c.json({ ok: true, channel_id, expires_at: expires, user: updated });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 카페 채널 목록
+app.get('/api/cafe/channels', async (c) => {
+  try {
+    const result = await c.env.DB.prepare('SELECT * FROM cafe_channels WHERE is_active=1 ORDER BY created_at DESC').all();
+    return c.json({ channels: result.results || [] });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 내 카페 채널 조회
+app.get('/api/cafe/channel/:owner_id', async (c) => {
+  try {
+    const owner_id = c.req.param('owner_id');
+    const result = await c.env.DB.prepare('SELECT * FROM cafe_channels WHERE owner_id=? AND is_active=1 ORDER BY created_at DESC').bind(owner_id).all();
+    return c.json({ channels: result.results || [] });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 워터마크 로그
+app.post('/api/wm/log', async (c) => {
+  try {
+    const { share_id, user_id, device_fp, wm_freq, played_at, ua } = await c.req.json();
+    await c.env.DB.prepare('INSERT INTO wm_logs (share_id,user_id,device_fp,wm_freq,played_at,ua) VALUES (?,?,?,?,?,?)')
+      .bind(share_id||'',user_id||0,device_fp||'',wm_freq||0,played_at||'',ua||'').run();
+    return c.json({ ok: true });
+  } catch(e: any) { return c.json({ error: e.message }, 500); }
+});
+
+app.get('/api/wm/logs/:share_id', async (c) => {
+  try {
+    const result = await c.env.DB.prepare('SELECT * FROM wm_logs WHERE share_id=? ORDER BY created_at DESC LIMIT 100').bind(c.req.param('share_id')).all();
+    return c.json({ logs: result.results || [] });
+  } catch(e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// 인카 채널 개설
+app.post('/api/incar/channel', async (c) => {
+  try {
+    const b = await c.req.json();
+    const exp = new Date(Date.now()+30*24*60*60*1000).toISOString();
+    await c.env.DB.prepare(
+      'INSERT INTO incar_channels (channel_id,name,owner_id,owner_name,car_plate,car_type,drive_region,description,theme,playlist,schedules,poc_index_at_creation,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)'
+    ).bind(b.channel_id,b.name,b.owner_id,b.owner_name,b.car_plate||'',b.car_type||'',b.drive_region||'',b.description||'',b.theme||'city',b.playlist||'[]',b.schedules||'[]',b.poc_index_at_creation||1.0,exp).run();
+    return c.json({ok:true});
+  } catch(e:any){ return c.json({error:e.message},500); }
+});
+
+// 인카 채널 목록
+app.get('/api/incar/channels', async (c) => {
+  try {
+    const r = await c.env.DB.prepare('SELECT * FROM incar_channels WHERE is_active=1 ORDER BY created_at DESC').all();
+    return c.json({channels: r.results||[]});
+  } catch(e:any){ return c.json({error:e.message},500); }
+});
+
+// 워터마크 로그
+app.post('/api/wm/log', async (c) => {
+  try {
+    const { share_id, user_id, device_fp, wm_freq, played_at, ua } = await c.req.json();
+    await c.env.DB.prepare('INSERT INTO wm_logs (share_id,user_id,device_fp,wm_freq,played_at,ua) VALUES (?,?,?,?,?,?)')
+      .bind(share_id||'',user_id||0,device_fp||'',wm_freq||0,played_at||'',ua||'').run();
+    return c.json({ ok: true });
+  } catch(e:any) { return c.json({ error: e.message }, 500); }
+});
+
+// 유저-파일 TL 충전 (1:1)
+app.post('/api/shares/:id/charge', async (c) => {
+  try {
+    const share_id = c.req.param('id');
+    const { amount, user_id, email } = await c.req.json();
+    if(!amount || amount <= 0) return c.json({error:'Invalid amount'}, 400);
+    // 유저 TL 차감
+    await c.env.DB.prepare('UPDATE users SET tl=tl-? WHERE id=? AND tl>=?')
+      .bind(amount, user_id, amount).run();
+    // 파일별 TL 적립
+    await c.env.DB.prepare(`INSERT INTO tl_user_files (user_id,share_id,tl_balance,total_charged)
+      VALUES (?,?,?,?) ON CONFLICT(user_id,share_id) DO UPDATE SET
+      tl_balance=tl_balance+excluded.tl_balance,
+      total_charged=total_charged+excluded.total_charged,
+      updated_at=datetime('now')`)
+      .bind(user_id, share_id, amount, amount).run();
+    // 파일 전체 pulse 증가
+    await c.env.DB.prepare('UPDATE tl_shares SET pulse=pulse+1 WHERE id=?').bind(share_id).run();
+    const row = await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user_id, share_id).first();
+    return c.json({ok:true, user_tl: row?.tl_balance || 0});
+  } catch(e:any){ return c.json({error:e.message},500); }
+});
+
+// 유저-파일 TL 소비 (재생 시)
+app.post('/api/shares/:id/consume', async (c) => {
+  try {
+    const share_id = c.req.param('id');
+    const { seconds, user_id } = await c.req.json();
+    if(!user_id) return c.json({error:'user_id required'},400);
+    const consume = seconds || 5;
+    await c.env.DB.prepare(`UPDATE tl_user_files SET
+      tl_balance=MAX(0,tl_balance-?),
+      total_consumed=total_consumed+?,
+      last_played=datetime('now'),
+      updated_at=datetime('now')
+      WHERE user_id=? AND share_id=?`)
+      .bind(consume, consume, user_id, share_id).run();
+    // 크리에이터에게 수익 배분 (플랜에 따라)
+    const share = await c.env.DB.prepare('SELECT user_id,plan FROM tl_shares WHERE id=?').bind(share_id).first();
+    if(share){
+      const rate = share.plan==='B' ? 0.5 : 0.7;
+      const earn = Math.floor(consume * rate);
+      if(earn>0) await c.env.DB.prepare('UPDATE users SET tl=tl+? WHERE id=?').bind(earn, share.user_id).run();
+    }
+    const row = await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user_id, share_id).first();
+    return c.json({ok:true, user_tl: row?.tl_balance || 0});
+  } catch(e:any){ return c.json({error:e.message},500); }
+});
+
+// 내 파일별 TL 잔량 조회
+app.get('/api/user/file-tl', async (c) => {
+  try {
+    const user_id = c.req.query('user_id');
+    if(!user_id) return c.json({error:'user_id required'},400);
+    const result = await c.env.DB.prepare('SELECT share_id, tl_balance, total_charged, total_consumed FROM tl_user_files WHERE user_id=? AND tl_balance>0').bind(user_id).all();
+    return c.json({files: result.results || []});
+  } catch(e:any){ return c.json({error:e.message},500); }
+});
+
+// 유저-파일 TL 충전 (1:1)
+app.post('/api/shares/:id/charge', async (c) => {
+  try {
+    const share_id = c.req.param('id');
+    const { amount, user_id, email } = await c.req.json();
+    if(!amount || amount <= 0) return c.json({error:'Invalid amount'}, 400);
+    // 유저 TL 차감
+    await c.env.DB.prepare('UPDATE users SET tl=tl-? WHERE id=? AND tl>=?')
+      .bind(amount, user_id, amount).run();
+    // 파일별 TL 적립
+    await c.env.DB.prepare(`INSERT INTO tl_user_files (user_id,share_id,tl_balance,total_charged)
+      VALUES (?,?,?,?) ON CONFLICT(user_id,share_id) DO UPDATE SET
+      tl_balance=tl_balance+excluded.tl_balance,
+      total_charged=total_charged+excluded.total_charged,
+      updated_at=datetime('now')`)
+      .bind(user_id, share_id, amount, amount).run();
+    // 파일 전체 pulse 증가
+    await c.env.DB.prepare('UPDATE tl_shares SET pulse=pulse+1 WHERE id=?').bind(share_id).run();
+    const row = await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user_id, share_id).first();
+    return c.json({ok:true, user_tl: row?.tl_balance || 0});
+  } catch(e:any){ return c.json({error:e.message},500); }
+});
+
+// 유저-파일 TL 소비 (재생 시)
+app.post('/api/shares/:id/consume', async (c) => {
+  try {
+    const share_id = c.req.param('id');
+    const { seconds, user_id } = await c.req.json();
+    if(!user_id) return c.json({error:'user_id required'},400);
+    const consume = seconds || 5;
+    await c.env.DB.prepare(`UPDATE tl_user_files SET
+      tl_balance=MAX(0,tl_balance-?),
+      total_consumed=total_consumed+?,
+      last_played=datetime('now'),
+      updated_at=datetime('now')
+      WHERE user_id=? AND share_id=?`)
+      .bind(consume, consume, user_id, share_id).run();
+    // 크리에이터에게 수익 배분 (플랜에 따라)
+    const share = await c.env.DB.prepare('SELECT user_id,plan FROM tl_shares WHERE id=?').bind(share_id).first();
+    if(share){
+      const rate = share.plan==='B' ? 0.5 : 0.7;
+      const earn = Math.floor(consume * rate);
+      if(earn>0) await c.env.DB.prepare('UPDATE users SET tl=tl+? WHERE id=?').bind(earn, share.user_id).run();
+    }
+    const row = await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user_id, share_id).first();
+    return c.json({ok:true, user_tl: row?.tl_balance || 0});
+  } catch(e:any){ return c.json({error:e.message},500); }
+});
+
+// 내 파일별 TL 잔량 조회
+app.get('/api/user/file-tl', async (c) => {
+  try {
+    const user_id = c.req.query('user_id');
+    if(!user_id) return c.json({error:'user_id required'},400);
+    const result = await c.env.DB.prepare('SELECT share_id, tl_balance, total_charged, total_consumed FROM tl_user_files WHERE user_id=? AND tl_balance>0').bind(user_id).all();
+    return c.json({files: result.results || []});
+  } catch(e:any){ return c.json({error:e.message},500); }
+});
+
+// ── 활동 보고: TL소비 + POC 누적 → 기여지수 갱신 ──────────
+app.post('/api/user/activity', async (c) => {
+  try {
+    const { user_id, mode, seconds, tl_spent, poc_gained, poc_total } = await c.req.json();
+
+    // 1. TL 소비량 DB 반영
+    if(tl_spent > 0){
+      await c.env.DB.prepare(
+        'UPDATE users SET tl=MAX(0,tl-?), total_tl_spent=total_tl_spent+? WHERE id=?'
+      ).bind(tl_spent, tl_spent, user_id).run();
+    }
+
+    // 2. POC 누적 기록
+    const modeCol = mode === 'incar' ? 'poc_drive' : 'poc_cafe';
+    await c.env.DB.prepare(`
+      INSERT INTO poc_logs (user_id, mode, seconds, tl_spent, poc_gained, created_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+    `).bind(user_id, mode, seconds, tl_spent, poc_gained).run();
+
+    // 3. 기여지수 재계산
+    // poc_index = 1 + (누적 POC ÷ 100)
+    const logRow = await c.env.DB.prepare(
+      'SELECT SUM(poc_gained) as total_poc FROM poc_logs WHERE user_id=?'
+    ).bind(user_id).first();
+    const totalPoc = Number(logRow?.total_poc || 0);
+    const pocIndex = Math.max(1.0, 1 + totalPoc / 100);
+
+    await c.env.DB.prepare(
+      'UPDATE users SET poc_index=? WHERE id=?'
+    ).bind(pocIndex, user_id).run();
+
+    // 4. TLC 채굴량 계산 (실시간 반영 아님 — 유저가 채굴 버튼 누를 때 확정)
+    const userRow = await c.env.DB.prepare(
+      'SELECT total_tl_spent, total_tl_exchanged FROM users WHERE id=?'
+    ).bind(user_id).first();
+    const spent = Number(userRow?.total_tl_spent || 0);
+    const exchanged = Number(userRow?.total_tl_exchanged || 0);
+    const mineableTlc = Math.max(0, (spent - exchanged) * 0.5 * pocIndex);
+
+    return c.json({
+      ok: true,
+      poc_index: pocIndex,
+      total_poc: totalPoc,
+      total_tl_spent: spent,
+      mineable_tlc: mineableTlc
+    });
+  } catch(e: any){ return c.json({error: e.message}, 500); }
+});
+
+// ── TLC 채굴 확정 ────────────────────────────────────────────
+app.post('/api/user/mine-tlc', async (c) => {
+  try {
+    const { user_id, tlc_amount } = await c.req.json();
+    if(!tlc_amount || tlc_amount <= 0) return c.json({error:'채굴량 없음'}, 400);
+
+    // 이미 채굴된 TLC 중복 방지: 오늘 채굴 내역 확인
+    const today = new Date().toISOString().slice(0,10);
+    const already = await c.env.DB.prepare(
+      "SELECT SUM(tlc_mined) as mined FROM tlc_mining_logs WHERE user_id=? AND DATE(created_at)=?"
+    ).bind(user_id, today).first();
+    const todayMined = Number(already?.mined || 0);
+
+    // 최대 채굴 가능량 재계산
+    const userRow = await c.env.DB.prepare(
+      'SELECT total_tl_spent, total_tl_exchanged, poc_index, tlc FROM users WHERE id=?'
+    ).bind(user_id).first();
+    const spent = Number(userRow?.total_tl_spent || 0);
+    const exchanged = Number(userRow?.total_tl_exchanged || 0);
+    const pocIndex = Number(userRow?.poc_index || 1.0);
+    const maxMineable = Math.max(0, (spent - exchanged) * 0.5 * pocIndex);
+    const actualMine = Math.min(tlc_amount, maxMineable - todayMined);
+
+    if(actualMine <= 0) return c.json({error:'오늘 채굴 한도 초과', mined: 0});
+
+    // TLC 지급 + 로그
+    await c.env.DB.prepare(
+      'UPDATE users SET tlc=tlc+? WHERE id=?'
+    ).bind(actualMine, user_id).run();
+    await c.env.DB.prepare(
+      'INSERT INTO tlc_mining_logs (user_id, tlc_mined, poc_index, created_at) VALUES (?,?,?,datetime("now"))'
+    ).bind(user_id, actualMine, pocIndex).run();
+
+    return c.json({ ok: true, mined: actualMine, tlc_total: Number(userRow?.tlc||0) + actualMine });
+  } catch(e: any){ return c.json({error: e.message}, 500); }
+});
 export default app;
+
+
+
+
+
+
+
+
+
+
+
+
+
