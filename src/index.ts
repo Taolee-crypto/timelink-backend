@@ -371,18 +371,7 @@ app.post('/api/shares/:id/pulse', async (c) => {
   } catch (e) { return c.json({ ok: true, pulse: 0 }); }
 });
 
-app.post('/api/shares/:id/consume', async (c) => {
-  try {
-    const body = await c.req.json<any>();
-    const seconds = Number(body.seconds || 1);
-    await c.env.DB.prepare(
-      'UPDATE tl_shares SET file_tl=MAX(0, file_tl-?), pulse=pulse+? WHERE id=?'
-    ).bind(seconds, seconds, c.req.param('id')).run();
-    const row = await c.env.DB.prepare('SELECT file_tl, pulse FROM tl_shares WHERE id=?')
-      .bind(c.req.param('id')).first<any>();
-    return c.json({ ok: true, file_tl: row?.file_tl || 0, pulse: row?.pulse || 0 });
-  } catch(e: any) { return c.json({ ok: false, error: e.message }, 500); }
-});
+// consume v1 제거됨 — tl_user_files 기반 v2 사용
 
 app.post('/api/shares/:id/charge', async (c) => {
   try {
