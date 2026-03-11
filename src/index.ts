@@ -522,32 +522,73 @@ app.post('/api/auth/signup', async (c) => {
   }
 });
 
-// 오디오 프록시 (CORS 우회)
+// 오디오 프록시 — Range 스트리밍 (CORS + 대용량 WAV/FLAC 지원)
+app.options('/api/audio/:filename', (c) => new Response(null, { headers: {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+  'Access-Control-Allow-Headers': 'Range, Content-Type',
+}}));
+
 app.get('/api/audio/:filename', async (c) => {
   try {
     const filename = c.req.param('filename');
-    const object = await c.env.R2.get('tracks/' + filename);
-    if (!object) return c.json({ error: 'Not found' }, 404);
-    const headers = new Headers();
-    headers.set('Access-Control-Allow-Origin', '*');
-    headers.set('Access-Control-Allow-Methods', 'GET, HEAD');
-    headers.set('Content-Type', object.httpMetadata?.contentType || 'audio/mpeg');
-    headers.set('Accept-Ranges', 'bytes');
-    headers.set('Cache-Control', 'public, max-age=86400');
-    return new Response(object.body, { headers });
+    const key = 'tracks/' + filename;
+    const rangeHeader = c.req.header('Range');
+
+    const cors: Record<string,string> = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range, Content-Type',
+      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+      'Cache-Control': 'public, max-age=86400',
+      'Accept-Ranges': 'bytes',
+    };
+
+    if (rangeHeader) {
+      // Range 요청: bytes=start- 또는 bytes=start-end
+      const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      if (!m) return new Response('Invalid Range', { status: 416 });
+
+      // head로 전체 크기 확인
+      const meta = await c.env.R2.head(key);
+      if (!meta) return c.json({ error: 'Not found' }, 404);
+
+      const total = meta.size;
+      const start = parseInt(m[1]);
+      const end   = m[2] ? parseInt(m[2]) : total - 1;
+      const length = end - start + 1;
+
+      // R2에서 해당 구간만 스트리밍 (메모리 적재 없음)
+      const obj = await c.env.R2.get(key, { range: { offset: start, length } });
+      if (!obj) return c.json({ error: 'Not found' }, 404);
+
+      return new Response(obj.body, {
+        status: 206,
+        headers: {
+          ...cors,
+          'Content-Type': meta.httpMetadata?.contentType || 'audio/mpeg',
+          'Content-Range': `bytes ${start}-${end}/${total}`,
+          'Content-Length': String(length),
+        },
+      });
+    }
+
+    // Range 없는 첫 요청 — 전체 스트리밍
+    const obj = await c.env.R2.get(key);
+    if (!obj) return c.json({ error: 'Not found' }, 404);
+
+    return new Response(obj.body, {
+      status: 200,
+      headers: {
+        ...cors,
+        'Content-Type': obj.httpMetadata?.contentType || 'audio/mpeg',
+        'Content-Length': String(obj.size),
+      },
+    });
+
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
-});
-
-app.options('/api/audio/:filename', (c) => {
-  return new Response(null, {
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD',
-      'Access-Control-Allow-Headers': '*',
-    }
-  });
 });
 
 // 카페 채널 개설
