@@ -496,7 +496,7 @@ app.post('/api/auth/signup', async (c) => {
   }
 });
 
-// 오디오 프록시 — Range 스트리밍
+// 오디오 프록시 — Workers ReadableStream (메모리 무관)
 app.options('/api/audio/:filename', (c) => new Response(null, { headers: {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
@@ -519,51 +519,49 @@ app.get('/api/audio/:filename', async (c) => {
       'Cache-Control': 'public, max-age=3600',
     };
 
-    // 파일 메타 조회 (크기 확인)
-    const meta = await c.env.R2.head(key);
-    if (!meta) return c.json({ error: 'Not found' }, 404);
-
-    const total = meta.size;
-    const contentType = meta.httpMetadata?.contentType || 'audio/mpeg';
-
     if (rangeHeader) {
       const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
       if (!m) return new Response('Invalid Range', { status: 416 });
 
+      const meta = await c.env.R2.head(key);
+      if (!meta) return c.json({ error: 'Not found' }, 404);
+
+      const total = meta.size;
       const start = parseInt(m[1]);
-      // 청크 크기: 요청한 end 또는 최대 8MB
-      const MAX = 8 * 1024 * 1024;
-      const reqEnd = m[2] !== '' ? parseInt(m[2]) : start + MAX - 1;
-      const end = Math.min(reqEnd, total - 1);
+      const end = m[2] !== '' ? Math.min(parseInt(m[2]), total - 1) : total - 1;
       const length = end - start + 1;
 
+      // R2 body = ReadableStream, Workers 메모리에 적재되지 않음
       const obj = await c.env.R2.get(key, { range: { offset: start, length } });
       if (!obj) return c.json({ error: 'Not found' }, 404);
 
       return new Response(obj.body, {
         status: 206,
-        headers: { ...cors, 'Content-Type': contentType,
+        headers: { ...cors,
+          'Content-Type': meta.httpMetadata?.contentType || 'audio/mpeg',
           'Content-Range': `bytes ${start}-${end}/${total}`,
-          'Content-Length': String(length) },
+          'Content-Length': String(length),
+        },
       });
     }
 
-    // Range 없는 첫 요청 → 첫 8MB만 반환, 브라우저가 이후 Range로 요청
-    const initSize = Math.min(8 * 1024 * 1024, total);
-    const obj = await c.env.R2.get(key, { range: { offset: 0, length: initSize } });
+    // Range 없는 요청 — 전체 스트리밍 (body는 ReadableStream)
+    const obj = await c.env.R2.get(key);
     if (!obj) return c.json({ error: 'Not found' }, 404);
 
     return new Response(obj.body, {
-      status: 206,
-      headers: { ...cors, 'Content-Type': contentType,
-        'Content-Range': `bytes 0-${initSize - 1}/${total}`,
-        'Content-Length': String(initSize) },
+      status: 200,
+      headers: { ...cors,
+        'Content-Type': obj.httpMetadata?.contentType || 'audio/mpeg',
+        'Content-Length': String(obj.size),
+      },
     });
 
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
 });
+
 
 // 카페 채널 개설
 app.post('/api/cafe/channel', async (c) => {
