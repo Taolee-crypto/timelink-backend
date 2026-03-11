@@ -529,20 +529,58 @@ app.post('/api/auth/signup', async (c) => {
   }
 });
 
-// 오디오 프록시 — R2 직접 스트리밍 (Workers 메모리 0 사용)
-// 방식: Workers는 파일 존재 확인만 → 302 redirect → 브라우저가 R2에서 직접 수신
+// 오디오 프록시 — Workers 스트리밍 (Range 지원)
 app.get('/api/audio/:filename', async (c) => {
   try {
     const filename = c.req.param('filename');
     const key = 'tracks/' + filename;
+    const rangeHeader = c.req.header('Range');
 
-    // 파일 존재 확인 (head만 — 본문 로드 없음)
+    const cors: Record<string,string> = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range, Content-Type',
+      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+      'Cache-Control': 'public, max-age=3600',
+      'Accept-Ranges': 'bytes',
+    };
+
+    if (rangeHeader) {
+      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      if (!match) return new Response('Invalid Range', { status: 416 });
+      const start = parseInt(match[1]);
+
+      // size 파악을 위해 head 먼저
+      const meta = await c.env.R2.head(key);
+      if (!meta) return c.json({ error: 'Not found' }, 404);
+      const total = meta.size;
+      const end = match[2] !== '' ? Math.min(parseInt(match[2]), total - 1) : Math.min(start + 2 * 1024 * 1024, total - 1);
+      const length = end - start + 1;
+
+      const obj = await c.env.R2.get(key, { range: { offset: start, length } });
+      if (!obj) return c.json({ error: 'Not found' }, 404);
+
+      const h = new Headers(cors);
+      h.set('Content-Type', meta.httpMetadata?.contentType || 'audio/mpeg');
+      h.set('Content-Range', `bytes ${start}-${end}/${total}`);
+      h.set('Content-Length', String(length));
+      return new Response(obj.body, { status: 206, headers: h });
+    }
+
+    // 일반 요청 — 첫 2MB만 반환 후 브라우저가 Range로 이어받음
     const meta = await c.env.R2.head(key);
     if (!meta) return c.json({ error: 'Not found' }, 404);
+    const total = meta.size;
+    const chunkEnd = Math.min(2 * 1024 * 1024 - 1, total - 1);
 
-    // R2 Public URL로 직접 redirect (브라우저가 R2에서 스트리밍)
-    const r2PublicUrl = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${key}`;
-    return c.redirect(r2PublicUrl, 302);
+    const obj = await c.env.R2.get(key, { range: { offset: 0, length: chunkEnd + 1 } });
+    if (!obj) return c.json({ error: 'Not found' }, 404);
+
+    const h = new Headers(cors);
+    h.set('Content-Type', meta.httpMetadata?.contentType || 'audio/mpeg');
+    h.set('Content-Range', `bytes 0-${chunkEnd}/${total}`);
+    h.set('Content-Length', String(chunkEnd + 1));
+    return new Response(obj.body, { status: 206, headers: h });
 
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
