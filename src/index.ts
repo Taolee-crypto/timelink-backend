@@ -496,11 +496,12 @@ app.post('/api/auth/signup', async (c) => {
   }
 });
 
-// 오디오 프록시 — Range 스트리밍 (CORS + 대용량 WAV/FLAC 지원)
+// 오디오 프록시 — R2 네이티브 Range 스트리밍
 app.options('/api/audio/:filename', (c) => new Response(null, { headers: {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
   'Access-Control-Allow-Headers': 'Range, Content-Type',
+  'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
 }}));
 
 app.get('/api/audio/:filename', async (c) => {
@@ -509,57 +510,46 @@ app.get('/api/audio/:filename', async (c) => {
     const key = 'tracks/' + filename;
     const rangeHeader = c.req.header('Range');
 
-    const cors: Record<string,string> = {
+    const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
       'Access-Control-Allow-Headers': 'Range, Content-Type',
       'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
-      'Cache-Control': 'public, max-age=86400',
       'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=3600',
     };
 
-    if (rangeHeader) {
-      // Range 요청: bytes=start- 또는 bytes=start-end
-      const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-      if (!m) return new Response('Invalid Range', { status: 416 });
+    // R2에 Range 헤더 문자열 직접 전달 (R2가 파싱+청크 분할 담당)
+    const obj = await c.env.R2.get(key, rangeHeader ? { range: rangeHeader } : undefined);
+    if (!obj) return c.json({ error: 'Not found' }, 404);
 
-      // head로 전체 크기 확인
-      const meta = await c.env.R2.head(key);
-      if (!meta) return c.json({ error: 'Not found' }, 404);
+    const contentType = obj.httpMetadata?.contentType || 'audio/mpeg';
 
-      const total = meta.size;
-      const start = parseInt(m[1]);
-      // 최대 5MB 청크 — Workers 메모리 초과 방지
-      // 브라우저가 자동으로 다음 Range 요청을 보냄
-      const MAX_CHUNK = 5 * 1024 * 1024;
-      const reqEnd = m[2] !== '' ? parseInt(m[2]) : total - 1;
-      const end = Math.min(reqEnd, start + MAX_CHUNK - 1, total - 1);
-      const length = end - start + 1;
-
-      // R2에서 해당 구간만 스트리밍 (메모리 적재 없음)
-      const obj = await c.env.R2.get(key, { range: { offset: start, length } });
-      if (!obj) return c.json({ error: 'Not found' }, 404);
+    if (rangeHeader && (obj as any).range) {
+      // R2가 반환한 range 정보로 Content-Range 구성
+      const r = (obj as any).range as { offset?: number; length?: number; suffix?: number };
+      const total = obj.size;
+      let start = r.offset ?? 0;
+      let length = r.length ?? total;
+      let end = start + length - 1;
 
       return new Response(obj.body, {
         status: 206,
         headers: {
-          ...cors,
-          'Content-Type': meta.httpMetadata?.contentType || 'audio/mpeg',
+          ...corsHeaders,
+          'Content-Type': contentType,
           'Content-Range': `bytes ${start}-${end}/${total}`,
           'Content-Length': String(length),
         },
       });
     }
 
-    // Range 없는 첫 요청 — 전체 스트리밍
-    const obj = await c.env.R2.get(key);
-    if (!obj) return c.json({ error: 'Not found' }, 404);
-
+    // Range 없는 일반 요청
     return new Response(obj.body, {
       status: 200,
       headers: {
-        ...cors,
-        'Content-Type': obj.httpMetadata?.contentType || 'audio/mpeg',
+        ...corsHeaders,
+        'Content-Type': contentType,
         'Content-Length': String(obj.size),
       },
     });
