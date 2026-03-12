@@ -470,17 +470,32 @@ app.post('/api/auth/login', async (c) => {
   }
 });
 
+// 이메일 중복 확인
+app.post('/api/auth/check-email', async (c) => {
+  try {
+    const { email } = await c.req.json();
+    if (!email) return c.json({ error: '이메일 필요' }, 400);
+    const row = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
+    return c.json({ exists: !!row });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
 // 회원가입 (signup)
 app.post('/api/auth/signup', async (c) => {
   try {
     const { email, password, username } = await c.req.json();
     if (!email || !username) return c.json({ error: '필수 항목 누락' }, 400);
 
+    // 이메일 중복 체크 — 이미 가입된 이메일이면 에러 반환
     const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
     if (exists) {
-      const user = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance, tlc_balance as tlc FROM users WHERE email=?').bind(email).first();
-      const token = 'token_' + user.id + '_' + Date.now();
-      return c.json({ ok: true, token, user });
+      return c.json({ error: '이미 가입된 이메일입니다. 로그인을 이용해 주세요.' }, 409);
+    }
+
+    // 사용자명 중복 체크
+    const nameExists = await c.env.DB.prepare('SELECT id FROM users WHERE username=?').bind(username).first();
+    if (nameExists) {
+      return c.json({ error: '이미 사용 중인 닉네임입니다.' }, 409);
     }
 
     const now = new Date().toISOString().replace('T',' ').substring(0,19);
