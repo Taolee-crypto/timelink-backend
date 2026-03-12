@@ -822,6 +822,66 @@ app.post('/api/user/mine-tlc', async (c) => {
     return c.json({ ok: true, mined: actualMine, tlc_total: Number(userRow?.tlc||0) + actualMine });
   } catch(e: any){ return c.json({error: e.message}, 500); }
 });
+
+// ── 차트 API ─────────────────────────────────────────────────────────────
+
+// 음악/영상/문서 pulse 차트
+app.get('/api/chart', async (c) => {
+  try {
+    const type = c.req.query('type') || 'music';   // music | video | doc | image | tl
+    const genre = c.req.query('genre') || 'all';   // all | Kpop | Pop | Hiphop | RnB | Rock | Classic | Jazz | EDM | etc
+    const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50);
+
+    let rows;
+
+    if (type === 'tl') {
+      // TL 충전 많은 순 (tl_user_files 집계)
+      const res = await c.env.DB.prepare(`
+        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type,
+               s.duration, s.cover_url, s.pulse, s.file_tl,
+               COALESCE(u.username, s.username, 'User') as username,
+               COALESCE(SUM(uf.total_charged), 0) as total_tl_charged
+        FROM tl_shares s
+        LEFT JOIN users u ON CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT)
+        LEFT JOIN tl_user_files uf ON s.id = uf.share_id
+        GROUP BY s.id
+        ORDER BY total_tl_charged DESC, s.pulse DESC
+        LIMIT ?
+      `).bind(limit).all();
+      rows = res.results;
+
+    } else {
+      // 타입별 필터
+      let typeFilter = '';
+      if (type === 'music') typeFilter = `AND (s.file_type LIKE 'audio/%' OR s.category IN ('Music','K-Pop','팝','Kpop','Pop','힙합','Hiphop','R&B','록','Rock','클래식','Classic','재즈','Jazz','EDM','인디','Indie'))`;
+      else if (type === 'video') typeFilter = `AND (s.file_type LIKE 'video/%' OR s.category IN ('Video','영상','뮤직비디오','MV','드라마','영화','예능'))`;
+      else if (type === 'doc') typeFilter = `AND (s.file_type LIKE 'application/%' OR s.file_type LIKE 'text/%' OR s.category IN ('Document','문서','전자책','Ebook','강의','Lecture'))`;
+      else if (type === 'image') typeFilter = `AND (s.file_type LIKE 'image/%' OR s.category IN ('Image','이미지','사진','Art','아트'))`;
+
+      // 장르 필터
+      let genreFilter = '';
+      if (genre !== 'all') genreFilter = `AND s.category = '${genre.replace(/'/g,"''")}'`;
+
+      const res = await c.env.DB.prepare(`
+        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type,
+               s.duration, s.cover_url, s.pulse, s.file_tl,
+               COALESCE(u.username, s.username, 'User') as username,
+               COALESCE(SUM(uf.total_charged), 0) as total_tl_charged
+        FROM tl_shares s
+        LEFT JOIN users u ON CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT)
+        LEFT JOIN tl_user_files uf ON s.id = uf.share_id
+        WHERE 1=1 ${typeFilter} ${genreFilter}
+        GROUP BY s.id
+        ORDER BY s.pulse DESC, total_tl_charged DESC
+        LIMIT ?
+      `).bind(limit).all();
+      rows = res.results;
+    }
+
+    return c.json({ ok: true, chart: rows || [] });
+  } catch(e: any) { return c.json({ error: e.message }, 500); }
+});
+
 export default app;
 
 

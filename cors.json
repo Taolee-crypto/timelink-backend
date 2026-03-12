@@ -1,1 +1,1 @@
-[{"allowedOrigins":["*"],"allowedMethods":["GET","HEAD"],"allowedHeaders":["*"],"maxAgeSeconds":86400}]
+{"rules":[{"AllowedOrigins":["https://www.timelink.digital","https://timelink.digital"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["Range","Content-Type","Origin"],"ExposeHeaders":["Content-Range","Content-Length","Accept-Ranges"],"MaxAgeSeconds":86400}]}
