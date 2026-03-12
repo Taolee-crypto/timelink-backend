@@ -740,24 +740,64 @@ app.get('/api/user/file-tl', async (c) => {
 // ── 활동 보고: TL소비 + POC 누적 → 기여지수 갱신 ──────────
 app.post('/api/user/activity', async (c) => {
   try {
-    const { user_id, mode, seconds, tl_spent, poc_gained, poc_total } = await c.req.json();
+    const { user_id, mode, seconds, tl_spent, poc_gained, poc_total,
+            share_id, tl_mode } = await c.req.json();
 
     // 1. TL 소비량 DB 반영
     if(tl_spent > 0){
-      await c.env.DB.prepare(
-        'UPDATE users SET tl=MAX(0,tl-?), total_tl_spent=total_tl_spent+? WHERE id=?'
-      ).bind(tl_spent, tl_spent, user_id).run();
+      if(tl_mode === 'file' && share_id){
+        // 곡별 충전 TL 차감 (tl_user_files)
+        await c.env.DB.prepare(
+          'UPDATE tl_user_files SET tl_balance=MAX(0,tl_balance-?), total_consumed=total_consumed+? WHERE user_id=? AND share_id=?'
+        ).bind(tl_spent, tl_spent, user_id, share_id).run();
+
+        // 크리에이터 수익 분배 (plan A=70%, B=50%)
+        const shareRow = await c.env.DB.prepare(
+          'SELECT user_id as creator_id, plan FROM tl_shares WHERE id=?'
+        ).bind(share_id).first();
+        if(shareRow){
+          const ratio = shareRow.plan === 'B' ? 0.5 : 0.7;
+          const creatorEarn = Math.floor(tl_spent * ratio);
+          if(creatorEarn > 0){
+            await c.env.DB.prepare(
+              'UPDATE users SET tl=tl+?, total_tl_earned=total_tl_earned+? WHERE id=?'
+            ).bind(creatorEarn, creatorEarn, shareRow.creator_id).run();
+            // pulse 증가
+            await c.env.DB.prepare(
+              'UPDATE tl_shares SET pulse=pulse+1 WHERE id=?'
+            ).bind(share_id).run();
+          }
+        }
+
+        // 유저 total_tl_spent 기록
+        await c.env.DB.prepare(
+          'UPDATE users SET total_tl_spent=total_tl_spent+? WHERE id=?'
+        ).bind(tl_spent, user_id).run();
+
+        // 잔여 file_tl 반환용
+        const fileTlRow = await c.env.DB.prepare(
+          'SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?'
+        ).bind(user_id, share_id).first();
+        var fileTlRemain = Number(fileTlRow?.tl_balance || 0);
+
+      } else {
+        // 총량 차감 (users.tl)
+        await c.env.DB.prepare(
+          'UPDATE users SET tl=MAX(0,tl-?), total_tl_spent=total_tl_spent+? WHERE id=?'
+        ).bind(tl_spent, tl_spent, user_id).run();
+      }
     }
 
-    // 2. POC 누적 기록
-    const modeCol = mode === 'incar' ? 'poc_drive' : 'poc_cafe';
-    await c.env.DB.prepare(`
-      INSERT INTO poc_logs (user_id, mode, seconds, tl_spent, poc_gained, created_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
-    `).bind(user_id, mode, seconds, tl_spent, poc_gained).run();
+    // 2. POC 누적 기록 (라디오 청취 = 기여 활동)
+    // tl_mode: 'file'(채널방송-곡별차감) | 'total'(중앙방송-총량차감) → 둘 다 기여 점수 적립
+    if(seconds > 0 || poc_gained > 0){
+      await c.env.DB.prepare(`
+        INSERT INTO poc_logs (user_id, mode, seconds, tl_spent, poc_gained, created_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+      `).bind(user_id, mode||'cafe', seconds||0, tl_spent||0, poc_gained||0).run();
+    }
 
-    // 3. 기여지수 재계산
-    // poc_index = 1 + (누적 POC ÷ 100)
+    // 3. 기여지수 재계산: poc_index = 1 + (누적 POC ÷ 100)
     const logRow = await c.env.DB.prepare(
       'SELECT SUM(poc_gained) as total_poc FROM poc_logs WHERE user_id=?'
     ).bind(user_id).first();
@@ -768,7 +808,7 @@ app.post('/api/user/activity', async (c) => {
       'UPDATE users SET poc_index=? WHERE id=?'
     ).bind(pocIndex, user_id).run();
 
-    // 4. TLC 채굴량 계산 (실시간 반영 아님 — 유저가 채굴 버튼 누를 때 확정)
+    // 4. TLC 채굴량 계산
     const userRow = await c.env.DB.prepare(
       'SELECT total_tl_spent, total_tl_exchanged FROM users WHERE id=?'
     ).bind(user_id).first();
@@ -781,7 +821,8 @@ app.post('/api/user/activity', async (c) => {
       poc_index: pocIndex,
       total_poc: totalPoc,
       total_tl_spent: spent,
-      mineable_tlc: mineableTlc
+      mineable_tlc: mineableTlc,
+      file_tl: typeof fileTlRemain !== 'undefined' ? fileTlRemain : undefined
     });
   } catch(e: any){ return c.json({error: e.message}, 500); }
 });
@@ -851,16 +892,16 @@ app.get('/api/chart', async (c) => {
       rows = res.results;
 
     } else {
-      // 타입별 필터
+      // 타입별 필터 — UPPER()로 대소문자 무시
       let typeFilter = '';
-      if (type === 'music') typeFilter = `AND (s.file_type LIKE 'audio/%' OR s.category IN ('Music','K-Pop','팝','Kpop','Pop','힙합','Hiphop','R&B','록','Rock','클래식','Classic','재즈','Jazz','EDM','인디','Indie'))`;
-      else if (type === 'video') typeFilter = `AND (s.file_type LIKE 'video/%' OR s.category IN ('Video','영상','뮤직비디오','MV','드라마','영화','예능'))`;
-      else if (type === 'doc') typeFilter = `AND (s.file_type LIKE 'application/%' OR s.file_type LIKE 'text/%' OR s.category IN ('Document','문서','전자책','Ebook','강의','Lecture'))`;
-      else if (type === 'image') typeFilter = `AND (s.file_type LIKE 'image/%' OR s.category IN ('Image','이미지','사진','Art','아트'))`;
+      if (type === 'music') typeFilter = `AND (s.file_type LIKE 'audio/%' OR UPPER(s.category) IN ('MUSIC','K-POP','KPOP','POP','팝','HIPHOP','힙합','R&B','록','ROCK','클래식','CLASSIC','재즈','JAZZ','EDM','인디','INDIE'))`;
+      else if (type === 'video') typeFilter = `AND (s.file_type LIKE 'video/%' OR UPPER(s.category) IN ('VIDEO','영상','뮤직비디오','MV','드라마','영화','예능'))`;
+      else if (type === 'doc') typeFilter = `AND (s.file_type LIKE 'application/%' OR s.file_type LIKE 'text/%' OR UPPER(s.category) IN ('DOCUMENT','문서','전자책','EBOOK','강의','LECTURE'))`;
+      else if (type === 'image') typeFilter = `AND (s.file_type LIKE 'image/%' OR UPPER(s.category) IN ('IMAGE','이미지','사진','ART','아트'))`;
 
-      // 장르 필터
+      // 장르 필터 — UPPER 비교
       let genreFilter = '';
-      if (genre !== 'all') genreFilter = `AND s.category = '${genre.replace(/'/g,"''")}'`;
+      if (genre !== 'all') genreFilter = `AND UPPER(s.category) = UPPER('${genre.replace(/'/g,"''")}')`;
 
       const res = await c.env.DB.prepare(`
         SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type,
