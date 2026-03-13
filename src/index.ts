@@ -9,6 +9,7 @@ import playbackRouter from './routes/playback';
 import shareplaceRouter from './routes/shareplace';
 import disputesRouter from './routes/disputes';
 import chartsRouter from './routes/charts';
+import paymentRouter from './payment';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -46,6 +47,7 @@ app.route('/api/v1/playback', playbackRouter);
 app.route('/api/v1/shareplace', shareplaceRouter);
 app.route('/api/v1/disputes', disputesRouter);
 app.route('/api/v1/charts', chartsRouter);
+app.route('/api/payment', paymentRouter);
 
 // GET /api/tracks
 app.get('/api/tracks', async (c) => {
