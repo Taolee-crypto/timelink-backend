@@ -822,9 +822,9 @@ app.post('/api/user/activity_legacy', async (c) => {
     // 3. 기여지수 재계산 (신 알고리즘: 4요소 가중합, 상한 5.0)
     const monthStart = new Date().toISOString().slice(0,7)+'-01';
     const mStats = await c.env.DB.prepare(
-      \`SELECT COALESCE(SUM(CASE WHEN mode='consume' THEN tl_spent ELSE 0 END),0) as monthly_tl_p,
+      `SELECT COALESCE(SUM(CASE WHEN mode='consume' THEN tl_spent ELSE 0 END),0) as monthly_tl_p,
               COALESCE(SUM(seconds),0) as total_sec
-       FROM poc_logs WHERE user_id=? AND created_at>=?\`
+       FROM poc_logs WHERE user_id=? AND created_at>=?`
     ).bind(user_id, monthStart).first() as any;
     const mPlays = await c.env.DB.prepare(
       "SELECT COUNT(*) as cnt FROM poc_logs WHERE user_id=? AND mode='listen' AND created_at>=?"
