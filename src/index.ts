@@ -758,8 +758,8 @@ app.get('/api/user/file-tl', async (c) => {
 });
 
 // ── 활동 보고: TL소비 + POC 누적 → 기여지수 갱신 ──────────
-// ── 구버전 호환: /api/eco/activity 로 리다이렉트 ──
-app.post('/api/user/activity_legacy', async (c) => {
+// ── 활동 보고 (유지) ──
+app.post('/api/user/activity', async (c) => {
   try {
     const { user_id, mode, seconds, tl_spent, poc_gained, poc_total,
             share_id, tl_mode } = await c.req.json();
