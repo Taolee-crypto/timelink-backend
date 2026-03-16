@@ -11,6 +11,7 @@ import disputesRouter from './routes/disputes';
 import chartsRouter from './routes/charts';
 import paymentRouter from './payment';
 import ecoRouter from './economics';
+import adsRouter from './ads_backend';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -50,6 +51,7 @@ app.route('/api/v1/disputes', disputesRouter);
 app.route('/api/v1/charts', chartsRouter);
 app.route('/api/payment', paymentRouter);
 app.route('/api/eco', ecoRouter);
+app.route('/api/ads', adsRouter);
 
 // GET /api/tracks
 app.get('/api/tracks', async (c) => {
