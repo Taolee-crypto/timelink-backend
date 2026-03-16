@@ -970,6 +970,57 @@ app.get('/api/chart', async (c) => {
   } catch(e: any) { return c.json({ error: e.message }, 500); }
 });
 
+
+// ── AI DJ TiLo 프록시 (Anthropic API 키 보호) ──
+app.post('/api/dj/chat', async (c) => {
+  const ANTHROPIC_KEY = (c.env as any).ANTHROPIC_API_KEY || '';
+  if (!ANTHROPIC_KEY) {
+    // API 키 없을 때 fallback 응답
+    const slots: Record<string, string> = {
+      morning: '좋은 아침! ☀️ 하루를 상쾌하게 열어줄 어쿠스틱 팝을 틀게요.',
+      forenoon: '오전의 리듬을 타볼 시간이에요 🎶 에너지 넘치는 트랙으로 채워드릴게요!',
+      lunch: '점심 시간엔 역시 재즈죠 ☕ 여유롭게 즐겨보세요.',
+      afternoon: '카페 감성 가득한 인디팝 타임 🌿 기분 좋은 오후 되세요.',
+      evening: '하루를 마무리하는 감성적인 곡들로 채워드릴게요 🌅',
+      night: '밤의 감성을 깨우는 드림팝 🌙 조용히 빠져들어봐요.',
+      latenight: '심야 로파이 타임입니다 🌃 편안하게 즐기세요.'
+    };
+    const hour = new Date().getHours();
+    const slot = hour < 6 ? 'latenight' : hour < 9 ? 'morning' : hour < 12 ? 'forenoon' :
+                 hour < 14 ? 'lunch' : hour < 18 ? 'afternoon' : hour < 22 ? 'evening' : 'night';
+    return c.json({ reply: slots[slot] || '최고의 음악을 선곡하고 있어요! 🎵', fallback: true });
+  }
+
+  try {
+    const body = await c.req.json() as any;
+    const { system, messages, max_tokens } = body;
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'x-api-key': ANTHROPIC_KEY,
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: max_tokens || 200,
+        system,
+        messages,
+      }),
+    });
+
+    const data: any = await res.json();
+    if (data.error) {
+      return c.json({ reply: '좋은 음악을 선곡하고 있어요! 🎵', fallback: true });
+    }
+    const reply = data.content?.[0]?.text || '좋은 음악을 선곡하고 있어요! 🎵';
+    return c.json({ reply, usage: data.usage });
+  } catch (e: any) {
+    return c.json({ reply: '최고의 음악을 선곡하고 있어요! 🎵', fallback: true, error: e.message });
+  }
+});
+
 export default app;
 
 
