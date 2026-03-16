@@ -382,6 +382,51 @@ app.post('/api/shares/:id/pulse', async (c) => {
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 
+
+// ADMIN: tl_settings CRUD (푸터·공지 설정 전용)
+app.get('/api/admin/settings/:key', async (c) => {
+  try {
+    await c.env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS tl_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime('now')))`
+    ).run().catch(() => {});
+    const key = c.req.param('key');
+    const row = await c.env.DB.prepare(
+      `SELECT value FROM tl_settings WHERE key=? LIMIT 1`
+    ).bind(key).first() as any;
+    return c.json({ key, value: row ? row.value : null });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+app.post('/api/admin/settings/:key', async (c) => {
+  try {
+    await c.env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS tl_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime('now')))`
+    ).run().catch(() => {});
+    const key = c.req.param('key');
+    const body = await c.req.json() as any;
+    const value = typeof body.value === 'string' ? body.value : JSON.stringify(body.value);
+    await c.env.DB.prepare(
+      `INSERT INTO tl_settings (key,value,updated_at) VALUES (?,?,datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`
+    ).bind(key, value).run();
+    return c.json({ ok: true, key, value });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+app.delete('/api/admin/settings/:key', async (c) => {
+  try {
+    const key = c.req.param('key');
+    await c.env.DB.prepare(`DELETE FROM tl_settings WHERE key=?`).bind(key).run();
+    return c.json({ ok: true, key, deleted: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 // ADMIN: 유저 목록
 app.get('/api/users', async (c) => {
   try {
@@ -392,21 +437,63 @@ app.get('/api/users', async (c) => {
   }
 });
 
-// ADMIN: SQL 실행
+// ADMIN: SQL 실행 (통합 단일 라우트)
 app.post('/api/admin/sql', async (c) => {
   try {
-    const { sql } = await c.req.json();
+    const body = await c.req.json() as any;
+    const sql: string = (body.sql || body.query || '').trim();
     if (!sql) return c.json({ error: 'sql required' }, 400);
-    const upper = sql.trim().toUpperCase();
-    if (upper.startsWith('SELECT')) {
+
+    // tl_settings 테이블 자동 생성 보장
+    await c.env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS tl_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT DEFAULT (datetime('now'))
+      )`
+    ).run().catch(() => {});
+
+    // tl_ads 테이블 자동 생성 보장
+    await c.env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS tl_ads (
+        id TEXT PRIMARY KEY,
+        advertiser_id INTEGER DEFAULT 0,
+        business_name TEXT DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        description TEXT DEFAULT '',
+        ad_type TEXT DEFAULT 'video',
+        media_url TEXT DEFAULT '',
+        thumbnail_url TEXT DEFAULT '',
+        target_url TEXT DEFAULT '',
+        tl_reward INTEGER DEFAULT 300,
+        budget_tl INTEGER DEFAULT 10000,
+        spent_tl INTEGER DEFAULT 0,
+        daily_limit INTEGER DEFAULT 100,
+        status TEXT DEFAULT 'active',
+        start_date TEXT DEFAULT '',
+        end_date TEXT DEFAULT '',
+        views INTEGER DEFAULT 0,
+        completions INTEGER DEFAULT 0,
+        clicks INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      )`
+    ).run().catch(() => {});
+
+    const upper = sql.toUpperCase();
+    if (upper.startsWith('SELECT') || upper.startsWith('WITH')) {
       const result = await c.env.DB.prepare(sql).all();
-      return c.json({ results: result.results, count: result.results?.length || 0 });
+      return c.json({
+        results: result.results || [],
+        count: result.results?.length || 0
+      });
     } else {
       const result = await c.env.DB.prepare(sql).run();
       return c.json({ success: true, meta: result.meta });
     }
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    console.error('[admin/sql]', e.message);
+    return c.json({ error: e.message, sql_hint: 'Check table/column names' }, 500);
   }
 });
 
@@ -420,23 +507,7 @@ app.get('/api/users', async (c) => {
   }
 });
 
-// ADMIN: SQL 실행
-app.post('/api/admin/sql', async (c) => {
-  try {
-    const { sql } = await c.req.json();
-    if (!sql) return c.json({ error: 'sql required' }, 400);
-    const upper = sql.trim().toUpperCase();
-    if (upper.startsWith('SELECT')) {
-      const result = await c.env.DB.prepare(sql).all();
-      return c.json({ results: result.results, count: result.results?.length || 0 });
-    } else {
-      const result = await c.env.DB.prepare(sql).run();
-      return c.json({ success: true, meta: result.meta });
-    }
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
+// (admin/sql duplicate removed)
 
 // 회원가입
 app.post('/api/auth/register', async (c) => {
