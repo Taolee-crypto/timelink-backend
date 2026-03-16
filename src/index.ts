@@ -10,6 +10,7 @@ import shareplaceRouter from './routes/shareplace';
 import disputesRouter from './routes/disputes';
 import chartsRouter from './routes/charts';
 import paymentRouter from './payment';
+import ecoRouter from './economics';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -48,6 +49,7 @@ app.route('/api/v1/shareplace', shareplaceRouter);
 app.route('/api/v1/disputes', disputesRouter);
 app.route('/api/v1/charts', chartsRouter);
 app.route('/api/payment', paymentRouter);
+app.route('/api/eco', ecoRouter);
 
 // GET /api/tracks
 app.get('/api/tracks', async (c) => {
@@ -721,7 +723,8 @@ app.post('/api/shares/:id/consume', async (c) => {
     // 크리에이터에게 수익 배분 (플랜에 따라)
     const share = await c.env.DB.prepare('SELECT user_id,plan FROM tl_shares WHERE id=?').bind(share_id).first();
     if(share){
-      const rate = share.plan==='B' ? 0.5 : 0.7;
+      // 신 배분율: 플랜A 62%, 플랜B 45% (TL_P 기준)
+      const rate = share.plan==='B' ? 0.45 : 0.62;
       const earn = Math.floor(consume * rate);
       if(earn>0) await c.env.DB.prepare('UPDATE users SET tl=tl+? WHERE id=?').bind(earn, share.user_id).run();
     }
@@ -755,7 +758,8 @@ app.get('/api/user/file-tl', async (c) => {
 });
 
 // ── 활동 보고: TL소비 + POC 누적 → 기여지수 갱신 ──────────
-app.post('/api/user/activity', async (c) => {
+// ── 구버전 호환: /api/eco/activity 로 리다이렉트 ──
+app.post('/api/user/activity_legacy', async (c) => {
   try {
     const { user_id, mode, seconds, tl_spent, poc_gained, poc_total,
             share_id, tl_mode } = await c.req.json();
@@ -773,7 +777,8 @@ app.post('/api/user/activity', async (c) => {
           'SELECT user_id as creator_id, plan FROM tl_shares WHERE id=?'
         ).bind(share_id).first();
         if(shareRow){
-          const ratio = shareRow.plan === 'B' ? 0.5 : 0.7;
+          // 신 배분율: 플랜A 62%, 플랜B 45%
+          const ratio = shareRow.plan === 'B' ? 0.45 : 0.62;
           const creatorEarn = Math.floor(tl_spent * ratio);
           if(creatorEarn > 0){
             await c.env.DB.prepare(
@@ -814,12 +819,32 @@ app.post('/api/user/activity', async (c) => {
       `).bind(user_id, mode||'cafe', seconds||0, tl_spent||0, poc_gained||0).run();
     }
 
-    // 3. 기여지수 재계산: poc_index = 1 + (누적 POC ÷ 100)
-    const logRow = await c.env.DB.prepare(
-      'SELECT SUM(poc_gained) as total_poc FROM poc_logs WHERE user_id=?'
-    ).bind(user_id).first();
-    const totalPoc = Number(logRow?.total_poc || 0);
-    const pocIndex = Math.max(1.0, 1 + totalPoc / 100);
+    // 3. 기여지수 재계산 (신 알고리즘: 4요소 가중합, 상한 5.0)
+    const monthStart = new Date().toISOString().slice(0,7)+'-01';
+    const mStats = await c.env.DB.prepare(
+      \`SELECT COALESCE(SUM(CASE WHEN mode='consume' THEN tl_spent ELSE 0 END),0) as monthly_tl_p,
+              COALESCE(SUM(seconds),0) as total_sec
+       FROM poc_logs WHERE user_id=? AND created_at>=?\`
+    ).bind(user_id, monthStart).first() as any;
+    const mPlays = await c.env.DB.prepare(
+      "SELECT COUNT(*) as cnt FROM poc_logs WHERE user_id=? AND mode='listen' AND created_at>=?"
+    ).bind(user_id, monthStart).first() as any;
+    const mUploads = await c.env.DB.prepare(
+      "SELECT COUNT(*) as cnt FROM tl_shares WHERE user_id=? AND created_at>=?"
+    ).bind(user_id, monthStart+' 00:00:00').first().catch(()=>({cnt:0})) as any;
+
+    const mTlP   = Number(mStats?.monthly_tl_p||0);
+    const mHours = Number(mStats?.total_sec||0)/3600;
+    const mPlaysN= Number(mPlays?.cnt||0);
+    const mUplN  = Number(mUploads?.cnt||0);
+
+    const cScore = Math.min(2.0, mPlaysN/500);
+    const sScore = Math.min(1.5, mTlP/5000);
+    const lScore = Math.min(1.0, mHours/30);
+    const uScore = Math.min(0.5, mUplN/5);
+    const pocIndex = Math.min(5.0, Math.max(0.1,
+      (cScore*0.4+sScore*0.3+lScore*0.2+uScore*0.1)*10
+    ));
 
     await c.env.DB.prepare(
       'UPDATE users SET poc_index=? WHERE id=?'
@@ -831,7 +856,12 @@ app.post('/api/user/activity', async (c) => {
     ).bind(user_id).first();
     const spent = Number(userRow?.total_tl_spent || 0);
     const exchanged = Number(userRow?.total_tl_exchanged || 0);
-    const mineableTlc = Math.max(0, (spent - exchanged) * 0.5 * pocIndex);
+    // TLC 채굴 가능량: TL_P 기반만, 0.08 × POC × 배율 (월 30% 하드캡)
+    const mineMultiplier = 1.0; // 플랜B는 /api/eco/mine-tlc에서 처리
+    const mineableTlc = Math.min(
+      mTlP * 0.30,
+      (mTlP / 30) * 0.08 * pocIndex * mineMultiplier
+    );
 
     return c.json({
       ok: true,

@@ -122,7 +122,10 @@ payment.post('/portone/verify', async (c) => {
   const tlGranted = paidAmount;
 
   try {
-    await c.env.DB.prepare('UPDATE users SET tl=tl+? WHERE id=?').bind(tlGranted, userId).run();
+    // TL_P (구매 TL) 지급 — 교환 가능
+  await c.env.DB.prepare(
+    'UPDATE users SET tl=tl+?, tl_p=tl_p+?, tl_p_lifetime=tl_p_lifetime+? WHERE id=?'
+  ).bind(tlGranted, tlGranted, tlGranted, userId).run();
     await c.env.DB.prepare(
       `INSERT OR IGNORE INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
        VALUES (?,?,?,?,?,?,?)`
