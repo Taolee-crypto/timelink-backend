@@ -152,39 +152,61 @@ app.post('/api/tracks/:id/play', async (c) => {
 });
 
 // ── 파일 업로드 (R2) ─────────────────────────────────────
-// FIX: file.stream() → file.arrayBuffer()
-// Cloudflare Workers FormData의 File.stream()은 불안정 — arrayBuffer() 사용
+// ── 파일 업로드 (R2 Multipart — 최대 500MB 지원) ──
 app.post('/api/upload', async (c) => {
   if (!c.env.R2) {
     return c.json({ ok: false, error: 'R2 바인딩 없음 — wrangler.toml [[r2_buckets]] 확인' }, 500);
   }
   try {
-    const formData = await c.req.parseBody();
+    const formData = await c.req.parseBody({ limit: 500 * 1024 * 1024 });
     const file = formData['file'] as File;
     const trackId = formData['trackId'] as string;
 
     if (!file || !trackId) {
       return c.json({ ok: false, error: 'file, trackId 필수' }, 400);
     }
-    if (file.size > 200 * 1024 * 1024) {
-      return c.json({ ok: false, error: '200MB 초과 불가' }, 400);
+    if (file.size > 500 * 1024 * 1024) {
+      return c.json({ ok: false, error: '500MB 초과 불가' }, 400);
     }
 
     const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
     const key = `tracks/${trackId}.${ext}`;
     const contentType = file.type || 'application/octet-stream';
 
-    // stream() 대신 arrayBuffer() 사용
-    const buffer = await file.arrayBuffer();
+    const CHUNK = 50 * 1024 * 1024; // 50MB 파트
 
-    await c.env.R2.put(key, buffer, {
-      httpMetadata: { contentType },
-      customMetadata: {
-        originalName: file.name,
-        trackId,
-        uploadedAt: Date.now().toString(),
-      },
-    });
+    if (file.size <= CHUNK) {
+      // 소형 파일: 단순 업로드
+      const buffer = await file.arrayBuffer();
+      await c.env.R2.put(key, buffer, {
+        httpMetadata: { contentType },
+        customMetadata: { originalName: file.name, trackId, uploadedAt: Date.now().toString() },
+      });
+    } else {
+      // 대형 파일: Multipart 업로드
+      const upload = await c.env.R2.createMultipartUpload(key, {
+        httpMetadata: { contentType },
+        customMetadata: { originalName: file.name, trackId, uploadedAt: Date.now().toString() },
+      });
+      try {
+        const parts: R2UploadedPart[] = [];
+        const buffer = await file.arrayBuffer();
+        const total = buffer.byteLength;
+        let offset = 0, partNum = 1;
+        while (offset < total) {
+          const end = Math.min(offset + CHUNK, total);
+          const chunk = buffer.slice(offset, end);
+          const part = await upload.uploadPart(partNum, chunk);
+          parts.push(part);
+          offset = end;
+          partNum++;
+        }
+        await upload.complete(parts);
+      } catch (uploadErr: any) {
+        await upload.abort().catch(() => {});
+        throw uploadErr;
+      }
+    }
 
     const publicUrl = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${key}`;
     return c.json({ ok: true, url: publicUrl, key, size: file.size });
