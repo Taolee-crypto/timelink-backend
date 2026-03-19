@@ -165,9 +165,9 @@ app.post('/api/upload', async (c) => {
     if (!file || !trackId) {
       return c.json({ ok: false, error: 'file, trackId 필수' }, 400);
     }
-    const MAX_SIZE = 100 * 1024 * 1024; // Workers 무료플랜 100MB 제한
+    const MAX_SIZE = 500 * 1024 * 1024; // Workers Paid 500MB
     if (file.size > MAX_SIZE) {
-      return c.json({ ok: false, error: `파일이 너무 큽니다 (최대 100MB, 현재: ${Math.round(file.size/1024/1024)}MB)` }, 400);
+      return c.json({ ok: false, error: `파일이 너무 큽니다 (최대 500MB, 현재: ${Math.round(file.size/1024/1024)}MB)` }, 400);
     }
 
     const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
