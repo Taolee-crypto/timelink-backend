@@ -1667,7 +1667,7 @@ app.get('/api/chart', async (c) => {
     const genre = c.req.query('genre') || 'all';
     const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50);
 
-    // tl_user_files 테이블 자동 생성 (없으면)
+    // 테이블/컬럼 자동 마이그레이션
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_user_files (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER, share_id TEXT,
@@ -1675,6 +1675,8 @@ app.get('/api/chart', async (c) => {
       total_charged INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
     )`).run().catch(()=>{});
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN category_type TEXT DEFAULT ''").run().catch(()=>{});
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN stream_url TEXT DEFAULT ''").run().catch(()=>{});
 
     let rows;
 
@@ -1682,7 +1684,7 @@ app.get('/api/chart', async (c) => {
       // TL 충전 많은 순 (tl_user_files 집계)
       const res = await c.env.DB.prepare(`
         SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type,
-               COALESCE(s.category_type,'') as category_type,
+               '' as category_type,
                s.duration, s.cover_url, s.pulse, s.file_tl,
                COALESCE(u.username, s.username, 'User') as username,
                s.file_tl as total_tl_charged
@@ -1707,7 +1709,7 @@ app.get('/api/chart', async (c) => {
 
       const res = await c.env.DB.prepare(`
         SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type,
-               COALESCE(s.category_type,'') as category_type,
+               '' as category_type,
                s.duration, s.cover_url, s.pulse, s.file_tl,
                COALESCE(u.username, s.username, 'User') as username,
                0 as total_tl_charged
