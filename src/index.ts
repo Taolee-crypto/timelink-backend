@@ -1857,6 +1857,7 @@ app.post('/api/payment/toss/confirm', async (c) => {
       created_at TEXT DEFAULT (datetime('now'))
     )`).run().catch(()=>{});
 
+    await c.env.DB.prepare("ALTER TABLE tl_payments ADD COLUMN bonus_tl INTEGER DEFAULT 0").run().catch(()=>{});
     const dup = await c.env.DB.prepare('SELECT id FROM tl_payments WHERE pg_id=?').bind(paymentKey).first();
     if (dup) return c.json({ error:'이미 처리된 결제입니다' }, 409);
 
@@ -1878,15 +1879,16 @@ app.post('/api/payment/toss/confirm', async (c) => {
     if (!confirmRes.ok) {
       // 결제 실패 기록
       await c.env.DB.prepare(
-        'INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status) VALUES (?,?,?,?,?,?,?)'
-      ).bind(userId, 'toss', paymentKey, orderId, amount, 0, 'fail').run().catch(()=>{});
+        'INSERT OR IGNORE INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,bonus_tl,status) VALUES (?,?,?,?,?,?,?,?)'
+      ).bind(userId, 'toss', paymentKey, orderId, amount, 0, 0, 'fail').run().catch(()=>{});
       return c.json({ error: confirmData.message || '결제 승인 실패', code: confirmData.code }, 400);
     }
 
-    // ── 금액 검증 ──
-    const paidAmount = confirmData.totalAmount || confirmData.suppliedAmount || 0;
-    if (Number(paidAmount) !== Number(amount)) {
-      return c.json({ error: '결제 금액 불일치 (위변조 의심)' }, 422);
+    // ── 금액 검증 (토스 응답 구조 유연하게) ──
+    const paidAmount = Number(confirmData.totalAmount || confirmData.suppliedAmount || confirmData.amount || 0);
+    const reqAmount  = Number(amount);
+    if (paidAmount > 0 && paidAmount !== reqAmount) {
+      return c.json({ error: '결제 금액 불일치', paid: paidAmount, requested: reqAmount }, 422);
     }
 
     // ── TL 패키지 계산 ──
@@ -1922,7 +1924,8 @@ app.post('/api/payment/toss/confirm', async (c) => {
     });
 
   } catch(e:any) {
-    return c.json({ error: e.message }, 500);
+    console.error('[toss/confirm]', e);
+    return c.json({ error: e.message, detail: String(e) }, 500);
   }
 });
 
