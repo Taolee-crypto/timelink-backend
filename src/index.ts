@@ -422,9 +422,11 @@ app.get('/api/admin/revenue', async (c) => {
       user_id TEXT NOT NULL, method TEXT NOT NULL,
       pg_id TEXT NOT NULL UNIQUE, merchant_uid TEXT,
       amount_krw INTEGER NOT NULL, tl_granted INTEGER NOT NULL,
+      bonus_tl INTEGER DEFAULT 0,
       status TEXT DEFAULT 'pending',
       created_at TEXT DEFAULT (datetime('now'))
     )`).run().catch(()=>{});
+    await db.prepare("ALTER TABLE tl_payments ADD COLUMN bonus_tl INTEGER DEFAULT 0").run().catch(()=>{});
 
     const payRow = await db.prepare(`
       SELECT 
