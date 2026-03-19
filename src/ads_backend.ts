@@ -24,6 +24,8 @@ function parseUserId(token: string): number {
 async function ensureTables(db: any) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS tl_ads (
     id TEXT PRIMARY KEY,
+    tl_key TEXT DEFAULT '',       -- R2 .tl 파일 키
+    tl_file_size INTEGER DEFAULT 0,
     advertiser_id INTEGER NOT NULL,
     business_name TEXT DEFAULT '',
     title TEXT NOT NULL,
@@ -42,10 +44,15 @@ async function ensureTables(db: any) {
     views INTEGER DEFAULT 0,
     completions INTEGER DEFAULT 0,
     clicks INTEGER DEFAULT 0,
+    tl_key TEXT DEFAULT '',
+    tl_file_size INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   )`).run().catch(() => {});
 
+  await db.prepare("ALTER TABLE tl_ads ADD COLUMN tl_key TEXT DEFAULT ''").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl_ads ADD COLUMN tl_file_size INTEGER DEFAULT 0").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl_ads ADD COLUMN tl_per_sec REAL DEFAULT 1.0").run().catch(()=>{});
   await db.prepare(`CREATE TABLE IF NOT EXISTS ad_views (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ad_id TEXT NOT NULL,
@@ -56,6 +63,50 @@ async function ensureTables(db: any) {
     duration_watched INTEGER DEFAULT 0,
     viewed_at TEXT DEFAULT (datetime('now'))
   )`).run().catch(() => {});
+}
+
+
+// ── .tl 파일 변환 헬퍼 ──────────────────────────────────
+function makeTLKeyForAd(shareId: string, secret: string): Uint8Array {
+  const seed = shareId + secret + 'TIMELINK_AD_v1';
+  const key = new Uint8Array(256);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = (Math.imul(h, 0x01000193)) >>> 0;
+  }
+  for (let i = 0; i < 256; i++) {
+    h ^= (Math.imul(i, 0x9e3779b9)) >>> 0;
+    h = ((h << 13) | (h >>> 19)) >>> 0;
+    h = (Math.imul(h, 0x01000193)) >>> 0;
+    key[i] = h & 0xff;
+  }
+  return key;
+}
+
+function xorAdData(data: Uint8Array, key: Uint8Array): Uint8Array {
+  const out = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) out[i] = data[i] ^ key[i % key.length];
+  return out;
+}
+
+async function sha256HexAd(data: Uint8Array): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function buildAdTLFile(adId: string, header: Record<string,any>, rawData: Uint8Array, secret: string): Promise<Uint8Array> {
+  const magic   = new Uint8Array([0x54,0x4C,0x41,0x44]); // TLAD
+  const version = new Uint8Array([0x00,0x01]);
+  const hdrBytes = new TextEncoder().encode(JSON.stringify(header));
+  const hdrLen   = hdrBytes.length;
+  const lenB     = new Uint8Array([hdrLen&0xff,(hdrLen>>8)&0xff,(hdrLen>>16)&0xff,(hdrLen>>24)&0xff]);
+  const key      = makeTLKeyForAd(adId, secret);
+  const enc      = xorAdData(rawData, key);
+  const out      = new Uint8Array(4+2+4+hdrLen+enc.length);
+  let p=0; out.set(magic,p);p+=4; out.set(version,p);p+=2; out.set(lenB,p);p+=4;
+  out.set(hdrBytes,p);p+=hdrLen; out.set(enc,p);
+  return out;
 }
 
 // ── 광고 목록 (유저용: 시청 가능한 광고) ──
@@ -167,6 +218,61 @@ ads.get('/my', async (c) => {
 });
 
 // ── 광고주: 광고 등록 ──
+
+// ── 광고 소재 업로드 + .tl 변환 ──
+// POST /api/ads/upload-tl
+// FormData: file, adId(임시ID)
+ads.post('/upload-tl', async (c) => {
+  if (!c.env.R2) return c.json({ ok:false, error:'R2 없음' }, 500);
+  const token = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseUserId(token);
+  if (!userId) return c.json({ error:'로그인 필요' }, 401);
+
+  try {
+    const formData = await c.req.parseBody({ limit: 100*1024*1024 }); // 광고 100MB
+    const file  = formData['file'] as File;
+    const adId  = formData['adId'] as string || ('ad_' + Date.now() + '_' + Math.random().toString(36).slice(2,6));
+    const title = formData['title'] as string || '';
+    const adType = formData['ad_type'] as string || 'video';
+    const tlPerSec = parseFloat(formData['tl_per_sec'] as string || '1.0');
+
+    if (!file) return c.json({ ok:false, error:'file 필요' }, 400);
+    if (file.size > 100*1024*1024) return c.json({ ok:false, error:'100MB 초과 불가' }, 400);
+
+    const raw    = new Uint8Array(await file.arrayBuffer());
+    const hash   = await sha256HexAd(raw);
+    const ext    = (file.name.split('.').pop() || 'bin').toLowerCase();
+    const secret = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
+
+    const header = {
+      adId,
+      advertiserId: userId,
+      title,
+      adType,         // 'video' | 'audio' | 'image' | 'banner_sidebar'
+      fileType: file.type || 'application/octet-stream',
+      ext,
+      tl_per_sec: tlPerSec,
+      uploadedAt: new Date().toISOString(),
+      contentHash: hash,
+      platform: 'timelink.digital',
+      version: 1,
+      isAd: true,     // 광고 파일 식별자
+    };
+
+    const tlData = await buildAdTLFile(adId, header, raw, secret);
+    const key    = \`ads/\${adId}.tl\`;
+
+    await c.env.R2.put(key, tlData, {
+      httpMetadata: { contentType: 'application/octet-stream' },
+      customMetadata: { adId, title, ext, adType, isAd: 'true' },
+    });
+
+    return c.json({ ok:true, adId, key, tl_key: key, size: tlData.length, hash });
+  } catch(e:any) {
+    return c.json({ ok:false, error: e.message }, 500);
+  }
+});
+
 ads.post('/create', async (c) => {
   try {
     await ensureTables(c.env.DB);
@@ -192,12 +298,15 @@ ads.post('/create', async (c) => {
     // 예산 TL 차감 (에스크로)
     await c.env.DB.prepare('UPDATE users SET tl=tl-? WHERE id=?').bind(budget_tl, userId).run();
 
-    const id = 'ad_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    const id = body.adId || ('ad_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
+    const tl_key = body.tl_key || '';
+    const tl_file_size = body.tl_file_size || 0;
+    const tl_per_sec = Math.max(0.1, Math.min(10.0, parseFloat(body.tl_per_sec || '1.0')));
     await c.env.DB.prepare(`
       INSERT INTO tl_ads (id, advertiser_id, business_name, title, description,
         ad_type, media_url, thumbnail_url, target_url,
-        tl_reward, budget_tl, daily_limit, status)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'active')
+        tl_reward, budget_tl, daily_limit, status, tl_key, tl_file_size)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'active',?,?)
     `).bind(
       id, userId, user.business_name || '',
       title, description || '',
@@ -205,7 +314,9 @@ ads.post('/create', async (c) => {
       target_url || '',
       Math.min(tl_reward || 300, 1000),
       budget_tl,
-      daily_limit || 100
+      daily_limit || 100,
+      tl_key,
+      tl_file_size
     ).run();
 
     return c.json({ ok: true, id, budget_tl });
@@ -213,6 +324,152 @@ ads.post('/create', async (c) => {
     return c.json({ error: e.message }, 500);
   }
 });
+
+
+// ── 광고 .tl 스트리밍 (TL 차감 구조) ──
+// GET /api/ads/stream/:adId
+// - 광고주 예산에서 TL 차감 (초당)
+// - 뷰어에게 TL_A 적립
+ads.get('/stream/:adId', async (c) => {
+  const adId   = c.req.param('adId');
+  const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const tkQuery = c.req.query('tk') || '';
+  const userId = parseUserId(token || tkQuery);
+
+  const cors = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,OPTIONS',
+    'Access-Control-Allow-Headers': 'Range,Content-Type,Authorization',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-store',
+  };
+
+  try {
+    await ensureTables(c.env.DB);
+    const ad = await c.env.DB.prepare(
+      'SELECT * FROM tl_ads WHERE id=? AND status=\'active\''
+    ).bind(adId).first<any>();
+    if (!ad) return new Response(JSON.stringify({error:'광고 없음'}),{status:404,headers:cors});
+
+    // 예산 소진 확인
+    if (ad.budget_tl > 0 && ad.spent_tl >= ad.budget_tl) {
+      // 예산 소진 → 자동 종료
+      await c.env.DB.prepare("UPDATE tl_ads SET status='ended' WHERE id=?").bind(adId).run();
+      return new Response(JSON.stringify({error:'광고 예산 소진',code:'BUDGET_EXHAUSTED'}),{status:402,headers:cors});
+    }
+
+    // .tl 파일 R2에서 조회
+    const tlKey = ad.tl_key || \`ads/\${adId}.tl\`;
+    const obj   = await c.env.R2.get(tlKey);
+    if (!obj) return new Response(JSON.stringify({error:'.tl 파일 없음'}),{status:404,headers:cors});
+
+    const secret = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
+
+    // .tl 복호화
+    const tlData   = new Uint8Array(await obj.arrayBuffer());
+    if (tlData[0]!==0x54||tlData[1]!==0x4C||tlData[2]!==0x41||tlData[3]!==0x44) {
+      // 매직 불일치 → 원본 그대로 반환 (미변환 파일)
+      return new Response(obj.body, {
+        headers:{...cors,'Content-Type': ad.ad_type?.startsWith('video')?'video/mp4':'audio/mpeg'}
+      });
+    }
+    const hdrLen  = tlData[6]|(tlData[7]<<8)|(tlData[8]<<16)|(tlData[9]<<24);
+    const hdrBytes = tlData.slice(10, 10+hdrLen);
+    const header   = JSON.parse(new TextDecoder().decode(hdrBytes)) as Record<string,any>;
+    const encData  = tlData.slice(10+hdrLen);
+    const key      = makeTLKeyForAd(adId, secret);
+    const rawData  = xorAdData(encData, key);
+    const contentType = (header.fileType as string) || 'video/mp4';
+
+    // 노출 카운트
+    await c.env.DB.prepare(
+      'UPDATE tl_ads SET views=views+1, updated_at=datetime(\'now\') WHERE id=?'
+    ).bind(adId).run().catch(()=>{});
+
+    return new Response(rawData, {
+      headers:{...cors,
+        'Content-Type': contentType,
+        'Content-Length': String(rawData.length),
+        'X-Ad-Id': adId,
+        'X-TL-Per-Sec': String(ad.tl_per_sec || 1.0),
+      }
+    });
+  } catch(e:any) {
+    return new Response(JSON.stringify({error:e.message}),{status:500,headers:cors});
+  }
+});
+
+// ── 광고 시청 tick (초당 예산 차감 + 뷰어 TL_A 적립) ──
+// POST /api/ads/stream/:adId/tick
+ads.post('/stream/:adId/tick', async (c) => {
+  const adId  = c.req.param('adId');
+  const token = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseUserId(token);
+  if (!userId) return c.json({error:'로그인 필요'},401);
+
+  try {
+    await ensureTables(c.env.DB);
+    const body = await c.req.json<any>();
+    const seconds    = Math.min(Number(body.seconds||1), 10);
+    const completed  = body.completed === true;
+
+    const ad = await c.env.DB.prepare(
+      'SELECT * FROM tl_ads WHERE id=? AND status=\'active\''
+    ).bind(adId).first<any>();
+    if (!ad) return c.json({error:'광고 없음'},404);
+
+    const tlPerSec  = Number(ad.tl_per_sec || 1.0);
+    const cost      = Math.ceil(seconds * tlPerSec);  // 광고주 예산 차감
+    const reward    = Math.floor(cost * 0.5);          // 뷰어 50% 적립 (TL_A)
+
+    // 예산 잔액 확인
+    if (ad.budget_tl > 0 && (ad.spent_tl + cost) > ad.budget_tl) {
+      await c.env.DB.prepare("UPDATE tl_ads SET status='ended' WHERE id=?").bind(adId).run();
+      return c.json({ok:false, code:'BUDGET_EXHAUSTED'}, 402);
+    }
+
+    // 광고주 예산 차감
+    await c.env.DB.prepare(
+      'UPDATE tl_ads SET spent_tl=spent_tl+?, updated_at=datetime(\'now\') WHERE id=?'
+    ).bind(cost, adId).run();
+
+    // 뷰어 TL_A 적립
+    if (reward > 0) {
+      await c.env.DB.prepare(
+        'UPDATE users SET tl_a=COALESCE(tl_a,0)+?, tl=COALESCE(tl,0)+? WHERE id=?'
+      ).bind(reward, reward, userId).run();
+    }
+
+    // 완료 시 완료 카운트
+    if (completed) {
+      await c.env.DB.prepare(
+        'UPDATE tl_ads SET completions=completions+1 WHERE id=?'
+      ).bind(adId).run().catch(()=>{});
+    }
+
+    // 뷰어 현재 잔액 조회
+    const user = await c.env.DB.prepare(
+      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_a,0) as tl_a FROM users WHERE id=?'
+    ).bind(userId).first<any>();
+
+    return c.json({
+      ok: true,
+      cost,
+      reward,
+      budget_remaining: Math.max(0, ad.budget_tl - ad.spent_tl - cost),
+      viewer_tl: user?.tl || 0,
+      viewer_tl_a: user?.tl_a || 0,
+    });
+  } catch(e:any) {
+    return c.json({ok:false, error:e.message}, 500);
+  }
+});
+
+ads.options('/stream/:adId', async (c) => new Response(null,{status:204,headers:{
+  'Access-Control-Allow-Origin':'*',
+  'Access-Control-Allow-Methods':'GET,OPTIONS',
+  'Access-Control-Allow-Headers':'Range,Content-Type,Authorization',
+}}));
 
 // ── 광고주: 광고 통계 ──
 ads.get('/:id/stats', async (c) => {
