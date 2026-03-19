@@ -886,7 +886,7 @@ app.get('/api/stream/:shareId', async (c) => {
         status: 206,
         headers: { ...cors,
           'Content-Type': contentType,
-          'Content-Range': \`bytes \${start}-\${end}/\${total}\`,
+          'Content-Range': `bytes ${start}-${end}/${total}`,
           'Content-Length': String(length),
           'X-TL-Balance': String(totalTL),
           'Cache-Control': 'no-store', // 캐시 금지 - 항상 TL 확인
