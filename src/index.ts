@@ -1939,6 +1939,113 @@ app.get('/api/payment/toss/history', async (c) => {
   }
 });
 
+
+// ══════════════════════════════════════════════════════════
+//  AI 자동 번역 API (Claude Haiku 기반)
+//  POST /api/translate
+//  body: { texts: string[], target: 'en'|'ja'|'zh'|'th'|'vi' }
+//  → D1 캐시 우선, 없으면 Claude API 호출
+// ══════════════════════════════════════════════════════════
+app.post('/api/translate', async (c) => {
+  try {
+    const { texts, target } = await c.req.json() as any;
+    if (!texts || !Array.isArray(texts) || !target) {
+      return c.json({ error: 'texts(배열), target 필수' }, 400);
+    }
+    const VALID_LANGS = ['en','ja','zh','th','vi','ko'];
+    if (!VALID_LANGS.includes(target)) return c.json({ error: '지원 언어 아님' }, 400);
+    if (target === 'ko') return c.json({ ok:true, translations: texts }); // 한국어는 그대로
+
+    // 캐시 테이블 생성
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_translations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_hash TEXT NOT NULL,
+      source_text TEXT NOT NULL,
+      target_lang TEXT NOT NULL,
+      translated TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(source_hash, target_lang)
+    )`).run().catch(()=>{});
+
+    const ANTHROPIC_KEY = (c.env as any).ANTHROPIC_API_KEY || '';
+    const results: string[] = [];
+    const toTranslate: { idx: number; text: string }[] = [];
+
+    // 캐시 확인
+    for (let i = 0; i < texts.length; i++) {
+      const text = texts[i];
+      if (!text || text.trim() === '') { results[i] = text; continue; }
+      const hash = Array.from(new TextEncoder().encode(text + target))
+        .reduce((h,b) => ((h << 5) - h + b) | 0, 0).toString(36);
+      const cached = await c.env.DB.prepare(
+        'SELECT translated FROM tl_translations WHERE source_hash=? AND target_lang=?'
+      ).bind(hash, target).first<any>().catch(()=>null);
+      if (cached) {
+        results[i] = cached.translated;
+      } else {
+        toTranslate.push({ idx: i, text });
+      }
+    }
+
+    // 번역 필요한 것들 Claude API로 일괄 처리
+    if (toTranslate.length > 0 && ANTHROPIC_KEY) {
+      const LANG_NAMES: Record<string,string> = {
+        en:'English', ja:'Japanese', zh:'Simplified Chinese',
+        th:'Thai', vi:'Vietnamese'
+      };
+      const prompt = `Translate the following Korean UI texts to ${LANG_NAMES[target] || target}.
+Return ONLY a JSON array of translated strings in the same order.
+Keep special characters, numbers, and symbols unchanged.
+Texts:
+${JSON.stringify(toTranslate.map(t => t.text))}`;
+
+      const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 2000,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+
+      if (apiRes.ok) {
+        const apiData = await apiRes.json() as any;
+        const raw = apiData.content?.[0]?.text || '[]';
+        const clean = raw.replace(/```json|```/g, '').trim();
+        try {
+          const translated: string[] = JSON.parse(clean);
+          for (let j = 0; j < toTranslate.length; j++) {
+            const { idx, text } = toTranslate[j];
+            const result = translated[j] || text;
+            results[idx] = result;
+            // 캐시 저장
+            const hash = Array.from(new TextEncoder().encode(text + target))
+              .reduce((h,b) => ((h << 5) - h + b) | 0, 0).toString(36);
+            await c.env.DB.prepare(
+              'INSERT OR IGNORE INTO tl_translations (source_hash,source_text,target_lang,translated) VALUES (?,?,?,?)'
+            ).bind(hash, text, target, result).run().catch(()=>{});
+          }
+        } catch {
+          toTranslate.forEach(({ idx, text }) => { results[idx] = text; });
+        }
+      } else {
+        toTranslate.forEach(({ idx, text }) => { results[idx] = text; });
+      }
+    } else {
+      toTranslate.forEach(({ idx, text }) => { results[idx] = text; });
+    }
+
+    return c.json({ ok: true, translations: results, target });
+  } catch(e:any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 export default app;
