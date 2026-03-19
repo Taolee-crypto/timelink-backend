@@ -352,6 +352,8 @@ app.post('/api/shares', async (c) => {
       description TEXT DEFAULT '', plan TEXT DEFAULT 'A',
       spotify_id TEXT, spotify_url TEXT, cover_url TEXT, preview_url TEXT,
       stream_url TEXT DEFAULT '',
+      country TEXT DEFAULT 'KR',
+      content_lang TEXT DEFAULT 'ko',
       pulse INTEGER DEFAULT 0, created_at INTEGER NOT NULL
     )
   `).run().catch(() => {});
@@ -364,7 +366,7 @@ app.post('/api/shares', async (c) => {
   const id = 'sh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
   await c.env.DB.prepare(`
     INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,
-      category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,pulse,created_at)
+      category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at)
     VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,0,?)
   `).bind(
     id, String(realId), username,
@@ -375,6 +377,8 @@ app.post('/api/shares', async (c) => {
     body.spotify_id || null, body.spotify_url || null,
     body.cover_url || null, body.preview_url || null,
     body.stream_url || null,
+    body.country || 'KR',
+    body.content_lang || 'ko',
     Date.now()
   ).run();
 
@@ -1676,6 +1680,8 @@ app.get('/api/chart', async (c) => {
       created_at TEXT DEFAULT (datetime('now'))
     )`).run().catch(()=>{});
     await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN category_type TEXT DEFAULT ''").run().catch(()=>{});
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN country TEXT DEFAULT 'KR'").run().catch(()=>{});
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN content_lang TEXT DEFAULT 'ko'").run().catch(()=>{});
     await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN stream_url TEXT DEFAULT ''").run().catch(()=>{});
 
     let rows;
