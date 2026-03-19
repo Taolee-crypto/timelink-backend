@@ -260,7 +260,7 @@ ads.post('/upload-tl', async (c) => {
     };
 
     const tlData = await buildAdTLFile(adId, header, raw, secret);
-    const key    = \`ads/\${adId}.tl\`;
+    const key    = `ads/${adId}.tl`;
 
     await c.env.R2.put(key, tlData, {
       httpMetadata: { contentType: 'application/octet-stream' },
@@ -359,7 +359,7 @@ ads.get('/stream/:adId', async (c) => {
     }
 
     // .tl 파일 R2에서 조회
-    const tlKey = ad.tl_key || \`ads/\${adId}.tl\`;
+    const tlKey = ad.tl_key || `ads/${adId}.tl`;
     const obj   = await c.env.R2.get(tlKey);
     if (!obj) return new Response(JSON.stringify({error:'.tl 파일 없음'}),{status:404,headers:cors});
 
