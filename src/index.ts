@@ -165,8 +165,9 @@ app.post('/api/upload', async (c) => {
     if (!file || !trackId) {
       return c.json({ ok: false, error: 'file, trackId 필수' }, 400);
     }
-    if (file.size > 500 * 1024 * 1024) {
-      return c.json({ ok: false, error: '500MB 초과 불가' }, 400);
+    const MAX_SIZE = 100 * 1024 * 1024; // Workers 무료플랜 100MB 제한
+    if (file.size > MAX_SIZE) {
+      return c.json({ ok: false, error: `파일이 너무 큽니다 (최대 100MB, 현재: ${Math.round(file.size/1024/1024)}MB)` }, 400);
     }
 
     const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
@@ -189,7 +190,7 @@ app.post('/api/upload', async (c) => {
         customMetadata: { originalName: file.name, trackId, uploadedAt: Date.now().toString() },
       });
       try {
-        const parts: R2UploadedPart[] = [];
+        const parts: any[] = [];
         const buffer = await file.arrayBuffer();
         const total = buffer.byteLength;
         let offset = 0, partNum = 1;
@@ -400,10 +401,6 @@ app.post('/api/shares/:id/pulse', async (c) => {
 });
 
 // charge/consume v1 제거됨 — tl_user_files 기반 v2 사용 (아래에 등록)
-
-app.notFound((c) => c.json({ detail: 'Not found' }, 404));
-
-
 
 
 // ══════════════════════════════════════════════════
@@ -1778,6 +1775,8 @@ app.post('/api/dj/chat', async (c) => {
     return c.json({ reply: '최고의 음악을 선곡하고 있어요! 🎵', fallback: true, error: e.message });
   }
 });
+
+app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 export default app;
 
