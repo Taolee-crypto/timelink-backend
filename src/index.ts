@@ -1814,6 +1814,131 @@ app.get('/api/eco/wallet', async (c) => {
   } catch(e:any) { return c.json({ error: e.message }, 500); }
 });
 
+
+// ══════════════════════════════════════════════════════════
+//  토스페이먼츠 결제 (TL 충전)
+//  POST /api/payment/toss/confirm  — 결제 승인 + TL 지급
+//  GET  /api/payment/toss/history  — 결제 내역
+// ══════════════════════════════════════════════════════════
+
+// TL 패키지 (원 → TL, 보너스 포함)
+const TL_PACKAGES: Record<number,{tl:number,bonus:number}> = {
+   5000: { tl:  5000, bonus:    0 },
+  10000: { tl: 10000, bonus:  500 },
+  30000: { tl: 30000, bonus: 2000 },
+  50000: { tl: 50000, bonus: 5000 },
+ 100000: { tl:100000, bonus:15000 },
+};
+
+app.post('/api/payment/toss/confirm', async (c) => {
+  const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseTokenUserId(token);
+  if (!userId) return c.json({ error:'로그인 필요' }, 401);
+
+  try {
+    const { paymentKey, orderId, amount } = await c.req.json() as any;
+    if (!paymentKey || !orderId || !amount) {
+      return c.json({ error:'paymentKey, orderId, amount 필수' }, 400);
+    }
+
+    // ── 중복 결제 방지 ──
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      method TEXT NOT NULL,
+      pg_id TEXT NOT NULL UNIQUE,
+      merchant_uid TEXT,
+      amount_krw INTEGER NOT NULL,
+      tl_granted INTEGER NOT NULL,
+      bonus_tl INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'pending',
+      created_at TEXT DEFAULT (datetime('now'))
+    )`).run().catch(()=>{});
+
+    const dup = await c.env.DB.prepare('SELECT id FROM tl_payments WHERE pg_id=?').bind(paymentKey).first();
+    if (dup) return c.json({ error:'이미 처리된 결제입니다' }, 409);
+
+    // ── 토스페이먼츠 결제 승인 API ──
+    const SECRET_KEY = (c.env as any).TOSS_SECRET_KEY || 'test_sk_d26DlbXAaV0xQbpa7y1VqY50Q9RB';
+    const authHeader = 'Basic ' + btoa(SECRET_KEY + ':');
+
+    const confirmRes = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
+      method: 'POST',
+      headers: {
+        'Authorization': authHeader,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ paymentKey, orderId, amount }),
+    });
+
+    const confirmData = await confirmRes.json() as any;
+
+    if (!confirmRes.ok) {
+      // 결제 실패 기록
+      await c.env.DB.prepare(
+        'INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status) VALUES (?,?,?,?,?,?,?)'
+      ).bind(userId, 'toss', paymentKey, orderId, amount, 0, 'fail').run().catch(()=>{});
+      return c.json({ error: confirmData.message || '결제 승인 실패', code: confirmData.code }, 400);
+    }
+
+    // ── 금액 검증 ──
+    const paidAmount = confirmData.totalAmount || confirmData.suppliedAmount || 0;
+    if (Number(paidAmount) !== Number(amount)) {
+      return c.json({ error: '결제 금액 불일치 (위변조 의심)' }, 422);
+    }
+
+    // ── TL 패키지 계산 ──
+    const pkg = TL_PACKAGES[Number(amount)];
+    const tlGranted = pkg ? pkg.tl : Number(amount); // 1원 = 1TL
+    const bonusTl   = pkg ? pkg.bonus : 0;
+    const totalTl   = tlGranted + bonusTl;
+
+    // ── TL 지급 ──
+    await c.env.DB.prepare(
+      'UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,tl,0)+? WHERE id=?'
+    ).bind(totalTl, totalTl, userId).run();
+
+    // ── 결제 내역 저장 ──
+    await c.env.DB.prepare(
+      'INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,bonus_tl,status) VALUES (?,?,?,?,?,?,?,?)'
+    ).bind(userId, 'toss', paymentKey, orderId, Number(amount), tlGranted, bonusTl, 'success').run();
+
+    // ── 최신 잔액 조회 ──
+    const user = await c.env.DB.prepare(
+      'SELECT tl, COALESCE(tl_p,tl,0) as tl_p FROM users WHERE id=?'
+    ).bind(userId).first() as any;
+
+    return c.json({
+      ok: true,
+      tl_granted: tlGranted,
+      bonus_tl:   bonusTl,
+      total_tl:   totalTl,
+      tl_balance: user?.tl || 0,
+      tl_p:       user?.tl_p || 0,
+      order_id:   orderId,
+      payment_key: paymentKey,
+    });
+
+  } catch(e:any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── 결제 내역 조회 ──
+app.get('/api/payment/toss/history', async (c) => {
+  const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseTokenUserId(token);
+  if (!userId) return c.json({ error:'로그인 필요' }, 401);
+  try {
+    const rows = await c.env.DB.prepare(
+      'SELECT * FROM tl_payments WHERE user_id=? ORDER BY created_at DESC LIMIT 20'
+    ).bind(userId).all();
+    return c.json({ ok:true, payments: rows.results || [] });
+  } catch(e:any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 export default app;
