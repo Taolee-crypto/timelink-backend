@@ -356,7 +356,8 @@ app.post('/api/shares', async (c) => {
     )
   `).run().catch(() => {});
 
-  const tlCol = userRow.tl !== undefined ? 'tl' : 'tl_balance';
+  const tlColRaw = userRow.tl !== undefined ? 'tl' : 'tl_balance';
+  const tlCol = ['tl','tl_balance'].includes(tlColRaw) ? tlColRaw : 'tl'; // 화이트리스트
   const realId = userRow.id;
   await c.env.DB.prepare(`UPDATE users SET ${tlCol}=${tlCol}-5000 WHERE id=?`).bind(realId).run();
 
@@ -1774,6 +1775,37 @@ app.post('/api/dj/chat', async (c) => {
   } catch (e: any) {
     return c.json({ reply: '최고의 음악을 선곡하고 있어요! 🎵', fallback: true, error: e.message });
   }
+});
+
+
+// ── 지갑 잔액 조회 ──
+app.get('/api/eco/wallet', async (c) => {
+  const token = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseTokenUserId(token);
+  if (!userId) return c.json({ error:'인증 필요' }, 401);
+  try {
+    const user = await c.env.DB.prepare(
+      `SELECT tl, COALESCE(tl_p,tl,0) as tl_p, COALESCE(tl_a,0) as tl_a, 
+       COALESCE(tl_b,0) as tl_b, COALESCE(tlc_balance,0) as tlc,
+       COALESCE(poc_index,1.0) as poc_index,
+       COALESCE(total_tl_spent,0) as total_tl_spent,
+       COALESCE(total_tl_exchanged,0) as total_tl_exchanged
+       FROM users WHERE id=?`
+    ).bind(userId).first() as any;
+    if (!user) return c.json({ error:'유저없음' }, 404);
+    const tl_p = Number(user.tl_p||user.tl||0);
+    const tl_a = Number(user.tl_a||0);
+    const tl_b = Number(user.tl_b||0);
+    return c.json({
+      ok: true,
+      tl: tl_p + tl_a + tl_b,
+      tl_p, tl_a, tl_b,
+      tlc: Number(user.tlc||0),
+      poc_index: Number(user.poc_index||1.0),
+      total_tl_spent: Number(user.total_tl_spent||0),
+      total_tl_exchanged: Number(user.total_tl_exchanged||0),
+    });
+  } catch(e:any) { return c.json({ error: e.message }, 500); }
 });
 
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
