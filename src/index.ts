@@ -812,7 +812,9 @@ app.get('/api/stream/:shareId/info', async (c) => {
 
 // ── TL 검증 후 스트리밍 ──
 app.get('/api/stream/:shareId', async (c) => {
-  const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
+  const authHeader = (c.req.header('Authorization') || '').replace('Bearer ', '');
+  const tkQuery = c.req.query('tk') || '';
+  const token = authHeader || tkQuery;  // 헤더 또는 ?tk= 쿼리 파라미터
   const userId = parseTokenUserId(token);
   const shareId = c.req.param('shareId');
 
@@ -840,53 +842,80 @@ app.get('/api/stream/:shareId', async (c) => {
       totalTL = Number(user?.tl || 0);
     }
 
+    // TL 없어도 첫 30초 미리보기 허용 (Range 0~)
+    const rangeHdr = c.req.header('Range') || '';
+    const rangeStart = rangeHdr ? parseInt((rangeHdr.match(/bytes=(\d+)-/) || [])[1] || '0') : 0;
+    const isFreePreview = rangeStart === 0; // 처음 요청만 허용
+
     if (!userId || totalTL <= 0) {
-      return new Response(JSON.stringify({
-        error: 'TL 잔액이 부족합니다',
-        code: 'TL_INSUFFICIENT',
-        tl_balance: totalTL,
-      }), {
-        status: 402, // Payment Required
-        headers: { ...cors, 'Content-Type': 'application/json', 'X-TL-Balance': String(totalTL) },
-      });
+      if (!isFreePreview) {
+        // 중간 이후 요청은 차단
+        return new Response(JSON.stringify({
+          error: 'TL 잔액이 부족합니다',
+          code: 'TL_INSUFFICIENT',
+          tl_balance: totalTL,
+        }), {
+          status: 402,
+          headers: { ...cors, 'Content-Type': 'application/json', 'X-TL-Balance': String(totalTL) },
+        });
+      }
+      // 처음 요청: 30초 분량 미리 허용 후 계속 차단
     }
 
     // 3. R2 키 추출
     const streamUrl = share.stream_url || '';
     let key = '';
     if (streamUrl.includes('r2.dev/')) {
-      key = streamUrl.split('r2.dev/')[1];
-    } else if (streamUrl.startsWith('tracks/')) {
+      key = decodeURIComponent(streamUrl.split('r2.dev/')[1].split('?')[0]);
+    } else if (streamUrl.startsWith('tracks/') || streamUrl.startsWith('tl/')) {
       key = streamUrl;
-    } else if (streamUrl) {
+    } else if (streamUrl.startsWith('http')) {
+      // 다른 HTTP URL → 직접 프록시
       const fn = streamUrl.split('/').pop()?.split('?')[0] || '';
-      key = 'tracks/' + fn;
+      key = fn.endsWith('.tl') ? 'tl/' + fn : 'tracks/' + fn;
+    } else if (streamUrl) {
+      key = streamUrl;
     }
-    if (!key) return new Response(JSON.stringify({ error: '스트림 없음' }), { status: 404, headers: cors });
+    if (!key) return new Response(JSON.stringify({ error: '스트림 없음', stream_url: streamUrl }), { status: 404, headers: cors });
+
+    // R2 key 존재 확인 (head)
+    const meta = await c.env.R2.head(key);
+    if (!meta) {
+      // tracks/ prefix 없이 파일명만 있는 경우 재시도
+      const altKey = key.startsWith('tracks/') ? key.slice(7) : 'tracks/' + key;
+      const altMeta = await c.env.R2.head(altKey);
+      if (altMeta) {
+        // altKey 사용
+        (c as any)._r2key = altKey;
+      } else {
+        return new Response(JSON.stringify({ error: 'R2 파일 없음', key, altKey }), { status: 404, headers: cors });
+      }
+    }
 
     // 4. Range 스트리밍
     const rangeHeader = c.req.header('Range');
-    const meta = await c.env.R2.head(key);
-    if (!meta) return new Response(JSON.stringify({ error: 'R2 파일 없음' }), { status: 404, headers: cors });
+    // meta는 위에서 이미 확인했으므로 contentType만 추출
+    const contentType = meta?.httpMetadata?.contentType || r2meta?.httpMetadata?.contentType || 'audio/mpeg';
 
-    const contentType = meta.httpMetadata?.contentType || 'audio/mpeg';
-    const total = meta.size;
+    const r2key: string = (c as any)._r2key || key;
+    const r2meta = await c.env.R2.head(r2key) || meta!;
+    const total2 = r2meta?.size || 0;
 
     if (rangeHeader) {
       const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
       if (!m) return new Response('Invalid Range', { status: 416, headers: cors });
       const start = parseInt(m[1]);
-      const end = m[2] !== '' ? Math.min(parseInt(m[2]), total - 1) : Math.min(start + 1024 * 512 - 1, total - 1); // 512KB chunk
+      const end = m[2] !== '' ? Math.min(parseInt(m[2]), total2 - 1) : Math.min(start + 1024 * 512 - 1, total2 - 1);
       const length = end - start + 1;
 
-      const obj = await c.env.R2.get(key, { range: { offset: start, length } });
+      const obj = await c.env.R2.get(r2key, { range: { offset: start, length } });
       if (!obj) return new Response(JSON.stringify({ error: '읽기 실패' }), { status: 500, headers: cors });
 
       return new Response(obj.body, {
         status: 206,
         headers: { ...cors,
           'Content-Type': contentType,
-          'Content-Range': `bytes ${start}-${end}/${total}`,
+          'Content-Range': `bytes ${start}-${end}/${total2}`,
           'Content-Length': String(length),
           'X-TL-Balance': String(totalTL),
           'Cache-Control': 'no-store', // 캐시 금지 - 항상 TL 확인
@@ -895,14 +924,14 @@ app.get('/api/stream/:shareId', async (c) => {
     }
 
     // Range 없는 전체 스트리밍
-    const obj = await c.env.R2.get(key);
+    const obj = await c.env.R2.get(r2key);
     if (!obj) return new Response(JSON.stringify({ error: '읽기 실패' }), { status: 500, headers: cors });
 
     return new Response(obj.body, {
       status: 200,
       headers: { ...cors,
         'Content-Type': contentType,
-        'Content-Length': String(total),
+        'Content-Length': String(total2),
         'X-TL-Balance': String(totalTL),
         'Cache-Control': 'no-store',
       },
@@ -983,6 +1012,265 @@ app.post('/api/stream/:shareId/tick', async (c) => {
     return c.json({ ok: false, error: e.message }, 500);
   }
 });
+
+
+// ════════════════════════════════════════════════════════
+//  .tl 파일 업로드 (암호화 변환)
+//  POST /api/upload/tl
+// ════════════════════════════════════════════════════════
+function makeTLKey(shareId: string, secret: string): Uint8Array {
+  const seed = shareId + secret + 'TIMELINK_v1';
+  const key = new Uint8Array(256);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = (Math.imul(h, 0x01000193)) >>> 0;
+  }
+  for (let i = 0; i < 256; i++) {
+    h ^= (Math.imul(i, 0x9e3779b9)) >>> 0;
+    h = ((h << 13) | (h >>> 19)) >>> 0;
+    h = (Math.imul(h, 0x01000193)) >>> 0;
+    key[i] = h & 0xff;
+  }
+  return key;
+}
+
+function xorData(data: Uint8Array, key: Uint8Array): Uint8Array {
+  const out = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) out[i] = data[i] ^ key[i % key.length];
+  return out;
+}
+
+function buildTLFile(header: Record<string,any>, rawData: Uint8Array, secret: string): Uint8Array {
+  const magic    = new Uint8Array([0x54,0x4C,0x4E,0x4B]); // TLNK
+  const version  = new Uint8Array([0x00,0x01]);
+  const hdrBytes = new TextEncoder().encode(JSON.stringify(header));
+  const hdrLen   = hdrBytes.length;
+  const lenB     = new Uint8Array([hdrLen&0xff,(hdrLen>>8)&0xff,(hdrLen>>16)&0xff,(hdrLen>>24)&0xff]);
+  const key      = makeTLKey(header.shareId as string, secret);
+  const enc      = xorData(rawData, key);
+  const out      = new Uint8Array(4+2+4+hdrLen+enc.length);
+  let p=0; out.set(magic,p);p+=4; out.set(version,p);p+=2; out.set(lenB,p);p+=4;
+  out.set(hdrBytes,p);p+=hdrLen; out.set(enc,p);
+  return out;
+}
+
+// SHA-256 해시 (Workers 내장 crypto)
+async function sha256Hex(data: Uint8Array): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+app.post('/api/upload/tl', async (c) => {
+  if (!c.env.R2) return c.json({ ok:false, error:'R2 없음' }, 500);
+  try {
+    const formData = await c.req.parseBody({ limit: 200*1024*1024 });
+    const file     = formData['file'] as File;
+    const shareId  = (formData['shareId'] as string) || ('s_'+Date.now());
+    const metaRaw  = formData['meta'] as string || '{}';
+    const meta     = JSON.parse(metaRaw);
+
+    if (!file) return c.json({ ok:false, error:'file 필요' }, 400);
+    if (file.size > 200*1024*1024) return c.json({ ok:false, error:'200MB 초과' }, 400);
+
+    const raw    = new Uint8Array(await file.arrayBuffer());
+    const hash   = await sha256Hex(raw);
+    const ext    = (file.name.split('.').pop() || 'bin').toLowerCase();
+    const secret = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
+
+    const header = {
+      shareId,
+      creatorId:   Number(meta.creatorId   || 0),
+      creatorName: String(meta.creatorName || ''),
+      title:       String(meta.title       || file.name.replace(/\.[^.]+$/,'')),
+      artist:      String(meta.artist      || ''),
+      fileType:    file.type || 'application/octet-stream',
+      ext,
+      duration:    Number(meta.duration    || 0),
+      tl_per_sec:  Number(meta.tl_per_sec  || 1.0),
+      plan:        String(meta.plan        || 'A'),
+      uploadedAt:  new Date().toISOString(),
+      contentHash: hash,
+      platform:    'timelink.digital',
+      version:     1,
+    };
+
+    const tlData = buildTLFile(header, raw, secret);
+    const key    = `tl/${shareId}.tl`;
+
+    await c.env.R2.put(key, tlData, {
+      httpMetadata: { contentType: 'application/octet-stream' },
+      customMetadata: { shareId, title: header.title, ext, originalHash: hash },
+    });
+
+    return c.json({ ok:true, key, shareId, size: tlData.length, hash });
+  } catch(e:any) {
+    return c.json({ ok:false, error: e.message }, 500);
+  }
+});
+
+// ════════════════════════════════════════════════════════
+//  .tl 파일 다운로드 (암호화된 채로)
+//  GET /api/download/:shareId  → .tl 파일 반환
+// ════════════════════════════════════════════════════════
+app.get('/api/download/:shareId', async (c) => {
+  const token   = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId  = parseTokenUserId(token);
+  const shareId = c.req.param('shareId');
+  if (!userId) return c.json({ error:'인증 필요' }, 401);
+
+  try {
+    // 파일 조회
+    const share = await c.env.DB.prepare(
+      'SELECT id,title,stream_url FROM tl_shares WHERE id=?'
+    ).bind(shareId).first() as any;
+    if (!share) return c.json({ error:'파일 없음' }, 404);
+
+    // TL 잔액 확인 (다운로드 비용: 10초치 차감)
+    const user = await c.env.DB.prepare(
+      'SELECT COALESCE(tl,0) as tl FROM users WHERE id=?'
+    ).bind(userId).first() as any;
+    if (!user || Number(user.tl) <= 0) {
+      return c.json({ error:'TL 부족', code:'TL_INSUFFICIENT' }, 402);
+    }
+
+    // .tl 파일 존재 여부 확인
+    const tlKey = `tl/${shareId}.tl`;
+    const tlObj = await c.env.R2.get(tlKey);
+
+    if (tlObj) {
+      // .tl 파일 직접 반환
+      const title = encodeURIComponent((share.title||'file').replace(/[<>:"/\\|?*]/g,'_'));
+      return new Response(tlObj.body, {
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Disposition': `attachment; filename="${title}.tl"`,
+          'Content-Length': String(tlObj.size),
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+
+    // .tl 없으면 원본을 즉석에서 .tl로 변환하여 반환
+    const streamUrl = share.stream_url || '';
+    let rawKey = '';
+    if (streamUrl.includes('r2.dev/')) rawKey = streamUrl.split('r2.dev/')[1];
+    else if (streamUrl.startsWith('tracks/')) rawKey = streamUrl;
+    else { const fn=streamUrl.split('/').pop()?.split('?')[0]||''; rawKey='tracks/'+fn; }
+
+    const rawObj = await c.env.R2.get(rawKey);
+    if (!rawObj) return c.json({ error:'원본 파일 없음' }, 404);
+
+    const raw    = new Uint8Array(await rawObj.arrayBuffer());
+    const secret = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
+    const ext    = rawKey.split('.').pop() || 'bin';
+    const hash   = await sha256Hex(raw);
+
+    const header = {
+      shareId,
+      creatorId: 0, creatorName: '', title: share.title||'',
+      artist: '', fileType: rawObj.httpMetadata?.contentType||'audio/mpeg',
+      ext, duration: 0, tl_per_sec: 1.0, plan:'A',
+      uploadedAt: new Date().toISOString(), contentHash: hash,
+      platform: 'timelink.digital', version: 1,
+    };
+
+    const tlData = buildTLFile(header, raw, secret);
+    const title2 = encodeURIComponent((share.title||'file').replace(/[<>:"/\\|?*]/g,'_'));
+
+    return new Response(tlData, {
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${title2}.tl"`,
+        'Content-Length': String(tlData.length),
+        'Access-Control-Allow-Origin': '*',
+      },
+    });
+  } catch(e:any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ════════════════════════════════════════════════════════
+//  .tl 복호화 스트리밍 (Electron 앱용)
+//  POST /api/decrypt/:shareId  → 원본 데이터 스트리밍
+// ════════════════════════════════════════════════════════
+app.post('/api/decrypt/:shareId', async (c) => {
+  const token   = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId  = parseTokenUserId(token);
+  const shareId = c.req.param('shareId');
+  if (!userId) return c.json({ error:'인증 필요' }, 401);
+
+  const cors = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
+
+  try {
+    // TL 잔액 확인
+    const user = await c.env.DB.prepare(
+      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,tl,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?'
+    ).bind(userId).first() as any;
+    const totalTL = Number(user?.tl_p||0)+Number(user?.tl_a||0)+Number(user?.tl_b||0);
+    if (!user || totalTL <= 0) {
+      return new Response(JSON.stringify({ error:'TL 부족', code:'TL_INSUFFICIENT', tl:totalTL }), {
+        status:402, headers:{...cors,'Content-Type':'application/json'}
+      });
+    }
+
+    // .tl 파일 로드
+    const tlKey = `tl/${shareId}.tl`;
+    const tlObj = await c.env.R2.get(tlKey);
+    if (!tlObj) return new Response(JSON.stringify({ error:'TL 파일 없음' }), {status:404,headers:cors});
+
+    const tlData   = new Uint8Array(await tlObj.arrayBuffer());
+    const secret   = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
+
+    // 헤더 파싱
+    if (tlData[0]!==0x54||tlData[1]!==0x4C||tlData[2]!==0x4E||tlData[3]!==0x4B) {
+      return new Response(JSON.stringify({ error:'유효하지 않은 .tl 파일' }), {status:400,headers:cors});
+    }
+    const hdrLen = tlData[6]|(tlData[7]<<8)|(tlData[8]<<16)|(tlData[9]<<24);
+    const hdrBytes = tlData.slice(10, 10+hdrLen);
+    const header   = JSON.parse(new TextDecoder().decode(hdrBytes)) as Record<string,any>;
+    const encData  = tlData.slice(10+hdrLen);
+
+    // 복호화
+    const key     = makeTLKey(shareId, secret);
+    const rawData = xorData(encData, key);
+
+    // 무결성 검증
+    const actualHash = await sha256Hex(rawData);
+    if (header.contentHash && header.contentHash !== actualHash) {
+      return new Response(JSON.stringify({ error:'파일 무결성 오류' }), {status:422,headers:cors});
+    }
+
+    const contentType = (header.fileType as string) || 'audio/mpeg';
+    return new Response(rawData, {
+      status: 200,
+      headers: { ...cors,
+        'Content-Type': contentType,
+        'Content-Length': String(rawData.length),
+        'X-TL-Header': JSON.stringify({ title:header.title, artist:header.artist, duration:header.duration }),
+        'Cache-Control': 'no-store',
+      },
+    });
+  } catch(e:any) {
+    return new Response(JSON.stringify({ error:e.message }), {status:500,headers:cors});
+  }
+});
+
+app.options('/api/decrypt/:shareId', async (c) => new Response(null,{status:204,headers:{
+  'Access-Control-Allow-Origin':'*',
+  'Access-Control-Allow-Methods':'POST,OPTIONS',
+  'Access-Control-Allow-Headers':'Content-Type,Authorization',
+}}));
+
+app.options('/api/download/:shareId', async (c) => new Response(null,{status:204,headers:{
+  'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,OPTIONS',
+  'Access-Control-Allow-Headers':'Authorization',
+}}));
 
 app.get('/api/audio/:filename', async (c) => {
   try {
@@ -1377,9 +1665,18 @@ app.post('/api/user/mine-tlc', async (c) => {
 // 음악/영상/문서 pulse 차트
 app.get('/api/chart', async (c) => {
   try {
-    const type = c.req.query('type') || 'music';   // music | video | doc | image | tl
-    const genre = c.req.query('genre') || 'all';   // all | Kpop | Pop | Hiphop | RnB | Rock | Classic | Jazz | EDM | etc
+    const type = c.req.query('type') || 'music';
+    const genre = c.req.query('genre') || 'all';
     const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50);
+
+    // tl_user_files 테이블 자동 생성 (없으면)
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_user_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER, share_id TEXT,
+      tl_balance INTEGER DEFAULT 0,
+      total_charged INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`).run().catch(()=>{});
 
     let rows;
 

@@ -1,0 +1,41 @@
+{
+  "name": "timelink-player",
+  "version": "1.0.0",
+  "description": "TimeLink .tl 파일 플레이어",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "digital.timelink.player",
+    "productName": "TimeLink Player",
+    "fileAssociations": [
+      {
+        "ext": "tl",
+        "name": "TimeLink File",
+        "description": "TL 암호화 파일",
+        "mimeType": "application/x-timelink"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerHeaderImage": "assets/installer-header.bmp"
+    }
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0"
+  }
+}
