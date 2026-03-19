@@ -1681,15 +1681,14 @@ app.get('/api/chart', async (c) => {
     if (type === 'tl') {
       // TL 충전 많은 순 (tl_user_files 집계)
       const res = await c.env.DB.prepare(`
-        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type, s.category_type,
+        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type,
+               COALESCE(s.category_type,'') as category_type,
                s.duration, s.cover_url, s.pulse, s.file_tl,
                COALESCE(u.username, s.username, 'User') as username,
-               COALESCE(SUM(uf.total_charged), 0) as total_tl_charged
+               s.file_tl as total_tl_charged
         FROM tl_shares s
         LEFT JOIN users u ON CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT)
-        LEFT JOIN tl_user_files uf ON s.id = uf.share_id
-        GROUP BY s.id
-        ORDER BY total_tl_charged DESC, s.pulse DESC
+        ORDER BY s.file_tl DESC, s.pulse DESC
         LIMIT ?
       `).bind(limit).all();
       rows = res.results;
@@ -1707,16 +1706,15 @@ app.get('/api/chart', async (c) => {
       if (genre !== 'all') genreFilter = `AND UPPER(s.category) = UPPER('${genre.replace(/'/g,"''")}')`;
 
       const res = await c.env.DB.prepare(`
-        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type, s.category_type,
+        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type,
+               COALESCE(s.category_type,'') as category_type,
                s.duration, s.cover_url, s.pulse, s.file_tl,
                COALESCE(u.username, s.username, 'User') as username,
-               COALESCE(SUM(uf.total_charged), 0) as total_tl_charged
+               0 as total_tl_charged
         FROM tl_shares s
         LEFT JOIN users u ON CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT)
-        LEFT JOIN tl_user_files uf ON s.id = uf.share_id
         WHERE 1=1 ${typeFilter} ${genreFilter}
-        GROUP BY s.id
-        ORDER BY s.pulse DESC, total_tl_charged DESC
+        ORDER BY s.pulse DESC, s.file_tl DESC
         LIMIT ?
       `).bind(limit).all();
       rows = res.results;
