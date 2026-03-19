@@ -761,6 +761,229 @@ app.options('/api/audio/:filename', (c) => new Response(null, { headers: {
   'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
 }}));
 
+
+// ══════════════════════════════════════════════════════════
+//  TL 파일 보호 스트리밍
+//  GET  /api/stream/:shareId          - TL 확인 후 스트리밍
+//  POST /api/stream/:shareId/tick     - 1초 TL 차감
+//  GET  /api/stream/:shareId/info     - 파일 메타 + TL 잔액
+// ══════════════════════════════════════════════════════════
+
+function parseTokenUserId(token: string): number {
+  if (!token) return 0;
+  const m = token.match(/(?:token|fallback)_(\d+)/);
+  if (m) return Number(m[1]);
+  try {
+    const p = JSON.parse(atob(token.split('.')[1]));
+    return Number(p.userId || p.id || p.sub || 0);
+  } catch { return 0; }
+}
+
+// ── 파일 정보 + TL 잔액 조회 ──
+app.get('/api/stream/:shareId/info', async (c) => {
+  const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
+  const userId = parseTokenUserId(token);
+  const shareId = c.req.param('shareId');
+
+  try {
+    const share = await c.env.DB.prepare(
+      'SELECT id, title, artist, duration, file_tl, stream_url, plan FROM tl_shares WHERE id=?'
+    ).bind(shareId).first() as any;
+    if (!share) return c.json({ error: '파일 없음' }, 404);
+
+    const user = userId
+      ? await c.env.DB.prepare(
+          'SELECT tl, COALESCE(tl_p,tl,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?'
+        ).bind(userId).first() as any
+      : null;
+
+    const totalTL = user ? (Number(user.tl_p||0) + Number(user.tl_a||0) + Number(user.tl_b||0)) : 0;
+    const canPlay = totalTL > 0 || !userId;
+
+    return c.json({
+      share: { id: share.id, title: share.title, artist: share.artist, duration: share.duration },
+      tl: { total: totalTL, tl_p: user?.tl_p||0, tl_a: user?.tl_a||0, tl_b: user?.tl_b||0 },
+      can_play: canPlay,
+    });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── TL 검증 후 스트리밍 ──
+app.get('/api/stream/:shareId', async (c) => {
+  const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
+  const userId = parseTokenUserId(token);
+  const shareId = c.req.param('shareId');
+
+  const cors = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+    'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization',
+    'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance, X-TL-Required',
+    'Accept-Ranges': 'bytes',
+  };
+
+  try {
+    // 1. 파일 조회
+    const share = await c.env.DB.prepare(
+      'SELECT id, title, stream_url, file_tl FROM tl_shares WHERE id=?'
+    ).bind(shareId).first() as any;
+    if (!share) return new Response(JSON.stringify({ error: '파일 없음' }), { status: 404, headers: cors });
+
+    // 2. TL 잔액 확인
+    let totalTL = 0;
+    if (userId) {
+      const user = await c.env.DB.prepare(
+        'SELECT COALESCE(tl,0) as tl FROM users WHERE id=?'
+      ).bind(userId).first() as any;
+      totalTL = Number(user?.tl || 0);
+    }
+
+    if (!userId || totalTL <= 0) {
+      return new Response(JSON.stringify({
+        error: 'TL 잔액이 부족합니다',
+        code: 'TL_INSUFFICIENT',
+        tl_balance: totalTL,
+      }), {
+        status: 402, // Payment Required
+        headers: { ...cors, 'Content-Type': 'application/json', 'X-TL-Balance': String(totalTL) },
+      });
+    }
+
+    // 3. R2 키 추출
+    const streamUrl = share.stream_url || '';
+    let key = '';
+    if (streamUrl.includes('r2.dev/')) {
+      key = streamUrl.split('r2.dev/')[1];
+    } else if (streamUrl.startsWith('tracks/')) {
+      key = streamUrl;
+    } else if (streamUrl) {
+      const fn = streamUrl.split('/').pop()?.split('?')[0] || '';
+      key = 'tracks/' + fn;
+    }
+    if (!key) return new Response(JSON.stringify({ error: '스트림 없음' }), { status: 404, headers: cors });
+
+    // 4. Range 스트리밍
+    const rangeHeader = c.req.header('Range');
+    const meta = await c.env.R2.head(key);
+    if (!meta) return new Response(JSON.stringify({ error: 'R2 파일 없음' }), { status: 404, headers: cors });
+
+    const contentType = meta.httpMetadata?.contentType || 'audio/mpeg';
+    const total = meta.size;
+
+    if (rangeHeader) {
+      const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      if (!m) return new Response('Invalid Range', { status: 416, headers: cors });
+      const start = parseInt(m[1]);
+      const end = m[2] !== '' ? Math.min(parseInt(m[2]), total - 1) : Math.min(start + 1024 * 512 - 1, total - 1); // 512KB chunk
+      const length = end - start + 1;
+
+      const obj = await c.env.R2.get(key, { range: { offset: start, length } });
+      if (!obj) return new Response(JSON.stringify({ error: '읽기 실패' }), { status: 500, headers: cors });
+
+      return new Response(obj.body, {
+        status: 206,
+        headers: { ...cors,
+          'Content-Type': contentType,
+          'Content-Range': \`bytes \${start}-\${end}/\${total}\`,
+          'Content-Length': String(length),
+          'X-TL-Balance': String(totalTL),
+          'Cache-Control': 'no-store', // 캐시 금지 - 항상 TL 확인
+        },
+      });
+    }
+
+    // Range 없는 전체 스트리밍
+    const obj = await c.env.R2.get(key);
+    if (!obj) return new Response(JSON.stringify({ error: '읽기 실패' }), { status: 500, headers: cors });
+
+    return new Response(obj.body, {
+      status: 200,
+      headers: { ...cors,
+        'Content-Type': contentType,
+        'Content-Length': String(total),
+        'X-TL-Balance': String(totalTL),
+        'Cache-Control': 'no-store',
+      },
+    });
+
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: cors });
+  }
+});
+
+// OPTIONS preflight
+app.options('/api/stream/:shareId', async (c) => {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization',
+    },
+  });
+});
+
+// ── 초당 TL 차감 (tick) ──
+app.post('/api/stream/:shareId/tick', async (c) => {
+  const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
+  const userId = parseTokenUserId(token);
+  const shareId = c.req.param('shareId');
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+
+  try {
+    const body = await c.req.json() as any;
+    const seconds = Math.min(Number(body.seconds || 1), 10); // 최대 10초 단위
+    const deductRate = Number(body.deduct_rate || 1.0);
+    const cost = Math.ceil(seconds * deductRate);
+
+    // 잔액 확인
+    const user = await c.env.DB.prepare(
+      'SELECT id, COALESCE(tl,0) as tl, COALESCE(tl_p,tl,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?'
+    ).bind(userId).first() as any;
+    if (!user) return c.json({ error: '유저 없음' }, 404);
+
+    const totalTL = Number(user.tl_p||0) + Number(user.tl_a||0) + Number(user.tl_b||0);
+    if (totalTL <= 0) return c.json({ ok: false, code: 'TL_EMPTY', tl_balance: 0 }, 402);
+
+    // TL 차감: tl_a → tl_b → tl_p 순서 (광고TL 먼저 소모)
+    let remaining = cost;
+    const updates: string[] = [];
+    const vals: any[] = [];
+
+    const tl_a = Number(user.tl_a||0);
+    const tl_b = Number(user.tl_b||0);
+    const tl_p = Number(user.tl_p||0);
+
+    let new_a = tl_a, new_b = tl_b, new_p = tl_p;
+    if (remaining > 0 && new_a > 0) {
+      const d = Math.min(remaining, new_a); new_a -= d; remaining -= d;
+    }
+    if (remaining > 0 && new_b > 0) {
+      const d = Math.min(remaining, new_b); new_b -= d; remaining -= d;
+    }
+    if (remaining > 0 && new_p > 0) {
+      const d = Math.min(remaining, new_p); new_p -= d; remaining -= d;
+    }
+
+    const newTotal = new_a + new_b + new_p;
+
+    await c.env.DB.prepare(
+      'UPDATE users SET tl=?, tl_p=?, tl_a=?, tl_b=?, total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=?'
+    ).bind(newTotal, new_p, new_a, new_b, cost, userId).run();
+
+    // pulse 업데이트
+    await c.env.DB.prepare(
+      'UPDATE tl_shares SET pulse=COALESCE(pulse,0)+? WHERE id=?'
+    ).bind(seconds, shareId).run().catch(() => {});
+
+    return c.json({ ok: true, tl_balance: newTotal, tl_p: new_p, tl_a: new_a, tl_b: new_b, cost });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
 app.get('/api/audio/:filename', async (c) => {
   try {
     const filename = c.req.param('filename');
