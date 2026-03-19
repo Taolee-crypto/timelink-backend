@@ -347,7 +347,7 @@ app.post('/api/shares', async (c) => {
       id TEXT PRIMARY KEY, user_id TEXT, username TEXT,
       title TEXT NOT NULL, artist TEXT DEFAULT '', album TEXT DEFAULT '',
       duration INTEGER DEFAULT 0, file_tl INTEGER DEFAULT 0,
-      category TEXT DEFAULT 'Music', file_type TEXT DEFAULT '',
+      category TEXT DEFAULT 'Music', file_type TEXT DEFAULT '', category_type TEXT DEFAULT '',
       description TEXT DEFAULT '', plan TEXT DEFAULT 'A',
       spotify_id TEXT, spotify_url TEXT, cover_url TEXT, preview_url TEXT,
       stream_url TEXT DEFAULT '',
@@ -362,13 +362,13 @@ app.post('/api/shares', async (c) => {
   const id = 'sh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
   await c.env.DB.prepare(`
     INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,
-      category,file_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,pulse,created_at)
+      category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,pulse,created_at)
     VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,0,?)
   `).bind(
     id, String(realId), username,
     body.title, body.artist || '', body.album || '',
     body.duration || 0,
-    body.category || 'Music', body.file_type || '',
+    body.category || 'Music', body.file_type || '', body.category_type || '',
     body.description || '', body.plan || 'A',
     body.spotify_id || null, body.spotify_url || null,
     body.cover_url || null, body.preview_url || null,
@@ -404,6 +404,149 @@ app.post('/api/shares/:id/pulse', async (c) => {
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 
+
+
+// ══════════════════════════════════════════════════
+// 어드민 재무 통계 API
+// GET /api/admin/revenue
+// ══════════════════════════════════════════════════
+app.get('/api/admin/revenue', async (c) => {
+  try {
+    const db = c.env.DB;
+
+    // 1. 법정화폐 매출 (tl_payments)
+    await db.prepare(`CREATE TABLE IF NOT EXISTS tl_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL, method TEXT NOT NULL,
+      pg_id TEXT NOT NULL UNIQUE, merchant_uid TEXT,
+      amount_krw INTEGER NOT NULL, tl_granted INTEGER NOT NULL,
+      status TEXT DEFAULT 'pending',
+      created_at TEXT DEFAULT (datetime('now'))
+    )`).run().catch(()=>{});
+
+    const payRow = await db.prepare(`
+      SELECT 
+        COALESCE(SUM(CASE WHEN status='success' THEN amount_krw ELSE 0 END),0) AS total_krw,
+        COALESCE(SUM(CASE WHEN status='success' THEN tl_granted ELSE 0 END),0) AS total_tl_sold,
+        COUNT(CASE WHEN status='success' THEN 1 END) AS pay_count,
+        COALESCE(SUM(CASE WHEN status='success' AND created_at>=date('now','start of month') THEN amount_krw ELSE 0 END),0) AS month_krw,
+        COALESCE(SUM(CASE WHEN status='success' AND created_at>=date('now','-7 days') THEN amount_krw ELSE 0 END),0) AS week_krw,
+        COALESCE(SUM(CASE WHEN status='success' AND date(created_at)=date('now') THEN amount_krw ELSE 0 END),0) AS today_krw
+      FROM tl_payments
+    `).first() as any;
+
+    // 2. 플랫폼이 번 TL (광고 수익 = tl_ads 소진 합계)
+    await db.prepare(`CREATE TABLE IF NOT EXISTS tl_ads (
+      id TEXT PRIMARY KEY, spent_tl INTEGER DEFAULT 0, status TEXT DEFAULT 'active',
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )`).run().catch(()=>{});
+
+    const adRow = await db.prepare(`
+      SELECT
+        COALESCE(SUM(spent_tl),0) AS total_ad_tl,
+        COUNT(*) AS total_ads,
+        COUNT(CASE WHEN status='active' THEN 1 END) AS active_ads
+      FROM tl_ads
+    `).first() as any;
+
+    // 3. 유저들에게 나누어준 TL (tl_a: 광고 리워드)
+    const rewardRow = await db.prepare(`
+      SELECT
+        COALESCE(SUM(tl_a),0) AS total_tl_a_distributed,
+        COALESCE(SUM(tl_p),0) AS total_tl_p_held,
+        COALESCE(SUM(tl),0)   AS total_tl_held,
+        COALESCE(SUM(total_tl_spent),0) AS total_tl_consumed,
+        COALESCE(SUM(total_tl_exchanged),0) AS total_tl_cash_requested,
+        COUNT(*) AS user_count
+      FROM users
+    `).first() as any;
+
+    // 4. TLC 채굴 현황
+    await db.prepare(`CREATE TABLE IF NOT EXISTS tlc_mining_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER, tlc_mined REAL DEFAULT 0,
+      poc_index REAL DEFAULT 1, created_at TEXT DEFAULT (datetime('now'))
+    )`).run().catch(()=>{});
+
+    const tlcRow = await db.prepare(`
+      SELECT
+        COALESCE(SUM(tlc_mined),0) AS total_tlc_mined,
+        COUNT(DISTINCT user_id) AS miners_count,
+        COALESCE(SUM(CASE WHEN created_at>=date('now','-30 days') THEN tlc_mined ELSE 0 END),0) AS month_tlc
+      FROM tlc_mining_logs
+    `).first() as any;
+
+    // 5. TLC 보유 합계 (users.tlc)
+    const tlcHeldRow = await db.prepare(`
+      SELECT COALESCE(SUM(tlc_balance),0) AS total_tlc_held FROM users
+    `).first() as any;
+
+    // 6. 현금 교환 요청 (total_tl_exchanged 기반)
+    // total_tl_exchanged = 현금으로 교환 요청한 TL 누적
+    const cashRow = await db.prepare(`
+      SELECT
+        COALESCE(SUM(total_tl_exchanged),0) AS total_exchange_requested,
+        COUNT(CASE WHEN total_tl_exchanged > 0 THEN 1 END) AS exchange_user_count
+      FROM users
+    `).first() as any;
+
+    // 7. 최근 결제 내역 10건
+    const recentPays = await db.prepare(`
+      SELECT p.id, p.user_id, p.method, p.amount_krw, p.tl_granted, p.status,
+             p.created_at, u.email, u.username
+      FROM tl_payments p
+      LEFT JOIN users u ON CAST(p.user_id AS TEXT)=CAST(u.id AS TEXT)
+      WHERE p.status='success'
+      ORDER BY p.created_at DESC LIMIT 10
+    `).all().catch(()=>({results:[]}));
+
+    // 8. 일별 매출 (최근 30일)
+    const dailyRevenue = await db.prepare(`
+      SELECT date(created_at) as day,
+             SUM(amount_krw) as krw,
+             SUM(tl_granted) as tl,
+             COUNT(*) as cnt
+      FROM tl_payments
+      WHERE status='success' AND created_at >= date('now','-30 days')
+      GROUP BY date(created_at)
+      ORDER BY day DESC
+    `).all().catch(()=>({results:[]}));
+
+    return c.json({
+      ok: true,
+      revenue: {
+        // 법정화폐 매출
+        total_krw:       Number(payRow?.total_krw || 0),
+        month_krw:       Number(payRow?.month_krw || 0),
+        week_krw:        Number(payRow?.week_krw || 0),
+        today_krw:       Number(payRow?.today_krw || 0),
+        pay_count:       Number(payRow?.pay_count || 0),
+        total_tl_sold:   Number(payRow?.total_tl_sold || 0),
+        // 광고 TL (플랫폼 수익)
+        total_ad_tl:     Number(adRow?.total_ad_tl || 0),
+        total_ads:       Number(adRow?.total_ads || 0),
+        active_ads:      Number(adRow?.active_ads || 0),
+        // TL 분배
+        total_tl_a_distributed: Number(rewardRow?.total_tl_a_distributed || 0),
+        total_tl_consumed:      Number(rewardRow?.total_tl_consumed || 0),
+        total_tl_p_held:        Number(rewardRow?.total_tl_p_held || 0),
+        // 현금 교환
+        total_exchange_requested: Number(cashRow?.total_exchange_requested || 0),
+        exchange_user_count:      Number(cashRow?.exchange_user_count || 0),
+        // TLC 채굴
+        total_tlc_mined:  Number(tlcRow?.total_tlc_mined || 0),
+        month_tlc:        Number(tlcRow?.month_tlc || 0),
+        miners_count:     Number(tlcRow?.miners_count || 0),
+        total_tlc_held:   Number(tlcHeldRow?.total_tlc_held || 0),
+        user_count:       Number(rewardRow?.user_count || 0),
+      },
+      recent_payments: recentPays.results || [],
+      daily_revenue:   dailyRevenue.results || [],
+    });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
 
 // ADMIN: tl_settings CRUD (푸터·공지 설정 전용)
 app.get('/api/admin/settings/:key', async (c) => {
@@ -1020,7 +1163,7 @@ app.get('/api/chart', async (c) => {
     if (type === 'tl') {
       // TL 충전 많은 순 (tl_user_files 집계)
       const res = await c.env.DB.prepare(`
-        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type,
+        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type, s.category_type,
                s.duration, s.cover_url, s.pulse, s.file_tl,
                COALESCE(u.username, s.username, 'User') as username,
                COALESCE(SUM(uf.total_charged), 0) as total_tl_charged
@@ -1046,7 +1189,7 @@ app.get('/api/chart', async (c) => {
       if (genre !== 'all') genreFilter = `AND UPPER(s.category) = UPPER('${genre.replace(/'/g,"''")}')`;
 
       const res = await c.env.DB.prepare(`
-        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type,
+        SELECT s.id, s.title, s.artist, s.album, s.category, s.file_type, s.category_type,
                s.duration, s.cover_url, s.pulse, s.file_tl,
                COALESCE(u.username, s.username, 'User') as username,
                COALESCE(SUM(uf.total_charged), 0) as total_tl_charged
