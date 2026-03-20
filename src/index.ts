@@ -1225,8 +1225,54 @@ app.post('/api/decrypt/:shareId', async (c) => {
 
     // .tl 파일 로드
     const tlKey = `tl/${shareId}.tl`;
-    const tlObj = await c.env.R2.get(tlKey);
-    if (!tlObj) return new Response(JSON.stringify({ error:'TL 파일 없음' }), {status:404,headers:cors});
+    let tlObj = await c.env.R2.get(tlKey);
+
+    // .tl 없으면 원본 오디오로 즉석 변환
+    if (!tlObj) {
+      const share = await c.env.DB.prepare(
+        'SELECT stream_url, title, artist FROM tl_shares WHERE id=?'
+      ).bind(shareId).first() as any;
+      if (!share) return new Response(JSON.stringify({ error:'파일 없음' }), {status:404,headers:cors});
+
+      const streamUrl = share.stream_url || '';
+      let rawKey = '';
+      if (streamUrl.includes('r2.dev/')) rawKey = streamUrl.split('r2.dev/')[1];
+      else if (streamUrl.startsWith('tracks/')) rawKey = streamUrl;
+      else { const fn=streamUrl.split('/').pop()?.split('?')[0]||''; rawKey='tracks/'+fn; }
+
+      const rawObj = await c.env.R2.get(rawKey);
+      if (!rawObj) return new Response(JSON.stringify({ error:'원본 파일 없음' }), {status:404,headers:cors});
+
+      const raw    = new Uint8Array(await rawObj.arrayBuffer());
+      const secret2 = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
+      const ext2   = rawKey.split('.').pop() || 'bin';
+      const hash2  = await sha256Hex(raw);
+      const hdr2   = {
+        shareId, creatorId:0, creatorName:'', title: share.title||'',
+        artist: share.artist||'', fileType: rawObj.httpMetadata?.contentType||'audio/mpeg',
+        ext:ext2, duration:0, tl_per_sec:1.0, plan:'A',
+        uploadedAt: new Date().toISOString(), contentHash:hash2,
+        platform:'timelink.digital', version:1,
+      };
+      const tlBuilt = buildTLFile(hdr2, raw, secret2);
+      // R2에 저장 (다음 요청 대비)
+      c.env.R2.put(tlKey, tlBuilt, {
+        httpMetadata:{contentType:'application/octet-stream'},
+        customMetadata:{shareId},
+      }).catch(()=>{});
+
+      // 직접 복호화해서 반환
+      const contentType2 = rawObj.httpMetadata?.contentType || 'audio/mpeg';
+      return new Response(raw, {
+        status: 200,
+        headers: { ...cors,
+          'Content-Type': contentType2,
+          'Content-Length': String(raw.length),
+          'X-TL-Header': JSON.stringify({ title:share.title, artist:share.artist, duration:0 }),
+          'Cache-Control': 'no-store',
+        },
+      });
+    }
 
     const tlData   = new Uint8Array(await tlObj.arrayBuffer());
     const secret   = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
