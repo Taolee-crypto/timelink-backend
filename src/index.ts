@@ -1236,12 +1236,27 @@ app.post('/api/decrypt/:shareId', async (c) => {
 
       const streamUrl = share.stream_url || '';
       let rawKey = '';
-      if (streamUrl.includes('r2.dev/')) rawKey = streamUrl.split('r2.dev/')[1];
-      else if (streamUrl.startsWith('tracks/')) rawKey = streamUrl;
-      else { const fn=streamUrl.split('/').pop()?.split('?')[0]||''; rawKey='tracks/'+fn; }
+      if (streamUrl.includes('r2.dev/')) {
+        rawKey = decodeURIComponent(streamUrl.split('r2.dev/')[1].split('?')[0]);
+      } else if (streamUrl.startsWith('tracks/') || streamUrl.startsWith('tl/')) {
+        rawKey = decodeURIComponent(streamUrl.split('?')[0]);
+      } else if (streamUrl.startsWith('https://') || streamUrl.startsWith('http://')) {
+        // URL에서 경로만 추출
+        try {
+          const u = new URL(streamUrl);
+          rawKey = decodeURIComponent(u.pathname.replace(/^\//, ''));
+        } catch {
+          const fn = streamUrl.split('/').pop()?.split('?')[0] || '';
+          rawKey = 'tracks/' + fn;
+        }
+      } else {
+        const fn = streamUrl.split('/').pop()?.split('?')[0] || '';
+        rawKey = fn ? 'tracks/' + fn : '';
+      }
+      console.log('[decrypt] shareId:', shareId, 'streamUrl:', streamUrl, 'rawKey:', rawKey);
 
       const rawObj = await c.env.R2.get(rawKey);
-      if (!rawObj) return new Response(JSON.stringify({ error:'원본 파일 없음' }), {status:404,headers:cors});
+      if (!rawObj) return new Response(JSON.stringify({ error:'원본 파일 없음', rawKey, streamUrl }), {status:404,headers:cors});
 
       const raw    = new Uint8Array(await rawObj.arrayBuffer());
       const secret2 = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
@@ -1262,7 +1277,15 @@ app.post('/api/decrypt/:shareId', async (c) => {
       }).catch(()=>{});
 
       // 직접 복호화해서 반환
-      const contentType2 = rawObj.httpMetadata?.contentType || 'audio/mpeg';
+      const extMimeMap: Record<string,string> = {
+        'mp3':'audio/mpeg','mp4':'video/mp4','wav':'audio/wav',
+        'ogg':'audio/ogg','flac':'audio/flac','aac':'audio/aac',
+        'm4a':'audio/mp4','webm':'audio/webm','png':'image/png',
+        'jpg':'image/jpeg','jpeg':'image/jpeg','gif':'image/gif',
+        'pdf':'application/pdf','txt':'text/plain',
+      };
+      const rawExt2 = (rawKey.split('.').pop()||'').toLowerCase();
+      const contentType2 = rawObj.httpMetadata?.contentType || extMimeMap[rawExt2] || 'audio/mpeg';
       return new Response(raw, {
         status: 200,
         headers: { ...cors,
