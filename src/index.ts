@@ -2288,6 +2288,66 @@ app.get('/api/ton/status', async (c) => {
   } catch(e:any) { return c.json({ error: e.message }, 500); }
 });
 
+
+// ── /api/eco/activity — 카페/인카 방송 TL 차감 서버 동기화 ──
+app.post('/api/eco/activity', async (c) => {
+  const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseTokenUserId(token);
+  if (!userId) return c.json({ error:'로그인 필요' }, 401);
+
+  try {
+    const { seconds, tl_p_spent, tl_a_spent, mode, share_id, listen_minutes } = await c.req.json() as any;
+
+    const tlSpent = Number(tl_p_spent||0) + Number(tl_a_spent||0);
+
+    if (tlSpent > 0) {
+      // tl_p 먼저, 부족하면 tl_a 차감
+      const user = await c.env.DB.prepare(
+        'SELECT COALESCE(tl_p,tl,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?'
+      ).bind(userId).first() as any;
+
+      let pSpent = Math.min(Number(tl_p_spent||0), Number(user?.tl_p||0));
+      let aSpent = Math.min(Number(tl_a_spent||0), Number(user?.tl_a||0));
+      let remaining = tlSpent - pSpent - aSpent;
+      if (remaining > 0) {
+        // tl_a로 추가 차감
+        aSpent += Math.min(remaining, Number(user?.tl_a||0) - aSpent);
+      }
+
+      await c.env.DB.prepare(
+        'UPDATE users SET tl_p=MAX(0,COALESCE(tl_p,tl,0)-?), tl_a=MAX(0,COALESCE(tl_a,0)-?), tl=MAX(0,COALESCE(tl,0)-?), total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=?'
+      ).bind(pSpent, aSpent, pSpent+aSpent, pSpent+aSpent, userId).run();
+    }
+
+    // POC 로그
+    if (seconds > 0) {
+      await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS poc_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, mode TEXT, seconds INTEGER DEFAULT 0,
+        tl_spent REAL DEFAULT 0, poc_gained REAL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      )`).run().catch(()=>{});
+
+      await c.env.DB.prepare(
+        'INSERT INTO poc_logs (user_id, mode, seconds, tl_spent) VALUES (?,?,?,?)'
+      ).bind(userId, mode||'listen', seconds, tlSpent).run();
+    }
+
+    // 업데이트된 잔액 반환
+    const updated = await c.env.DB.prepare(
+      'SELECT COALESCE(tl_p,tl,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b, COALESCE(poc_index,1.0) as poc_index FROM users WHERE id=?'
+    ).bind(userId).first() as any;
+
+    return c.json({
+      ok: true,
+      tl_p: Number(updated?.tl_p||0),
+      tl_a: Number(updated?.tl_a||0),
+      tl_b: Number(updated?.tl_b||0),
+      poc_index: Number(updated?.poc_index||1.0),
+    });
+  } catch(e:any) { return c.json({ error: e.message }, 500); }
+});
+
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 export default app;
