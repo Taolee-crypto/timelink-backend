@@ -2120,6 +2120,61 @@ ${JSON.stringify(toTranslate.map(t => t.text))}`;
   }
 });
 
+
+app.post('/api/eco/calc-poc', async (c) => {
+  const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseTokenUserId(token);
+  if (!userId) return c.json({ error:'로그인 필요' }, 401);
+  try {
+    const user = await c.env.DB.prepare(
+      'SELECT COALESCE(tl_p,tl,0) as tl_p, COALESCE(total_tl_spent,0) as spent, COALESCE(total_tl_exchanged,0) as exchanged, COALESCE(poc_index,1.0) as poc_index FROM users WHERE id=?'
+    ).bind(userId).first() as any;
+    if (!user) return c.json({ error:'유저없음' }, 404);
+
+    const playRow = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM tl_user_files WHERE user_id=? AND tl_balance > 0'
+    ).bind(userId).first() as any;
+    const uploadRow = await c.env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM tl_shares WHERE user_id=?'
+    ).bind(String(userId)).first() as any;
+
+    const playCount   = Number(playRow?.cnt || 0);
+    const uploadCount = Number(uploadRow?.cnt || 0);
+    const tl_p        = Number(user.tl_p || 0);
+
+    const playBonus   = Math.min(playCount * 0.01, 0.5);
+    const uploadBonus = Math.min(uploadCount * 0.05, 0.3);
+    const holdBonus   = tl_p > 100000 ? 0.2 : tl_p > 50000 ? 0.1 : 0;
+    const newPoc      = Math.min(1.0 + playBonus + uploadBonus + holdBonus, 3.0);
+    const pocRounded  = Math.round(newPoc * 100) / 100;
+
+    await c.env.DB.prepare('UPDATE users SET poc_index=? WHERE id=?').bind(pocRounded, userId).run();
+
+    const spent     = Number(user.spent || 0);
+    const exchanged = Number(user.exchanged || 0);
+    const mineable  = Math.max(0, Math.floor((spent - exchanged) * 0.5 * pocRounded));
+
+    return c.json({
+      ok: true, poc_index: pocRounded,
+      play_count: playCount, upload_count: uploadCount,
+      mineable_tlc: mineable,
+      formula: `(${spent} - ${exchanged}) × 50% × ${pocRounded} = ${mineable} TLC`,
+    });
+  } catch(e:any) { return c.json({ error: e.message }, 500); }
+});
+
+app.get('/api/eco/mining-history', async (c) => {
+  const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseTokenUserId(token);
+  if (!userId) return c.json({ error:'로그인 필요' }, 401);
+  try {
+    const rows = await c.env.DB.prepare(
+      'SELECT tlc_mined, poc_index, created_at FROM tlc_mining_logs WHERE user_id=? ORDER BY created_at DESC LIMIT 30'
+    ).bind(userId).all();
+    return c.json({ ok: true, history: rows.results || [] });
+  } catch(e:any) { return c.json({ error: e.message }, 500); }
+});
+
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 export default app;
