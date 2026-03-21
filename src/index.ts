@@ -2175,6 +2175,119 @@ app.get('/api/eco/mining-history', async (c) => {
   } catch(e:any) { return c.json({ error: e.message }, 500); }
 });
 
+
+// ══════════════════════════════════════════════════════════
+//  TON 지갑 연동
+//  POST /api/ton/connect     — TON 지갑 주소 저장
+//  POST /api/ton/withdraw    — TLC 출금 신청
+//  GET  /api/ton/status      — 출금 현황 조회
+// ══════════════════════════════════════════════════════════
+
+app.post('/api/ton/connect', async (c) => {
+  const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseTokenUserId(token);
+  if (!userId) return c.json({ error:'로그인 필요' }, 401);
+
+  try {
+    const { ton_address, ton_proof } = await c.req.json() as any;
+    if (!ton_address) return c.json({ error:'TON 주소 필요' }, 400);
+
+    // TON 주소 형식 검증 (EQ 또는 UQ로 시작, 48자)
+    const isValid = /^[EU]Q[A-Za-z0-9_-]{46}$/.test(ton_address);
+    if (!isValid) return c.json({ error:'유효하지 않은 TON 주소' }, 400);
+
+    // DB에 저장
+    await c.env.DB.prepare("ALTER TABLE users ADD COLUMN ton_address TEXT DEFAULT ''").run().catch(()=>{});
+    await c.env.DB.prepare("ALTER TABLE users ADD COLUMN ton_connected_at TEXT DEFAULT ''").run().catch(()=>{});
+    await c.env.DB.prepare(
+      "UPDATE users SET ton_address=?, ton_connected_at=datetime('now') WHERE id=?"
+    ).bind(ton_address, userId).run();
+
+    return c.json({ ok: true, ton_address, message: 'TON 지갑이 연결됐습니다.' });
+  } catch(e:any) { return c.json({ error: e.message }, 500); }
+});
+
+app.post('/api/ton/withdraw', async (c) => {
+  const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseTokenUserId(token);
+  if (!userId) return c.json({ error:'로그인 필요' }, 401);
+
+  try {
+    const { tlc_amount } = await c.req.json() as any;
+    if (!tlc_amount || tlc_amount < 1) return c.json({ error:'최소 출금 1 TLC' }, 400);
+
+    // 테이블 생성
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tlc_withdrawals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      ton_address TEXT NOT NULL,
+      tlc_amount REAL NOT NULL,
+      status TEXT DEFAULT 'pending',
+      tx_hash TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now')),
+      processed_at TEXT DEFAULT ''
+    )`).run().catch(()=>{});
+
+    // 사용자 TLC + TON 주소 확인
+    const user = await c.env.DB.prepare(
+      "SELECT COALESCE(tlc_balance,tlc,0) as tlc, ton_address FROM users WHERE id=?"
+    ).bind(userId).first() as any;
+
+    if (!user) return c.json({ error:'유저없음' }, 404);
+    if (!user.ton_address) return c.json({ error:'TON 지갑을 먼저 연결하세요', code:'NO_TON_WALLET' }, 400);
+
+    const tlcBalance = Number(user.tlc || 0);
+    if (tlcBalance < tlc_amount) {
+      return c.json({ error:`TLC 잔액 부족 (보유: ${tlcBalance.toFixed(2)} TLC)`, balance: tlcBalance }, 402);
+    }
+
+    // 대기 중인 출금 확인
+    const pending = await c.env.DB.prepare(
+      "SELECT COUNT(*) as cnt FROM tlc_withdrawals WHERE user_id=? AND status='pending'"
+    ).bind(userId).first() as any;
+    if (Number(pending?.cnt||0) > 0) {
+      return c.json({ error:'이미 처리 중인 출금 신청이 있습니다.' }, 409);
+    }
+
+    // TLC 차감 + 출금 신청 생성
+    await c.env.DB.prepare(
+      "UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)-?, tlc=COALESCE(tlc,0)-? WHERE id=?"
+    ).bind(tlc_amount, tlc_amount, userId).run();
+
+    await c.env.DB.prepare(
+      "INSERT INTO tlc_withdrawals (user_id, ton_address, tlc_amount, status) VALUES (?,?,?,'pending')"
+    ).bind(userId, user.ton_address, tlc_amount).run();
+
+    return c.json({
+      ok: true,
+      message: `${tlc_amount} TLC 출금 신청 완료. 검토 후 TON 지갑으로 전송됩니다.`,
+      ton_address: user.ton_address,
+      tlc_amount,
+      status: 'pending',
+    });
+  } catch(e:any) { return c.json({ error: e.message }, 500); }
+});
+
+app.get('/api/ton/status', async (c) => {
+  const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
+  const userId = parseTokenUserId(token);
+  if (!userId) return c.json({ error:'로그인 필요' }, 401);
+  try {
+    const user = await c.env.DB.prepare(
+      "SELECT ton_address, COALESCE(tlc_balance,tlc,0) as tlc FROM users WHERE id=?"
+    ).bind(userId).first() as any;
+    const withdrawals = await c.env.DB.prepare(
+      "SELECT * FROM tlc_withdrawals WHERE user_id=? ORDER BY created_at DESC LIMIT 10"
+    ).bind(userId).all();
+    return c.json({
+      ok: true,
+      ton_address: user?.ton_address || '',
+      tlc_balance: Number(user?.tlc || 0),
+      withdrawals: withdrawals.results || [],
+    });
+  } catch(e:any) { return c.json({ error: e.message }, 500); }
+});
+
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 export default app;
