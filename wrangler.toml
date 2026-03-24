@@ -13,6 +13,6 @@ bucket_name = "timelink-audio"
 
 [vars]
 ENVIRONMENT = "production"
-JETTON_MINTER = "0QD9roAdBZ9JgpsAsPWX8xa0KGUIBGfpbs5_n3iHfGDO1OYY"
+JETTON_MINTER = "0QCtT3d1Jz2FpHjuMNIcLQxiXoryPY-M6hrW-32DgXmz6Vxv"
 TON_NETWORK = "testnet"
 TON_API_KEY = "cc70e713dd99c56ad4ba23ee1eae2f8545f2e71d774c35f7e2ece915e6ed9c55"
