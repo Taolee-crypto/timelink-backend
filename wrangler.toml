@@ -10,3 +10,9 @@ database_id = "7a61cb9f-d368-439e-b175-f3e958aeb84f"
 [[r2_buckets]]
 binding = "R2"
 bucket_name = "timelink-audio"
+
+[vars]
+ENVIRONMENT = "production"
+JETTON_MINTER = "0QD9roAdBZ9JgpsAsPWX8xa0KGUIBGfpbs5_n3iHfGDO1OYY"
+TON_NETWORK = "testnet"
+TON_API_KEY = "cc70e713dd99c56ad4ba23ee1eae2f8545f2e71d774c35f7e2ece915e6ed9c55"
