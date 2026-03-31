@@ -1293,25 +1293,62 @@ app.post('/api/eco/calc-poc', async (c) => {
   const userId = parseTokenUserId(token);
   if (!userId) return c.json({ error:'로그인 필요' }, 401);
   try {
-    const user = await c.env.DB.prepare(
-      'SELECT COALESCE(tl_p,tl,0) as tl_p, COALESCE(total_tl_spent,0) as spent, COALESCE(total_tl_exchanged,0) as exchanged, COALESCE(poc_index,1.0) as poc_index FROM users WHERE id=?'
-    ).bind(userId).first() as any;
-    if (!user) return c.json({ error:'유저없음' }, 404);
-    const playRow = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM tl_user_files WHERE user_id=? AND tl_balance > 0').bind(userId).first() as any;
-    const uploadRow = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM tl_shares WHERE user_id=?').bind(String(userId)).first() as any;
-    const playCount   = Number(playRow?.cnt || 0);
-    const uploadCount = Number(uploadRow?.cnt || 0);
-    const tl_p        = Number(user.tl_p || 0);
-    const playBonus   = Math.min(playCount * 0.01, 0.5);
-    const uploadBonus = Math.min(uploadCount * 0.05, 0.3);
-    const holdBonus   = tl_p > 100000 ? 0.2 : tl_p > 50000 ? 0.1 : 0;
-    const newPoc      = Math.min(1.0 + playBonus + uploadBonus + holdBonus, 3.0);
-    const pocRounded  = Math.round(newPoc * 100) / 100;
-    await c.env.DB.prepare('UPDATE users SET poc_index=? WHERE id=?').bind(pocRounded, userId).run();
-    const spent     = Number(user.spent || 0);
-    const exchanged = Number(user.exchanged || 0);
-    const mineable  = Math.max(0, Math.floor((spent - exchanged) * 0.5 * pocRounded));
-    return c.json({ ok: true, poc_index: pocRounded, play_count: playCount, upload_count: uploadCount, mineable_tlc: mineable });
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
+
+    // ── 1. 콘텐츠 창작 기여 (40%) - 월 재생수 / 500, 최대 2.0 ──
+    const playRow = await c.env.DB.prepare(
+      "SELECT COALESCE(SUM(seconds),0) as total_sec FROM poc_logs WHERE user_id=? AND mode='listen' AND created_at>=?"
+    ).bind(userId, monthStart).first() as any;
+    // 재생수 = 총 재생 횟수 (tl_user_files 기준)
+    const creationRow = await c.env.DB.prepare(
+      "SELECT COALESCE(SUM(pulse),0) as plays FROM tl_shares WHERE user_id=? AND created_at>=?"
+    ).bind(String(userId), monthStart).first() as any;
+    const monthPlays = Number(creationRow?.plays || 0);
+    const creationScore = Math.min(monthPlays / 500 * 2.0, 2.0);
+
+    // ── 2. TL_P 소비 기여 (30%) - 월 TL_P 소비 / 5000, 최대 1.5 ──
+    const spendRow = await c.env.DB.prepare(
+      "SELECT COALESCE(SUM(tl_spent),0) as spent FROM poc_logs WHERE user_id=? AND created_at>=?"
+    ).bind(userId, monthStart).first() as any;
+    const monthSpent = Number(spendRow?.spent || 0);
+    const spendScore = Math.min(monthSpent / 5000 * 1.5, 1.5);
+
+    // ── 3. 방송 청취 기여 (20%) - 월 청취시간 / 30시간(108000초), 최대 1.0 ──
+    const listenRow = await c.env.DB.prepare(
+      "SELECT COALESCE(SUM(seconds),0) as secs FROM poc_logs WHERE user_id=? AND created_at>=?"
+    ).bind(userId, monthStart).first() as any;
+    const monthSecs = Number(listenRow?.secs || 0);
+    const listenScore = Math.min(monthSecs / 108000 * 1.0, 1.0);
+
+    // ── 4. 업로드 기여 (10%) - 월 신규 업로드 / 5개, 최대 0.5 ──
+    const uploadRow = await c.env.DB.prepare(
+      "SELECT COUNT(*) as cnt FROM tl_shares WHERE user_id=? AND created_at>=?"
+    ).bind(String(userId), monthStart).first() as any;
+    const monthUploads = Number(uploadRow?.cnt || 0);
+    const uploadScore = Math.min(monthUploads / 5 * 0.5, 0.5);
+
+    // ── POC Index 합산 (최대 5.0) ──
+    const pocIndex = Math.round(Math.min(
+      creationScore + spendScore + listenScore + uploadScore, 5.0
+    ) * 100) / 100;
+
+    await c.env.DB.prepare('UPDATE users SET poc_index=? WHERE id=?').bind(pocIndex, userId).run();
+
+    // 채굴 가능 TLC = 월 TL_P 소비 × poc_index × 0.1
+    const mineableTlc = Math.floor(monthSpent * pocIndex * 0.1 * 100) / 100;
+
+    return c.json({
+      ok: true,
+      poc_index: pocIndex,
+      breakdown: {
+        creation: { score: Math.round(creationScore*100)/100, plays: monthPlays, max: 2.0, weight: '40%' },
+        spending: { score: Math.round(spendScore*100)/100, tl_spent: monthSpent, max: 1.5, weight: '30%' },
+        listening: { score: Math.round(listenScore*100)/100, hours: Math.round(monthSecs/360)/10, max: 1.0, weight: '20%' },
+        upload: { score: Math.round(uploadScore*100)/100, count: monthUploads, max: 0.5, weight: '10%' },
+      },
+      mineable_tlc: mineableTlc,
+    });
   } catch(e:any) { return c.json({ error: e.message }, 500); }
 });
 
@@ -1330,29 +1367,45 @@ app.post('/api/eco/mine', async (c) => {
        FROM users WHERE id=?`
     ).bind(userId).first() as any;
     if (!user) return c.json({ error:'유저없음' }, 404);
-    const spent     = Number(user.spent || 0);
-    const exchanged = Number(user.exchanged || 0);
-    const pocIndex  = Number(user.poc_index || 1.0);
-    const maxMineable = Math.max(0, (spent - exchanged) * 0.5 * pocIndex);
-    const today = new Date().toISOString().slice(0, 10);
-    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tlc_mining_logs (
+    const pocIndex = Number(user.poc_index || 0);
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10);
+
+    // 이번 달 TL_P 소비량
+    const spendRow = await c.env.DB.prepare(
+      "SELECT COALESCE(SUM(tl_spent),0) as spent FROM poc_logs WHERE user_id=? AND created_at>=?"
+    ).bind(userId, monthStart).first() as any;
+    const monthSpent = Number(spendRow?.spent || 0);
+
+    // 채굴 가능량 = 월 TL_P 소비 × poc_index × 0.1
+    const maxMineable = Math.floor(monthSpent * pocIndex * 0.1 * 100) / 100;
+
+    // 이번 달 이미 채굴한 양
+    await c.env.DB.prepare(\`CREATE TABLE IF NOT EXISTS tlc_mining_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
       tlc_mined REAL DEFAULT 0, poc_index REAL DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now'))
-    )`).run().catch(() => {});
+    )\`).run().catch(() => {});
     const alreadyRow = await c.env.DB.prepare(
-      "SELECT COALESCE(SUM(tlc_mined),0) as mined FROM tlc_mining_logs WHERE user_id=? AND DATE(created_at)=?"
-    ).bind(userId, today).first() as any;
-    const todayMined = Number(alreadyRow?.mined || 0);
-    const actualMine = Math.max(0, maxMineable - todayMined);
-    if (actualMine <= 0) {
-      return c.json({ ok: false, error: '채굴 가능한 TLC가 없습니다. TL을 더 소비하거나 내일 다시 시도하세요.', mined: 0, tlc_total: Number(user.tlc || 0) });
+      "SELECT COALESCE(SUM(tlc_mined),0) as mined FROM tlc_mining_logs WHERE user_id=? AND created_at>=?"
+    ).bind(userId, monthStart).first() as any;
+    const alreadyMined = Number(alreadyRow?.mined || 0);
+    const actualMine = Math.max(0, Math.round((maxMineable - alreadyMined) * 100) / 100);
+
+    if (pocIndex <= 0) {
+      return c.json({ ok: false, error: 'POC 기여 지수가 없습니다. 청취·창작·업로드로 기여도를 쌓으세요.', mined: 0, tlc_total: Number(user.tlc || 0) });
     }
-    const mineAmt = Math.round(actualMine * 10000) / 10000;
-    await c.env.DB.prepare('UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)+?, tlc=COALESCE(tlc,0)+? WHERE id=?').bind(mineAmt, mineAmt, userId).run();
-    await c.env.DB.prepare("INSERT INTO tlc_mining_logs (user_id, tlc_mined, poc_index) VALUES (?,?,?)").bind(userId, mineAmt, pocIndex).run();
+    if (actualMine <= 0) {
+      return c.json({ ok: false, error: \`이번 달 채굴 가능한 TLC가 없습니다. (이미 채굴: \${alreadyMined} TLC / 최대: \${maxMineable} TLC)\`, mined: 0, tlc_total: Number(user.tlc || 0) });
+    }
+
+    await c.env.DB.prepare('UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)+?, tlc=COALESCE(tlc,0)+? WHERE id=?').bind(actualMine, actualMine, userId).run();
+    await c.env.DB.prepare("INSERT INTO tlc_mining_logs (user_id, tlc_mined, poc_index) VALUES (?,?,?)").bind(userId, actualMine, pocIndex).run();
     const updated = await c.env.DB.prepare('SELECT COALESCE(tlc_balance,tlc,0) as tlc FROM users WHERE id=?').bind(userId).first() as any;
-    return c.json({ ok: true, mined: mineAmt, poc_index: pocIndex, tlc_total: Number(updated?.tlc || 0), formula: `(${spent} - ${exchanged}) x 50% x ${pocIndex} = ${mineAmt} TLC` });
+    return c.json({
+      ok: true, mined: actualMine, poc_index: pocIndex, tlc_total: Number(updated?.tlc || 0),
+      formula: \`월 TL_P 소비(\${monthSpent}) × POC지수(\${pocIndex}) × 10% = \${maxMineable} TLC (이번달 가능)\`,
+      already_mined: alreadyMined, max_mineable: maxMineable
+    });
   } catch(e: any) { return c.json({ error: e.message }, 500); }
 });
 
