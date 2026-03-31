@@ -1429,7 +1429,7 @@ app.post('/api/ton/connect', async (c) => {
   try {
     const { ton_address } = await c.req.json() as any;
     if (!ton_address) return c.json({ error:'TON 주소 필요' }, 400);
-    const isValid = /^[EU]Q[A-Za-z0-9_-]{46}$/.test(ton_address);
+    const isValid = /^[0EU]Q[A-Za-z0-9_-]{46}$/.test(ton_address);
     if (!isValid) return c.json({ error:'유효하지 않은 TON 주소' }, 400);
     await c.env.DB.prepare("ALTER TABLE users ADD COLUMN ton_address TEXT DEFAULT ''").run().catch(()=>{});
     await c.env.DB.prepare("ALTER TABLE users ADD COLUMN ton_connected_at TEXT DEFAULT ''").run().catch(()=>{});
@@ -1466,12 +1466,12 @@ app.post('/api/ton/withdraw', async (c) => {
       return c.json({ error:`TLC 잔액 부족 (보유: ${tlcBalance.toFixed(2)} TLC)`, balance: tlcBalance }, 402);
     }
 
-    // 중복 출금 방지
+    // 중복 출금 방지 (pending AND processing 둘 다 체크)
     const pending = await c.env.DB.prepare(
-      "SELECT COUNT(*) as cnt FROM tlc_withdrawals WHERE user_id=? AND status='pending'"
+      "SELECT COUNT(*) as cnt FROM tlc_withdrawals WHERE user_id=? AND status IN ('pending','processing')"
     ).bind(userId).first() as any;
     if (Number(pending?.cnt||0) > 0) {
-      return c.json({ error:'이미 처리 중인 출금 신청이 있습니다.' }, 409);
+      return c.json({ error:'이미 처리 중인 출금 신청이 있습니다. 처리 완료 후 다시 시도하세요.', code:'PENDING_EXISTS' }, 409);
     }
 
     // TLC 차감 (선차감)
@@ -1497,7 +1497,7 @@ app.post('/api/ton/withdraw', async (c) => {
       tlc_amount,
       status,
       tx_hash: txHash,
-      jetton_enabled: hasJetton,
+      jetton_enabled: true,
     });
   } catch(e:any) { return c.json({ error: e.message }, 500); }
 });
