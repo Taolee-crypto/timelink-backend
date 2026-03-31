@@ -802,16 +802,26 @@ app.get('/api/download/:shareId', async (c) => {
     ).bind(shareId).first() as any;
     const tlPerSec2  = Number(shareFull?.tl_per_sec || 1.0);
     const duration2  = Number(shareFull?.duration || 0);
-    const fileTL2    = Number(shareFull?.file_tl || Math.ceil(duration2 * tlPerSec2) || 3600);
     const xorKey2    = shareId + secret + 'TIMELINK_v1';
+
+    // ★ 핵심: 유저가 이 파일에 충전한 TL (tl_user_files)
+    const userFileTL = await c.env.DB.prepare(
+      'SELECT tl_balance, total_charged FROM tl_user_files WHERE user_id=? AND share_id=?'
+    ).bind(userId, shareId).first() as any;
+
+    // 유저 충전 TL이 있으면 그 값 사용, 없으면 file_tl 또는 기본값
+    const fileTL2 = Number(userFileTL?.tl_balance ?? shareFull?.file_tl ?? 0);
+    const tlMax2  = Number(userFileTL?.total_charged ?? shareFull?.file_tl ?? fileTL2);
+
     const header = {
       shareId,
+      userId,
       creatorId: 0, creatorName: shareFull?.artist||'',
       title: shareFull?.title||share.title||'', artist: shareFull?.artist||'',
       fileType: rawObj.httpMetadata?.contentType||'audio/mpeg', ext, duration: duration2,
       tl_per_sec: tlPerSec2, plan: shareFull?.plan||'A',
-      tl_balance: fileTL2,   // ★ 파일에 충전된 TL 잔액
-      tl_max: fileTL2,       // ★ 최초 충전량
+      tl_balance: fileTL2,   // ★ 유저가 충전한 실제 TL 잔액
+      tl_max: tlMax2,        // ★ 총 충전량
       xorKey: xorKey2,       // ★ 로컬 복호화 키
       uploadedAt: new Date().toISOString(), contentHash: hash,
       platform: 'timelink.digital', version: 1,
