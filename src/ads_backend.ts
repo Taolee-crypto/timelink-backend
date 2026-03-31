@@ -536,6 +536,29 @@ ads.post('/:id/toggle', async (c) => {
 });
 
 
+// ── 광고 삭제 ──
+ads.delete('/:id', async (c) => {
+  try {
+    await ensureTables(c.env.DB);
+    const adId   = c.req.param('id');
+    const token  = (c.req.header('Authorization') || '').replace('Bearer ', '');
+    const userId = parseUserId(token);
+    if (!userId) return c.json({ error: '인증 필요' }, 401);
+    const ad = await c.env.DB.prepare('SELECT id FROM tl_ads WHERE id=? AND advertiser_id=?')
+      .bind(adId, userId).first<any>();
+    if (!ad) return c.json({ error: '광고를 찾을 수 없거나 권한 없음' }, 404);
+    // R2에서 소재 파일 삭제 (있으면)
+    try {
+      await c.env.R2.delete(`ads/${adId}.tl`);
+    } catch (e) {}
+    await c.env.DB.prepare('DELETE FROM tl_ads WHERE id=? AND advertiser_id=?')
+      .bind(adId, userId).run();
+    return c.json({ ok: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 // ── 사이드바 배너 광고 (활성 banner_sidebar 중 랜덤 1개 반환) ──
 ads.get('/sidebar', async (c) => {
   try {
