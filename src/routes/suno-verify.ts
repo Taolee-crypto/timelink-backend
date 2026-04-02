@@ -78,12 +78,10 @@ router.post('/verify-plan', async (c) => {
     const clean = text.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
     const planLower    = (parsed.plan || '').toLowerCase();
-  const isAllowed = ALLOWED_PLANS.some(p => planLower.includes(p)) || planLower.includes('pro') || planLower.includes('premier');
+ const isAllowed = planLower.includes('pro') || planLower.includes('premier') || planLower.includes('enterprise');
     const isNotExpired = parsed.endDate ? new Date(parsed.endDate) > new Date() : false;
 
-    if (!isAllowed) {
-      return c.json({ ok: false, plan: parsed.plan, endDate: parsed.endDate, credits: parsed.credits,
-        reason: `${parsed.plan || '알 수 없는'} 플랜은 업로드 권한이 없습니다. Pro 또는 Premier 플랜이 필요합니다.` });
+   월간 구독이므로 Plan End Date는 만료일 체크 불필요
     }
     if (parsed.endDate && !isNotExpired) {
       return c.json({ ok: false, plan: parsed.plan, endDate: parsed.endDate, credits: parsed.credits,
