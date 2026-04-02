@@ -13,6 +13,8 @@ import paymentRouter from './payment';
 import ecoRouter from './economics';
 import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
+import sunoVerifyRouter from './routes/suno-verify';
+
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -53,6 +55,7 @@ app.route('/api/v1/charts', chartsRouter);
 app.route('/api/payment', paymentRouter);
 app.route('/api/eco', ecoRouter);
 app.route('/api/ads', adsRouter);
+app.route('/api/v1/suno', sunoVerifyRouter);
 
 // ── 유저 전체 정보 SELECT 헬퍼 (로그인/회원가입 공통) ──
 const USER_SELECT = `
@@ -1380,11 +1383,11 @@ app.post('/api/eco/mine', async (c) => {
     const maxMineable = Math.floor(monthSpent * pocIndex * 0.1 * 100) / 100;
 
     // 이번 달 이미 채굴한 양
-    await c.env.DB.prepare(\`CREATE TABLE IF NOT EXISTS tlc_mining_logs (
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tlc_mining_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
       tlc_mined REAL DEFAULT 0, poc_index REAL DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now'))
-    )\`).run().catch(() => {});
+    )`).run().catch(() => {});
     const alreadyRow = await c.env.DB.prepare(
       "SELECT COALESCE(SUM(tlc_mined),0) as mined FROM tlc_mining_logs WHERE user_id=? AND created_at>=?"
     ).bind(userId, monthStart).first() as any;
@@ -1395,7 +1398,7 @@ app.post('/api/eco/mine', async (c) => {
       return c.json({ ok: false, error: 'POC 기여 지수가 없습니다. 청취·창작·업로드로 기여도를 쌓으세요.', mined: 0, tlc_total: Number(user.tlc || 0) });
     }
     if (actualMine <= 0) {
-      return c.json({ ok: false, error: \`이번 달 채굴 가능한 TLC가 없습니다. (이미 채굴: \${alreadyMined} TLC / 최대: \${maxMineable} TLC)\`, mined: 0, tlc_total: Number(user.tlc || 0) });
+      return c.json({ ok: false, error: `이번 달 채굴 가능한 TLC가 없습니다. (이미 채굴: \${alreadyMined} TLC / 최대: \${maxMineable} TLC)`, mined: 0, tlc_total: Number(user.tlc || 0) });
     }
 
     await c.env.DB.prepare('UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)+?, tlc=COALESCE(tlc,0)+? WHERE id=?').bind(actualMine, actualMine, userId).run();
@@ -1403,7 +1406,7 @@ app.post('/api/eco/mine', async (c) => {
     const updated = await c.env.DB.prepare('SELECT COALESCE(tlc_balance,tlc,0) as tlc FROM users WHERE id=?').bind(userId).first() as any;
     return c.json({
       ok: true, mined: actualMine, poc_index: pocIndex, tlc_total: Number(updated?.tlc || 0),
-      formula: \`월 TL_P 소비(\${monthSpent}) × POC지수(\${pocIndex}) × 10% = \${maxMineable} TLC (이번달 가능)\`,
+      formula: `월 TL_P 소비(\${monthSpent}) × POC지수(\${pocIndex}) × 10% = \${maxMineable} TLC (이번달 가능)`,
       already_mined: alreadyMined, max_mineable: maxMineable
     });
   } catch(e: any) { return c.json({ error: e.message }, 500); }
