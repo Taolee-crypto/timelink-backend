@@ -367,15 +367,13 @@ app.post('/api/shares', async (c) => {
   await c.env.DB.prepare(`UPDATE users SET ${tlCol}=${tlCol}-5000 WHERE id=?`).bind(realId).run();
   const id = 'sh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
   await c.env.DB.prepare(`
-    INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,
-      category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at)
-    VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+    INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec) VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
   `).bind(
     id, String(realId), username, body.title, body.artist || '', body.album || '',
     body.duration || 0, body.category || 'Music', body.file_type || '', body.category_type || '',
     body.description || '', body.plan || 'A', body.spotify_id || null, body.spotify_url || null,
     body.cover_url || null, body.preview_url || null, body.stream_url || null,
-    body.country || 'KR', body.content_lang || 'ko', Date.now()
+    body.country || 'KR', body.content_lang || 'ko', Date.now(), body.price_per_sec || 1.0
   ).run();
   const updated = await c.env.DB.prepare(`SELECT ${tlCol} as tl FROM users WHERE id=?`).bind(realId).first<{ tl: number }>();
   return c.json({ ok: true, id, tl_remaining: updated?.tl || 0 });
@@ -689,6 +687,15 @@ app.post('/api/stream/:shareId/tick', async (c) => {
 // ══════════════════════════════════════════════════════════
 //  .tl 파일 암호화
 // ══════════════════════════════════════════════════════════
+// ── TL 파일 타입별 확장자/경로 분기 ──
+function getTLExtAndFolder(fileType: string): { ext: string; folder: string } {
+  if (fileType.startsWith('audio/'))       return { ext: 'tl3', folder: 'tl3' };
+  if (fileType.startsWith('video/'))       return { ext: 'tl4', folder: 'tl4' };
+  if (fileType.startsWith('image/'))       return { ext: 'tlg', folder: 'tlg' };
+  if (fileType === 'application/pdf')      return { ext: 'tlf', folder: 'tlf' };
+  return { ext: 'tl3', folder: 'tl3' }; // 기본값 오디오
+}
+
 function makeTLKey(shareId: string, secret: string): Uint8Array {
   const seed = shareId + secret + 'TIMELINK_v1';
   const key = new Uint8Array(256);
@@ -1150,7 +1157,7 @@ app.post('/api/user/activity', async (c) => {
 app.get('/api/users', async (c) => {
   try {
     const result = await c.env.DB.prepare(
-      'SELECT id, email, username, tl, tl_balance, tlc_balance as tlc, created_at FROM users ORDER BY id ASC'
+      'SELECT u.id, u.email, u.username, u.tl, u.tl_balance, u.tlc_balance as tlc, u.created_at, COALESCE(u.is_advertiser,0) as is_advertiser, COALESCE(u.business_name,u.username) as business_name, (SELECT COUNT(*) FROM tl_shares s WHERE CAST(s.user_id AS TEXT)=CAST(u.id AS TEXT)) as share_count FROM users u ORDER BY u.id ASC'
     ).all();
     return c.json({ users: result.results || [] });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
@@ -1777,9 +1784,173 @@ app.get('/api/chart', async (c) => {
   } catch(e: any) { return c.json({ error: e.message }, 500); }
 });
 
+// ── 국세청 사업자 진위확인 ──
+app.post('/api/biz/verify', async (c) => {
+  try {
+    const { biz_no } = await c.req.json() as any;
+    if (!biz_no) return c.json({ ok: false, error: '사업자등록번호가 없습니다.' }, 400);
+    const cleanNo = biz_no.replace(/[^0-9]/g, '');
+    if (cleanNo.length !== 10) return c.json({ ok: false, error: '사업자등록번호 10자리를 입력하세요.' }, 400);
+    const NTS_KEY = (c.env as any).NTS_API_KEY || '';
+    if (!NTS_KEY) return c.json({ ok: false, error: 'NTS API 키가 없습니다.' }, 500);
+    const res = await fetch(`https://api.odcloud.kr/api/nts-businessman/v1/status?serviceKey=${NTS_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ b_no: [cleanNo] })
+    });
+    const data = await res.json() as any;
+    if (data.status_code !== 'OK' || !data.data?.length) {
+      return c.json({ ok: false, error: '사업자 정보를 확인할 수 없습니다.' });
+    }
+    const biz = data.data[0];
+    const isActive = biz.b_stt_cd === '01';
+    return c.json({
+      ok: true,
+      active: isActive,
+      status: biz.b_stt,
+      tax_type: biz.tax_type,
+      b_no: biz.b_no
+    });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+// ── TL 파일 마이그레이션 (tl/ → tl3/, tl4/, tlg/, tlf/) ──
+app.post('/api/admin/migrate-tl-files', async (c) => {
+  try {
+    const shares = await c.env.DB.prepare(
+      "SELECT id, file_type FROM tl_shares WHERE file_type IS NOT NULL AND file_type != ''"
+    ).all();
+
+    const results = { success: 0, skip: 0, error: 0, details: [] as string[] };
+
+    for (const share of (shares.results || []) as any[]) {
+      const shareId = share.id;
+      const { ext, folder } = getTLExtAndFolder(share.file_type || 'audio/mpeg');
+      const newKey = `${folder}/${shareId}.${ext}`;
+      const oldKey = `tl/${shareId}.tl`;
+
+      // 이미 새 경로에 있으면 스킵
+      const exists = await c.env.R2.head(newKey);
+      if (exists) { results.skip++; continue; }
+
+      // 구버전 파일 복사
+      const oldObj = await c.env.R2.get(oldKey);
+      if (!oldObj) { results.skip++; continue; }
+
+      try {
+        const data = await oldObj.arrayBuffer();
+        await c.env.R2.put(newKey, data, {
+          httpMetadata: { contentType: 'application/octet-stream' },
+          customMetadata: { shareId, migratedFrom: oldKey, migratedAt: new Date().toISOString() }
+        });
+        results.success++;
+        results.details.push(`${shareId}: ${oldKey} → ${newKey}`);
+      } catch(e: any) {
+        results.error++;
+        results.details.push(`${shareId}: ERROR - ${e.message}`);
+      }
+    }
+
+    return c.json({ ok: true, ...results });
+  } catch(e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+app.post('/api/covers/generate', async (c) => {
+  try {
+    const { share_id, title, artist, genre } = await c.req.json() as any;
+    if (!share_id) return c.json({ ok: false, error: 'share_id 필요' }, 400);
+
+    // DB에 커버 있으면 반환
+    const share = await c.env.DB.prepare('SELECT cover_url FROM tl_shares WHERE id=?').bind(share_id).first() as any;
+    if (share?.cover_url) return c.json({ ok: true, cover_url: share.cover_url, cached: true });
+
+    // R2에 이미 있으면 반환
+    const coverKey = `covers/${share_id}.jpg`;
+    const existing = await c.env.R2.head(coverKey);
+    if (existing) {
+      const url = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${coverKey}`;
+      c.executionCtx.waitUntil(c.env.DB.prepare('UPDATE tl_shares SET cover_url=? WHERE id=?').bind(url, share_id).run());
+      return c.json({ ok: true, cover_url: url, cached: true });
+    }
+
+    // 장르/분위기 키워드 매핑
+    const genreKeywords: Record<string,string> = {
+      'K-POP': 'kpop concert lights colorful',
+      'POP': 'pop music colorful vibrant',
+      '발라드': 'emotional sunset melancholy beautiful',
+      'BALLAD': 'emotional sunset melancholy beautiful',
+      'HIPHOP': 'hip hop urban street night',
+      '힙합': 'hip hop urban street night',
+      'R&B': 'rnb soul music smooth',
+      'JAZZ': 'jazz bar vintage saxophone',
+      '재즈': 'jazz bar vintage saxophone',
+      'EDM': 'electronic music festival neon lights',
+      'ROCK': 'rock music electric guitar stage',
+      '록': 'rock music electric guitar stage',
+      '클래식': 'classical music orchestra concert hall',
+      'CLASSIC': 'classical music orchestra concert hall',
+      'INDIE': 'indie music aesthetic vintage',
+      '인디': 'indie music aesthetic vintage',
+    };
+
+    const key = genre ? genre.toUpperCase() : 'MUSIC';
+    const query = genreKeywords[key] || genreKeywords[genre?.toUpperCase()] || `${genre||'music'} album cover aesthetic`;
+
+    const UNSPLASH_KEY = (c.env as any).UNSPLASH_ACCESS_KEY || '';
+    const unsplashRes = await fetch(
+      `https://api.unsplash.com/photos/random?query=${encodeURIComponent(query)}&orientation=squarish&content_filter=high`,
+      { headers: { 'Authorization': `Client-ID ${UNSPLASH_KEY}` } }
+    );
+
+    if (!unsplashRes.ok) return c.json({ ok: false, error: 'Unsplash 실패' });
+
+    const unsplashData = await unsplashRes.json() as any;
+    const imageUrl = unsplashData.urls?.regular || unsplashData.urls?.small || '';
+    if (!imageUrl) return c.json({ ok: false, error: '이미지 없음' });
+
+    // 이미지 다운로드 후 R2 저장
+    const imgRes = await fetch(imageUrl);
+    if (!imgRes.ok) return c.json({ ok: false, error: '이미지 다운로드 실패' });
+    const imgBuffer = await imgRes.arrayBuffer();
+
+    await c.env.R2.put(coverKey, imgBuffer, {
+      httpMetadata: { contentType: 'image/jpeg' },
+      customMetadata: { share_id, title, source: 'unsplash', unsplash_id: unsplashData.id }
+    });
+
+    const coverUrl = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${coverKey}`;
+    c.executionCtx.waitUntil(c.env.DB.prepare('UPDATE tl_shares SET cover_url=? WHERE id=?').bind(coverUrl, share_id).run());
+
+    return c.json({ ok: true, cover_url: coverUrl, unsplash_credit: unsplashData.user?.name });
+  } catch(e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+
+
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 export default app;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
