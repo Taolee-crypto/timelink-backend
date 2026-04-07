@@ -403,7 +403,7 @@ app.post('/api/shares/:id/pulse', async (c) => {
 // 회원가입 (register)
 app.post('/api/auth/register', async (c) => {
   try {
-    const { email, password, username } = await c.req.json();
+    const { email, password, username, business_name: businessName, biz_reg_num: bizRegNum, is_advertiser: isAdvertiser } = await c.req.json();
     if (!email || !password || !username) return c.json({ error: '필수 항목 누락' }, 400);
     const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
     if (exists) return c.json({ error: '이미 가입된 이메일입니다' }, 409);
@@ -447,7 +447,7 @@ app.post('/api/auth/check-email', async (c) => {
 // 회원가입 (signup)
 app.post('/api/auth/signup', async (c) => {
   try {
-    const { email, password, username } = await c.req.json();
+    const { email, password, username, business_name: businessName, biz_reg_num: bizRegNum, is_advertiser: isAdvertiser } = await c.req.json();
     if (!email || !username) return c.json({ error: '필수 항목 누락' }, 400);
     const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
     if (exists) return c.json({ error: '이미 가입된 이메일입니다. 로그인을 이용해 주세요.' }, 409);
@@ -455,8 +455,8 @@ app.post('/api/auth/signup', async (c) => {
     if (nameExists) return c.json({ error: '이미 사용 중인 닉네임입니다.' }, 409);
     const now = new Date().toISOString().replace('T',' ').substring(0,19);
     await c.env.DB.prepare(
-      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at) VALUES (?,?,?,10000,10000,0,?)'
-    ).bind(email, username, password||'', now).run();
+      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,10000,10000,0,?,?,?,?)'
+    ).bind(email, username, password||'', now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
     const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
     const token = 'token_' + (user as any).id + '_' + Date.now();
     return c.json({ ok: true, token, user });
@@ -1082,8 +1082,8 @@ app.post('/api/shares/:id/consume', async (c) => {
     const share = await c.env.DB.prepare('SELECT user_id,plan FROM tl_shares WHERE id=?').bind(share_id).first() as any;
     if(share){
       const rate = share.plan==='B' ? 0.45 : 0.62;
-      const earn = Math.floor(consume * rate);
-      if(earn>0) await c.env.DB.prepare('UPDATE users SET tl=tl+? WHERE id=?').bind(earn, share.user_id).run();
+    const earn = Math.floor(consume * rate);
+      if(earn>0) await c.env.DB.prepare('UPDATE users SET tl=tl+?, tl_p=COALESCE(tl_p,0)+?, total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(earn, earn, earn, share.user_id).run();
     }
     const row = await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user_id, share_id).first();
     return c.json({ok:true, user_tl: (row as any)?.tl_balance || 0});
@@ -1113,10 +1113,9 @@ app.post('/api/user/activity', async (c) => {
         const shareRow = await c.env.DB.prepare('SELECT user_id as creator_id, plan FROM tl_shares WHERE id=?').bind(share_id).first() as any;
         if(shareRow){
           const ratio = shareRow.plan === 'B' ? 0.45 : 0.62;
-          const creatorEarn = Math.floor(tl_spent * ratio);
+         const creatorEarn = Math.floor(tl_spent * ratio);
           if(creatorEarn > 0){
-            await c.env.DB.prepare('UPDATE users SET tl=tl+?, total_tl_earned=total_tl_earned+? WHERE id=?').bind(creatorEarn, creatorEarn, shareRow.creator_id).run();
-            await c.env.DB.prepare('UPDATE tl_shares SET pulse=pulse+1 WHERE id=?').bind(share_id).run();
+            await c.env.DB.prepare('UPDATE users SET tl=tl+?, tl_p=COALESCE(tl_p,0)+?, total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(creatorEarn, creatorEarn, creatorEarn, shareRow.creator_id).run();
           }
         }
         await c.env.DB.prepare('UPDATE users SET total_tl_spent=total_tl_spent+? WHERE id=?').bind(tl_spent, user_id).run();
@@ -1781,3 +1780,6 @@ app.get('/api/chart', async (c) => {
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 export default app;
+
+
+
