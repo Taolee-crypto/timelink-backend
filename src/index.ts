@@ -1933,9 +1933,103 @@ app.post('/api/covers/generate', async (c) => {
 
 
 
+// ── 배치 처리: 매일 자정 충전 기록 TON 블록체인에 기록 ──
+async function batchRecordToTON(env: Env) {
+  try {
+    // 어제 날짜
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const dateStr = yesterday.toISOString().slice(0, 10);
+
+    // 어제 충전 기록 집계
+    const logs = await (env as any).DB.prepare(`
+      SELECT user_id, share_id, SUM(amount) as total_amount, COUNT(*) as charge_count
+      FROM tl_charge_logs
+      WHERE date(created_at) = ? AND confirmed = 0
+      GROUP BY user_id, share_id
+    `).bind(dateStr).all();
+
+    if (!logs.results?.length) return { ok: true, message: '기록 없음' };
+
+    // 배치 요약 데이터
+    const batchData = {
+      type: 'tl_charge_batch',
+      date: dateStr,
+      totalRecords: logs.results.length,
+      totalAmount: logs.results.reduce((s: number, r: any) => s + Number(r.total_amount), 0),
+      records: logs.results.map((r: any) => ({
+        u: r.user_id,
+        s: r.share_id,
+        a: r.total_amount,
+        n: r.charge_count
+      })),
+      platform: 'timelink.digital'
+    };
+
+    // SHA256 해시로 요약 (TON memo는 127자 제한)
+    const batchJson = JSON.stringify(batchData);
+    const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(batchJson));
+    const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
+
+    // D1에 배치 기록 저장
+    await (env as any).DB.prepare(`
+      CREATE TABLE IF NOT EXISTS tl_batch_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_date TEXT NOT NULL,
+        record_count INTEGER DEFAULT 0,
+        total_amount INTEGER DEFAULT 0,
+        batch_hash TEXT NOT NULL,
+        batch_json TEXT,
+        ton_tx_hash TEXT DEFAULT '',
+        confirmed INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `).run().catch(() => {});
+
+    await (env as any).DB.prepare(`
+      INSERT INTO tl_batch_logs (batch_date, record_count, total_amount, batch_hash, batch_json)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(dateStr, logs.results.length, batchData.totalAmount, hashHex, batchJson).run();
+
+    // TON 트랜잭션으로 해시 기록
+    const { mintTLC } = await import('./jetton');
+    const memo = `TLCHARGE:${dateStr}:${hashHex.slice(0,16)}:${batchData.totalRecords}rec:${batchData.totalAmount}TL`;
+
+    // 관리자 지갑으로 자기 자신에게 0.001 TON + memo 전송
+    const tonApiKey = (env as any).TON_API_KEY || '';
+    const adminWallet = (env as any).TON_ADMIN_WALLET || '';
+    if (adminWallet && tonApiKey) {
+      const tonRes = await fetch(`https://testnet.toncenter.com/api/v2/sendBoc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': tonApiKey },
+        body: JSON.stringify({ boc: memo })
+      }).catch(() => null);
+    }
+
+    // confirmed 업데이트
+    await (env as any).DB.prepare(`
+      UPDATE tl_charge_logs SET confirmed=1 WHERE date(created_at)=?
+    `).bind(dateStr).run();
+
+    return { ok: true, date: dateStr, records: logs.results.length, hash: hashHex };
+  } catch(e: any) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// Cron 핸들러
+export default {
+  fetch: app.fetch,
+  async scheduled(event: any, env: Env, ctx: any) {
+    ctx.waitUntil(batchRecordToTON(env));
+  }
+};
+
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
-export default app;
+// export default app; // Cron 핸들러로 대체됨
+
+
 
 
 
