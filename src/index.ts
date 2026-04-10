@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+﻿import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
 
@@ -367,16 +367,42 @@ app.post('/api/shares', async (c) => {
   await c.env.DB.prepare(`UPDATE users SET ${tlCol}=${tlCol}-5000 WHERE id=?`).bind(realId).run();
   const id = 'sh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
   await c.env.DB.prepare(`
-    INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec) VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
+    INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics) VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)
   `).bind(
     id, String(realId), username, body.title, body.artist || '', body.album || '',
     body.duration || 0, body.category || 'Music', body.file_type || '', body.category_type || '',
     body.description || '', body.plan || 'A', body.spotify_id || null, body.spotify_url || null,
     body.cover_url || null, body.preview_url || null, body.stream_url || null,
-    body.country || 'KR', body.content_lang || 'ko', Date.now(), body.price_per_sec || 1.0
+    body.country || 'KR', body.content_lang || 'ko', Date.now(), body.price_per_sec || 1.0,
+    body.composer || '', body.lyricist || '', body.lyrics || ''
   ).run();
   const updated = await c.env.DB.prepare(`SELECT ${tlCol} as tl FROM users WHERE id=?`).bind(realId).first<{ tl: number }>();
   return c.json({ ok: true, id, tl_remaining: updated?.tl || 0 });
+});
+
+
+
+// ── 유저의 특정 곡 TL 잔액 조회 ──
+app.get('/api/shares/:id/my-tl', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ tl_balance: 0 });
+  const user_id = Number(m[1]);
+  const share_id = c.req.param('id');
+  const row = await c.env.DB.prepare(
+    'SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?'
+  ).bind(user_id, share_id).first() as any;
+  return c.json({ tl_balance: Number(row?.tl_balance||0) });
+});
+
+// ── 단일 share 조회 ──
+app.get('/api/shares/:id', async (c) => {
+  const id = c.req.param('id');
+  const row = await c.env.DB.prepare(
+    'SELECT * FROM tl_shares WHERE id=?'
+  ).bind(id).first();
+  if (!row) return c.json({ error: 'not found' }, 404);
+  return c.json(row);
 });
 
 app.delete('/api/shares/:id', async (c) => {
@@ -781,21 +807,8 @@ app.get('/api/download/:shareId', async (c) => {
   try {
     const share = await c.env.DB.prepare('SELECT id,title,stream_url FROM tl_shares WHERE id=?').bind(shareId).first() as any;
     if (!share) return c.json({ error:'파일 없음' }, 404);
-    const user = await c.env.DB.prepare('SELECT COALESCE(tl,0) as tl FROM users WHERE id=?').bind(userId).first() as any;
-    if (!user || Number(user.tl) <= 0) return c.json({ error:'TL 부족', code:'TL_INSUFFICIENT' }, 402);
-    const tlKey = `tl/${shareId}.tl`;
-    const tlObj = await c.env.R2.get(tlKey);
-    if (tlObj) {
-      const title = encodeURIComponent((share.title||'file').replace(/[<>:"/\\|?*]/g,'_'));
-      return new Response(tlObj.body, {
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'Content-Disposition': `attachment; filename="${title}.tl"`,
-          'Content-Length': String(tlObj.size),
-          'Access-Control-Allow-Origin': '*',
-        },
-      });
-    }
+    // 다운로드는 TL 잔액 무관하게 허용 (앱 플레이어에서 충전 가능)
+    // 캐시 건너뜀 - 유저마다 tl_balance가 달라서 항상 새로 생성
     const streamUrl = share.stream_url || '';
     let rawKey = '';
     if (streamUrl.includes('r2.dev/')) rawKey = streamUrl.split('r2.dev/')[1];
@@ -820,7 +833,7 @@ app.get('/api/download/:shareId', async (c) => {
     ).bind(userId, shareId).first() as any;
 
     // 유저 충전 TL이 있으면 그 값 사용, 없으면 file_tl 또는 기본값
-    const fileTL2 = Number(userFileTL?.tl_balance ?? shareFull?.file_tl ?? 0);
+    const fileTL2 = Number(userFileTL?.tl_balance ?? shareFull?.file_tl ?? 3600);
     const tlMax2  = Number(userFileTL?.total_charged ?? shareFull?.file_tl ?? fileTL2);
 
     const header = {
@@ -1059,8 +1072,13 @@ app.get('/api/wm/logs/:share_id', async (c) => {
 app.post('/api/shares/:id/charge', async (c) => {
   try {
     const share_id = c.req.param('id');
-    const { amount, user_id, email } = await c.req.json();
+    const token2 = (c.req.header('Authorization')||'').replace('Bearer ','').trim();
+    const tokenUserId2 = parseTokenUserId(token2);
+    const body2 = await c.req.json() as any;
+    const amount = body2.amount;
+    const user_id = body2.user_id || tokenUserId2;
     if(!amount || amount <= 0) return c.json({error:'Invalid amount'}, 400);
+    if(!user_id) return c.json({error:'user_id 확인 불가'}, 401);
     await c.env.DB.prepare('UPDATE users SET tl=tl-?, tl_p=MAX(0,COALESCE(tl_p,tl,0)-?) WHERE id=? AND tl>=?')
       .bind(amount, amount, user_id, amount).run();
     await c.env.DB.prepare(`INSERT INTO tl_user_files (user_id,share_id,tl_balance,total_charged)
@@ -1071,7 +1089,7 @@ app.post('/api/shares/:id/charge', async (c) => {
       .bind(user_id, share_id, amount, amount).run();
     await c.env.DB.prepare('UPDATE tl_shares SET pulse=pulse+1 WHERE id=?').bind(share_id).run();
     const row = await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user_id, share_id).first();
-    return c.json({ok:true, user_tl: (row as any)?.tl_balance || 0});
+    return c.json({ok:true, user_tl: (row as any)?.tl_balance || 0, new_balance: (row as any)?.tl_balance || 0});
   } catch(e:any){ return c.json({error:e.message},500); }
 });
 
@@ -1093,7 +1111,7 @@ app.post('/api/shares/:id/consume', async (c) => {
       if(earn>0) await c.env.DB.prepare('UPDATE users SET tl=tl+?, tl_p=COALESCE(tl_p,0)+?, total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(earn, earn, earn, share.user_id).run();
     }
     const row = await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user_id, share_id).first();
-    return c.json({ok:true, user_tl: (row as any)?.tl_balance || 0});
+    return c.json({ok:true, user_tl: (row as any)?.tl_balance || 0, new_balance: (row as any)?.tl_balance || 0});
   } catch(e:any){ return c.json({error:e.message},500); }
 });
 
@@ -1869,7 +1887,7 @@ app.post('/api/covers/generate', async (c) => {
     if (share?.cover_url) return c.json({ ok: true, cover_url: share.cover_url, cached: true });
 
     // R2에 이미 있으면 반환
-    const coverKey = `covers/${share_id}.jpg`;
+    const coverKey = `covers/${share_id}.svg`;
     const existing = await c.env.R2.head(coverKey);
     if (existing) {
       const url = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${coverKey}`;
@@ -1877,55 +1895,31 @@ app.post('/api/covers/generate', async (c) => {
       return c.json({ ok: true, cover_url: url, cached: true });
     }
 
-    // 장르/분위기 키워드 매핑
-    const genreKeywords: Record<string,string> = {
-      'K-POP': 'kpop concert lights colorful',
-      'POP': 'pop music colorful vibrant',
-      '발라드': 'emotional sunset melancholy beautiful',
-      'BALLAD': 'emotional sunset melancholy beautiful',
-      'HIPHOP': 'hip hop urban street night',
-      '힙합': 'hip hop urban street night',
-      'R&B': 'rnb soul music smooth',
-      'JAZZ': 'jazz bar vintage saxophone',
-      '재즈': 'jazz bar vintage saxophone',
-      'EDM': 'electronic music festival neon lights',
-      'ROCK': 'rock music electric guitar stage',
-      '록': 'rock music electric guitar stage',
-      '클래식': 'classical music orchestra concert hall',
-      'CLASSIC': 'classical music orchestra concert hall',
-      'INDIE': 'indie music aesthetic vintage',
-      '인디': 'indie music aesthetic vintage',
+    // 장르별 그라데이션 색상
+    const genreColors: Record<string, [string,string]> = {
+      'K-POP':['#ff6b9d','#c44dff'],'POP':['#f7971e','#ffd200'],
+      'BALLAD':['#4facfe','#00f2fe'],'발라드':['#4facfe','#00f2fe'],
+      'HIPHOP':['#f953c6','#b91d73'],'힙합':['#f953c6','#b91d73'],
+      'R&B':['#8e2de2','#4a00e0'],'JAZZ':['#2c3e50','#4ca1af'],'재즈':['#2c3e50','#4ca1af'],
+      'EDM':['#00c6ff','#0072ff'],'ROCK':['#f12711','#f5af19'],'록':['#f12711','#f5af19'],
+      'CLASSIC':['#2c3e50','#bdc3c7'],'클래식':['#2c3e50','#bdc3c7'],
+      'INDIE':['#56ab2f','#a8e063'],'인디':['#56ab2f','#a8e063'],
     };
-
-    const key = genre ? genre.toUpperCase() : 'MUSIC';
-    const query = genreKeywords[key] || genreKeywords[genre?.toUpperCase()] || `${genre||'music'} album cover aesthetic`;
-
-    const UNSPLASH_KEY = (c.env as any).UNSPLASH_ACCESS_KEY || '';
-    const unsplashRes = await fetch(
-      `https://api.unsplash.com/photos/random?query=${encodeURIComponent(query)}&orientation=squarish&content_filter=high`,
-      { headers: { 'Authorization': `Client-ID ${UNSPLASH_KEY}` } }
-    );
-
-    if (!unsplashRes.ok) return c.json({ ok: false, error: 'Unsplash 실패' });
-
-    const unsplashData = await unsplashRes.json() as any;
-    const imageUrl = unsplashData.urls?.regular || unsplashData.urls?.small || '';
-    if (!imageUrl) return c.json({ ok: false, error: '이미지 없음' });
-
-    // 이미지 다운로드 후 R2 저장
-    const imgRes = await fetch(imageUrl);
-    if (!imgRes.ok) return c.json({ ok: false, error: '이미지 다운로드 실패' });
-    const imgBuffer = await imgRes.arrayBuffer();
-
-    await c.env.R2.put(coverKey, imgBuffer, {
-      httpMetadata: { contentType: 'image/jpeg' },
-      customMetadata: { share_id, title, source: 'unsplash', unsplash_id: unsplashData.id }
+    const gKey = (genre||'').toUpperCase();
+    const colors = genreColors[gKey] || genreColors[genre||''] || ['#667eea','#764ba2'];
+    const c1 = colors[0], c2 = colors[1];
+    const t1 = (title||'').substring(0,14).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const a1 = (artist||'').substring(0,16).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const ini = (title||'?').substring(0,2).toUpperCase();
+    const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:${c1}"/><stop offset="100%" style="stop-color:${c2}"/></linearGradient></defs><rect width="600" height="600" fill="url(#g)"/><circle cx="300" cy="220" r="100" fill="rgba(255,255,255,0.12)"/><circle cx="300" cy="220" r="70" fill="rgba(255,255,255,0.15)"/><text x="300" y="240" font-family="Arial" font-size="72" font-weight="bold" fill="white" text-anchor="middle">${ini}</text><text x="300" y="370" font-family="Arial" font-size="32" font-weight="bold" fill="white" text-anchor="middle">${t1}</text><text x="300" y="415" font-family="Arial" font-size="22" fill="rgba(255,255,255,0.75)" text-anchor="middle">${a1}</text><text x="300" y="475" font-family="Arial" font-size="16" fill="rgba(255,255,255,0.5)" text-anchor="middle">TimeLink</text></svg>`;
+    const svgBytes = new TextEncoder().encode(svgStr);
+    await c.env.R2.put(coverKey, svgBytes, {
+      httpMetadata: { contentType: 'image/svg+xml' },
+      customMetadata: { share_id, generated: 'svg' },
     });
-
     const coverUrl = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${coverKey}`;
     c.executionCtx.waitUntil(c.env.DB.prepare('UPDATE tl_shares SET cover_url=? WHERE id=?').bind(coverUrl, share_id).run());
-
-    return c.json({ ok: true, cover_url: coverUrl, unsplash_credit: unsplashData.user?.name });
+    return c.json({ ok: true, cover_url: coverUrl });
   } catch(e: any) {
     return c.json({ ok: false, error: e.message }, 500);
   }
@@ -2025,9 +2019,211 @@ export default {
   }
 };
 
+
+// ═══════════════════════════════════════════════════════
+// SOCIAL API (좋아요/팔로우/댓글/플레이리스트)
+// ═══════════════════════════════════════════════════════
+
+const POC_SECONDS: Record<string, number> = {
+  like: 5, follow: 1, comment: 60, playlist_create: 120,
+  playlist_subscribe: 30, share: 30, checkin: 30, invite_success: 3600
+};
+
+async function logPocAction(db: any, user_id: number, action_type: string, target_id: string) {
+  const sec = POC_SECONDS[action_type] || 0;
+  await db.prepare(
+    'INSERT INTO poc_action_logs (user_id, action_type, target_id, seconds_equivalent, created_at) VALUES (?,?,?,?,datetime("now"))'
+  ).bind(user_id, action_type, target_id, sec).run();
+}
+
+// ── 좋아요 ──
+app.post('/api/social/like/:shareId', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ error: '인증 필요' }, 401);
+  const user_id = Number(m[1]);
+  const share_id = c.req.param('shareId');
+  // 일일 한도 50개 체크
+  const todayCount = await c.env.DB.prepare(
+    "SELECT COUNT(*) as cnt FROM poc_action_logs WHERE user_id=? AND action_type='like' AND created_at>=date('now')"
+  ).bind(user_id).first() as any;
+  if ((todayCount?.cnt||0) >= 50) return c.json({ error: '일일 좋아요 한도 초과 (50개)' }, 429);
+  try {
+    await c.env.DB.prepare(
+      'INSERT INTO user_likes (user_id, share_id, created_at) VALUES (?,?,datetime("now"))'
+    ).bind(user_id, share_id).run();
+    await logPocAction(c.env.DB, user_id, 'like', share_id);
+    const cnt = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM user_likes WHERE share_id=?').bind(share_id).first() as any;
+    return c.json({ ok: true, likes: cnt?.cnt||0 });
+  } catch { return c.json({ ok: false, error: '이미 좋아요함' }, 409); }
+});
+
+app.delete('/api/social/like/:shareId', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ error: '인증 필요' }, 401);
+  const user_id = Number(m[1]);
+  const share_id = c.req.param('shareId');
+  await c.env.DB.prepare('DELETE FROM user_likes WHERE user_id=? AND share_id=?').bind(user_id, share_id).run();
+  const cnt = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM user_likes WHERE share_id=?').bind(share_id).first() as any;
+  return c.json({ ok: true, likes: cnt?.cnt||0 });
+});
+
+// ── 팔로우 ──
+app.post('/api/social/follow/:userId', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ error: '인증 필요' }, 401);
+  const follower_id = Number(m[1]);
+  const following_id = Number(c.req.param('userId'));
+  if (follower_id === following_id) return c.json({ error: '자기 자신 팔로우 불가' }, 400);
+  try {
+    await c.env.DB.prepare(
+      'INSERT INTO user_follows (follower_id, following_id, created_at) VALUES (?,?,datetime("now"))'
+    ).bind(follower_id, following_id).run();
+    await logPocAction(c.env.DB, follower_id, 'follow', String(following_id));
+    return c.json({ ok: true });
+  } catch { return c.json({ ok: false, error: '이미 팔로우함' }, 409); }
+});
+
+app.delete('/api/social/follow/:userId', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ error: '인증 필요' }, 401);
+  const follower_id = Number(m[1]);
+  const following_id = Number(c.req.param('userId'));
+  await c.env.DB.prepare('DELETE FROM user_follows WHERE follower_id=? AND following_id=?').bind(follower_id, following_id).run();
+  return c.json({ ok: true });
+});
+
+// ── 댓글 ──
+app.post('/api/social/comment/:shareId', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ error: '인증 필요' }, 401);
+  const user_id = Number(m[1]);
+  const share_id = c.req.param('shareId');
+  const { content } = await c.req.json();
+  if (!content || content.trim().length < 10) return c.json({ error: '댓글은 10자 이상' }, 400);
+  // 중복 댓글 방지 (1시간 내 동일 내용)
+  const dup = await c.env.DB.prepare(
+    "SELECT id FROM comments WHERE user_id=? AND share_id=? AND content=? AND created_at>=datetime('now','-1 hour')"
+  ).bind(user_id, share_id, content.trim()).first();
+  if (dup) return c.json({ error: '동일 댓글은 1시간 후 가능' }, 429);
+  const result = await c.env.DB.prepare(
+    'INSERT INTO comments (user_id, share_id, content, created_at) VALUES (?,?,?,datetime("now"))'
+  ).bind(user_id, share_id, content.trim()).run();
+  await logPocAction(c.env.DB, user_id, 'comment', share_id);
+  return c.json({ ok: true, comment_id: result.meta.last_row_id });
+});
+
+app.get('/api/social/comments/:shareId', async (c) => {
+  const share_id = c.req.param('shareId');
+  const rows = await c.env.DB.prepare(
+    'SELECT c.id, c.content, c.created_at, c.report_count, u.username FROM comments c JOIN users u ON c.user_id=u.id WHERE c.share_id=? AND c.is_deleted=0 ORDER BY c.created_at DESC LIMIT 50'
+  ).bind(share_id).all();
+  return c.json({ ok: true, comments: rows.results });
+});
+
+app.post('/api/social/report/comment/:commentId', async (c) => {
+  const comment_id = Number(c.req.param('commentId'));
+  await c.env.DB.prepare('UPDATE comments SET report_count=report_count+1 WHERE id=?').bind(comment_id).run();
+  // 신고 5회 이상 자동 숨김
+  await c.env.DB.prepare('UPDATE comments SET is_deleted=1 WHERE id=? AND report_count>=5').bind(comment_id).run();
+  return c.json({ ok: true });
+});
+
+// ── 플레이리스트 ──
+app.post('/api/playlist', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ error: '인증 필요' }, 401);
+  const user_id = Number(m[1]);
+  const { title, is_public } = await c.req.json();
+  if (!title) return c.json({ error: '제목 필요' }, 400);
+  const result = await c.env.DB.prepare(
+    'INSERT INTO playlists (user_id, title, is_public, created_at) VALUES (?,?,?,datetime("now"))'
+  ).bind(user_id, title, is_public ? 1 : 0).run();
+  await logPocAction(c.env.DB, user_id, 'playlist_create', String(result.meta.last_row_id));
+  return c.json({ ok: true, playlist_id: result.meta.last_row_id });
+});
+
+app.post('/api/playlist/:id/add', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ error: '인증 필요' }, 401);
+  const user_id = Number(m[1]);
+  const playlist_id = Number(c.req.param('id'));
+  const { share_id } = await c.req.json();
+  const pl = await c.env.DB.prepare('SELECT * FROM playlists WHERE id=? AND user_id=?').bind(playlist_id, user_id).first() as any;
+  if (!pl) return c.json({ error: '플레이리스트 없음' }, 404);
+  const ids = JSON.parse(pl.share_ids||'[]');
+  if (!ids.includes(share_id)) ids.push(share_id);
+  await c.env.DB.prepare('UPDATE playlists SET share_ids=? WHERE id=?').bind(JSON.stringify(ids), playlist_id).run();
+  return c.json({ ok: true, count: ids.length });
+});
+
+app.post('/api/playlist/:id/subscribe', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ error: '인증 필요' }, 401);
+  const user_id = Number(m[1]);
+  const playlist_id = Number(c.req.param('id'));
+  try {
+    await c.env.DB.prepare(
+      'INSERT INTO playlist_subscribers (user_id, playlist_id, created_at) VALUES (?,?,datetime("now"))'
+    ).bind(user_id, playlist_id).run();
+    await c.env.DB.prepare('UPDATE playlists SET subscriber_count=subscriber_count+1 WHERE id=?').bind(playlist_id).run();
+    await logPocAction(c.env.DB, user_id, 'playlist_subscribe', String(playlist_id));
+    return c.json({ ok: true });
+  } catch { return c.json({ ok: false, error: '이미 구독함' }, 409); }
+});
+
+// ── 소셜 통계 ──
+app.get('/api/social/stats/:shareId', async (c) => {
+  const share_id = c.req.param('shareId');
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  const user_id = m ? Number(m[1]) : 0;
+  const likes = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM user_likes WHERE share_id=?').bind(share_id).first() as any;
+  const comments = await c.env.DB.prepare('SELECT COUNT(*) as cnt FROM comments WHERE share_id=? AND is_deleted=0').bind(share_id).first() as any;
+  const myLike = user_id ? await c.env.DB.prepare('SELECT id FROM user_likes WHERE user_id=? AND share_id=?').bind(user_id, share_id).first() : null;
+  return c.json({ ok: true, likes: likes?.cnt||0, comments: comments?.cnt||0, my_like: !!myLike });
+});
+
+
+// ── 내 플레이리스트 목록 ──
+app.get('/api/playlist/my', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ error: '인증 필요' }, 401);
+  const user_id = Number(m[1]);
+  const rows = await c.env.DB.prepare(
+    'SELECT id, title, is_public, share_ids, subscriber_count, created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC'
+  ).bind(user_id).all();
+  return c.json({ ok: true, playlists: rows.results });
+});
+
+// ── 팔로우 상태 확인 ──
+app.get('/api/social/follow-status/:userId', async (c) => {
+  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
+  if (!m) return c.json({ following: false });
+  const follower_id = Number(m[1]);
+  const following_id = Number(c.req.param('userId'));
+  const row = await c.env.DB.prepare(
+    'SELECT id FROM user_follows WHERE follower_id=? AND following_id=?'
+  ).bind(follower_id, following_id).first();
+  return c.json({ following: !!row });
+});
+
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
 // export default app; // Cron 핸들러로 대체됨
+
+
+
+
 
 
 
