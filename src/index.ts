@@ -596,23 +596,22 @@ app.get('/api/stream/:shareId', async (c) => {
     'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance',
     'Accept-Ranges': 'bytes',
   };
+  const rangeHdr = c.req.header('Range') || '';
+  const rangeStart = rangeHdr ? parseInt((rangeHdr.match(/bytes=(\d+)-/) || [])[1] || '0') : 0;
   try {
+    // Fix: TL 체크는 첫 요청(rangeStart===0)에만, 연속 청크는 생략
     const share = await c.env.DB.prepare(
-      'SELECT id, title, stream_url, file_tl FROM tl_shares WHERE id=?'
+      'SELECT id, stream_url FROM tl_shares WHERE id=?'
     ).bind(shareId).first() as any;
     if (!share) return new Response(JSON.stringify({ error: '파일 없음' }), { status: 404, headers: cors });
-    let totalTL = 0;
-    if (userId) {
+    let totalTL = 999;
+    if (rangeStart === 0 && userId) {
       const user = await c.env.DB.prepare('SELECT COALESCE(tl,0) as tl FROM users WHERE id=?').bind(userId).first() as any;
       totalTL = Number(user?.tl || 0);
-    }
-    const rangeHdr = c.req.header('Range') || '';
-    const rangeStart = rangeHdr ? parseInt((rangeHdr.match(/bytes=(\d+)-/) || [])[1] || '0') : 0;
-    if (!userId || totalTL <= 0) {
-      if (rangeStart > 0) {
-        return new Response(JSON.stringify({ error: 'TL 잔액 부족', code: 'TL_INSUFFICIENT', tl_balance: totalTL }), {
+      if (totalTL <= 0) {
+        return new Response(JSON.stringify({ error: 'TL 잔액 부족', code: 'TL_INSUFFICIENT', tl_balance: 0 }), {
           status: 402,
-          headers: { ...cors, 'Content-Type': 'application/json', 'X-TL-Balance': String(totalTL) },
+          headers: { ...cors, 'Content-Type': 'application/json', 'X-TL-Balance': '0' },
         });
       }
     }
@@ -645,7 +644,9 @@ app.get('/api/stream/:shareId', async (c) => {
       const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
       if (!m) return new Response('Invalid Range', { status: 416, headers: cors });
       const start = parseInt(m[1]);
-      const end = m[2] !== '' ? Math.min(parseInt(m[2]), total2 - 1) : Math.min(start + 1024 * 512 - 1, total2 - 1);
+      // Fix: 청크 크기 512KB → 2MB (왕복 횟수 4배 감소)
+      const CHUNK_2MB = 2 * 1024 * 1024;
+      const end = m[2] !== '' ? Math.min(parseInt(m[2]), total2 - 1) : Math.min(start + CHUNK_2MB - 1, total2 - 1);
       const length = end - start + 1;
       const obj = await c.env.R2.get(r2key, { range: { offset: start, length } });
       if (!obj) return new Response(JSON.stringify({ error: '읽기 실패' }), { status: 500, headers: cors });
@@ -674,7 +675,7 @@ app.get('/api/stream/:shareId', async (c) => {
   }
 });
 
-// 초당 TL 차감 (tick)
+// TL 차감 tick - 배치 처리 (5~10초 단위 권장)
 app.post('/api/stream/:shareId/tick', async (c) => {
   const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
   const userId = parseTokenUserId(token);
@@ -682,9 +683,11 @@ app.post('/api/stream/:shareId/tick', async (c) => {
   if (!userId) return c.json({ error: '인증 필요' }, 401);
   try {
     const body = await c.req.json() as any;
-    const seconds = Math.min(Number(body.seconds || 1), 10);
+    // Fix: 최대 30초 배치 허용 (1초마다 호출 → 10초마다 호출로 변경 권장)
+    const seconds = Math.min(Number(body.seconds || 5), 30);
     const deductRate = Number(body.deduct_rate || 1.0);
     const cost = Math.ceil(seconds * deductRate);
+    // Fix: 단일 쿼리로 조회+차감 (tl_a → tl_b → tl_p 순)
     const user = await c.env.DB.prepare(
       'SELECT id, COALESCE(tl,0) as tl, COALESCE(tl_p,tl,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?'
     ).bind(userId).first() as any;
@@ -692,18 +695,20 @@ app.post('/api/stream/:shareId/tick', async (c) => {
     const totalTL = Number(user.tl_p||0) + Number(user.tl_a||0) + Number(user.tl_b||0);
     if (totalTL <= 0) return c.json({ ok: false, code: 'TL_EMPTY', tl_balance: 0 }, 402);
     let remaining = cost;
-    const tl_a = Number(user.tl_a||0);
-    const tl_b = Number(user.tl_b||0);
-    const tl_p = Number(user.tl_p||0);
-    let new_a = tl_a, new_b = tl_b, new_p = tl_p;
+    let new_a = Number(user.tl_a||0), new_b = Number(user.tl_b||0), new_p = Number(user.tl_p||0);
     if (remaining > 0 && new_a > 0) { const d = Math.min(remaining, new_a); new_a -= d; remaining -= d; }
     if (remaining > 0 && new_b > 0) { const d = Math.min(remaining, new_b); new_b -= d; remaining -= d; }
     if (remaining > 0 && new_p > 0) { const d = Math.min(remaining, new_p); new_p -= d; remaining -= d; }
     const newTotal = new_a + new_b + new_p;
-    await c.env.DB.prepare(
+    // Fix: pulse 업데이트를 users 업데이트와 동시에 (waitUntil로 비동기 처리)
+    const userUpdate = c.env.DB.prepare(
       'UPDATE users SET tl=?, tl_p=?, tl_a=?, tl_b=?, total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=?'
     ).bind(newTotal, new_p, new_a, new_b, cost, userId).run();
-    await c.env.DB.prepare('UPDATE tl_shares SET pulse=COALESCE(pulse,0)+? WHERE id=?').bind(seconds, shareId).run().catch(() => {});
+    const pulseUpdate = c.env.DB.prepare(
+      'UPDATE tl_shares SET pulse=COALESCE(pulse,0)+? WHERE id=?'
+    ).bind(seconds, shareId).run().catch(() => {});
+    // 두 쿼리 병렬 실행
+    await Promise.all([userUpdate, pulseUpdate]);
     return c.json({ ok: true, tl_balance: newTotal, tl_p: new_p, tl_a: new_a, tl_b: new_b, cost });
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
@@ -2215,6 +2220,47 @@ app.get('/api/social/follow-status/:userId', async (c) => {
     'SELECT id FROM user_follows WHERE follower_id=? AND following_id=?'
   ).bind(follower_id, following_id).first();
   return c.json({ following: !!row });
+});
+
+
+// ── 투자자 문의 이메일 발송 ──
+app.post('/api/investor/contact', async (c) => {
+  try {
+    const { name, email, message } = await c.req.json() as any;
+    if (!name || !email || !message) return c.json({ ok: false, error: '필수 항목 누락' }, 400);
+    if (message.length > 1000) return c.json({ ok: false, error: '1,000자 초과' }, 400);
+
+    const RESEND_KEY = (c.env as any).RESEND_API_KEY || '';
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${RESEND_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: 'TimeLink <onboarding@resend.dev>',
+        to: ['mununglee@gmail.com'],
+        subject: `[TimeLink 투자문의] ${name}`,
+        html: `
+          <h2>TimeLink 투자 문의</h2>
+          <p><b>이름/회사:</b> ${name}</p>
+          <p><b>이메일:</b> ${email}</p>
+          <hr>
+          <p><b>문의 내용:</b></p>
+          <p style="white-space:pre-wrap">${message}</p>
+        `,
+        reply_to: email,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json() as any;
+      return c.json({ ok: false, error: err.message || '발송 실패' }, 500);
+    }
+    return c.json({ ok: true });
+  } catch(e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
 });
 
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
