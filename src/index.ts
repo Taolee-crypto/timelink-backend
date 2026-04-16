@@ -1,4 +1,4 @@
-﻿import { Hono } from 'hono';
+import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
 
@@ -241,6 +241,31 @@ async function getSpotifyToken(env: Env): Promise<string> {
   return _spToken!;
 }
 
+// Spotify Audio Features (BPM, energy, valence 등)
+app.get('/api/spotify/audio-features/:trackId', async (c) => {
+  const env = c.env as any;
+  if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return c.json({ error: 'Spotify 키 없음' }, 400);
+  try {
+    const token = await getSpotifyToken(c.env);
+    const trackId = c.req.param('trackId');
+    const r = await fetch(
+      'https://api.spotify.com/v1/audio-features/' + trackId,
+      { headers: { 'Authorization': 'Bearer ' + token } }
+    );
+    const d: any = await r.json();
+    return c.json({
+      tempo: Math.round(d.tempo || 0),       // BPM
+      energy: d.energy || 0,                  // 0~1 (신남 정도)
+      valence: d.valence || 0,               // 0~1 (긍정적 정도)
+      danceability: d.danceability || 0,     // 0~1 (댄서블)
+      acousticness: d.acousticness || 0,     // 0~1 (어쿠스틱)
+    });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// Spotify 검색
 app.get('/api/spotify/search', async (c) => {
   const q = c.req.query('q');
   if (!q) return c.json({ error: 'q 필요' }, 400);
@@ -366,32 +391,58 @@ app.post('/api/shares', async (c) => {
   const realId = userRow.id;
   await c.env.DB.prepare(`UPDATE users SET ${tlCol}=${tlCol}-5000 WHERE id=?`).bind(realId).run();
   const id = 'sh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  
+  // 🔥 수정: file_tl을 body에서 받아서 저장 (기본값 5000)
+  const fileTl = body.file_tl || 5000;
+  
   await c.env.DB.prepare(`
-    INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics) VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)
+    INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)
   `).bind(
     id, String(realId), username, body.title, body.artist || '', body.album || '',
-    body.duration || 0, body.category || 'Music', body.file_type || '', body.category_type || '',
+    body.duration || 0, fileTl, body.category || 'Music', body.file_type || '', body.category_type || '',
     body.description || '', body.plan || 'A', body.spotify_id || null, body.spotify_url || null,
     body.cover_url || null, body.preview_url || null, body.stream_url || null,
     body.country || 'KR', body.content_lang || 'ko', Date.now(), body.price_per_sec || 1.0,
     body.composer || '', body.lyricist || '', body.lyrics || ''
   ).run();
+  
+  // 🔥 추가: tl_user_files에 초기 레코드 생성 (직접 업로드한 파일 대응)
+  await c.env.DB.prepare(`
+    INSERT OR IGNORE INTO tl_user_files (user_id, share_id, tl_balance, total_charged, created_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+  `).bind(realId, id, fileTl, fileTl).run();
+  
   const updated = await c.env.DB.prepare(`SELECT ${tlCol} as tl FROM users WHERE id=?`).bind(realId).first<{ tl: number }>();
   return c.json({ ok: true, id, tl_remaining: updated?.tl || 0 });
 });
 
 
 
-// ── 유저의 특정 곡 TL 잔액 조회 ──
+// ── 유저의 특정 곡 TL 잔액 조회 (수정: 없으면 초기값 생성) ──
 app.get('/api/shares/:id/my-tl', async (c) => {
   const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
   const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
   if (!m) return c.json({ tl_balance: 0 });
   const user_id = Number(m[1]);
   const share_id = c.req.param('id');
-  const row = await c.env.DB.prepare(
+  
+  let row = await c.env.DB.prepare(
     'SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?'
   ).bind(user_id, share_id).first() as any;
+  
+  // 🔥 중요: tl_user_files에 레코드가 없으면 생성 (직접 업로드한 파일 대응)
+  if (!row) {
+    const share = await c.env.DB.prepare('SELECT file_tl FROM tl_shares WHERE id=?').bind(share_id).first() as any;
+    const initialTL = share?.file_tl || 5000;
+    
+    await c.env.DB.prepare(`
+      INSERT INTO tl_user_files (user_id, share_id, tl_balance, total_charged, created_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+    `).bind(user_id, share_id, initialTL, initialTL).run();
+    
+    row = { tl_balance: initialTL };
+  }
+  
   return c.json({ tl_balance: Number(row?.tl_balance||0) });
 });
 
@@ -599,7 +650,6 @@ app.get('/api/stream/:shareId', async (c) => {
   const rangeHdr = c.req.header('Range') || '';
   const rangeStart = rangeHdr ? parseInt((rangeHdr.match(/bytes=(\d+)-/) || [])[1] || '0') : 0;
   try {
-    // Fix: TL 체크는 첫 요청(rangeStart===0)에만, 연속 청크는 생략
     const share = await c.env.DB.prepare(
       'SELECT id, stream_url FROM tl_shares WHERE id=?'
     ).bind(shareId).first() as any;
@@ -644,7 +694,6 @@ app.get('/api/stream/:shareId', async (c) => {
       const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
       if (!m) return new Response('Invalid Range', { status: 416, headers: cors });
       const start = parseInt(m[1]);
-      // Fix: 청크 크기 512KB → 2MB (왕복 횟수 4배 감소)
       const CHUNK_2MB = 2 * 1024 * 1024;
       const end = m[2] !== '' ? Math.min(parseInt(m[2]), total2 - 1) : Math.min(start + CHUNK_2MB - 1, total2 - 1);
       const length = end - start + 1;
@@ -675,7 +724,7 @@ app.get('/api/stream/:shareId', async (c) => {
   }
 });
 
-// TL 차감 tick - 배치 처리 (5~10초 단위 권장)
+// TL 차감 tick
 app.post('/api/stream/:shareId/tick', async (c) => {
   const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
   const userId = parseTokenUserId(token);
@@ -683,11 +732,9 @@ app.post('/api/stream/:shareId/tick', async (c) => {
   if (!userId) return c.json({ error: '인증 필요' }, 401);
   try {
     const body = await c.req.json() as any;
-    // Fix: 최대 30초 배치 허용 (1초마다 호출 → 10초마다 호출로 변경 권장)
     const seconds = Math.min(Number(body.seconds || 5), 30);
     const deductRate = Number(body.deduct_rate || 1.0);
     const cost = Math.ceil(seconds * deductRate);
-    // Fix: 단일 쿼리로 조회+차감 (tl_a → tl_b → tl_p 순)
     const user = await c.env.DB.prepare(
       'SELECT id, COALESCE(tl,0) as tl, COALESCE(tl_p,tl,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?'
     ).bind(userId).first() as any;
@@ -700,14 +747,12 @@ app.post('/api/stream/:shareId/tick', async (c) => {
     if (remaining > 0 && new_b > 0) { const d = Math.min(remaining, new_b); new_b -= d; remaining -= d; }
     if (remaining > 0 && new_p > 0) { const d = Math.min(remaining, new_p); new_p -= d; remaining -= d; }
     const newTotal = new_a + new_b + new_p;
-    // Fix: pulse 업데이트를 users 업데이트와 동시에 (waitUntil로 비동기 처리)
     const userUpdate = c.env.DB.prepare(
       'UPDATE users SET tl=?, tl_p=?, tl_a=?, tl_b=?, total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=?'
     ).bind(newTotal, new_p, new_a, new_b, cost, userId).run();
     const pulseUpdate = c.env.DB.prepare(
       'UPDATE tl_shares SET pulse=COALESCE(pulse,0)+? WHERE id=?'
     ).bind(seconds, shareId).run().catch(() => {});
-    // 두 쿼리 병렬 실행
     await Promise.all([userUpdate, pulseUpdate]);
     return c.json({ ok: true, tl_balance: newTotal, tl_p: new_p, tl_a: new_a, tl_b: new_b, cost });
   } catch (e: any) {
@@ -718,13 +763,12 @@ app.post('/api/stream/:shareId/tick', async (c) => {
 // ══════════════════════════════════════════════════════════
 //  .tl 파일 암호화
 // ══════════════════════════════════════════════════════════
-// ── TL 파일 타입별 확장자/경로 분기 ──
 function getTLExtAndFolder(fileType: string): { ext: string; folder: string } {
   if (fileType.startsWith('audio/'))       return { ext: 'tl3', folder: 'tl3' };
   if (fileType.startsWith('video/'))       return { ext: 'tl4', folder: 'tl4' };
   if (fileType.startsWith('image/'))       return { ext: 'tlg', folder: 'tlg' };
   if (fileType === 'application/pdf')      return { ext: 'tlf', folder: 'tlf' };
-  return { ext: 'tl3', folder: 'tl3' }; // 기본값 오디오
+  return { ext: 'tl3', folder: 'tl3' };
 }
 
 function makeTLKey(shareId: string, secret: string): Uint8Array {
@@ -782,16 +826,16 @@ app.post('/api/upload/tl', async (c) => {
     const secret = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
     const tlPerSec  = Number(meta.tl_per_sec||1.0);
     const duration  = Number(meta.duration||0);
-    const fileTL    = Math.ceil(duration * tlPerSec) || 3600; // 기본 1시간
-    const xorKey    = shareId + secret + 'TIMELINK_v1'; // 플레이어가 복호화에 사용
+    const fileTL    = Math.ceil(duration * tlPerSec) || 3600;
+    const xorKey    = shareId + secret + 'TIMELINK_v1';
     const header = {
       shareId, creatorId: Number(meta.creatorId||0), creatorName: String(meta.creatorName||''),
       title: String(meta.title||file.name.replace(/\.[^.]+$/, '')), artist: String(meta.artist||''),
       fileType: file.type || 'application/octet-stream', ext, duration,
       tl_per_sec: tlPerSec, plan: String(meta.plan||'A'),
-      tl_balance: fileTL,   // ★ 파일에 충전된 TL 잔액
-      tl_max: fileTL,       // ★ 최초 충전량
-      xorKey,               // ★ 로컬 복호화 키
+      tl_balance: fileTL,
+      tl_max: fileTL,
+      xorKey,
       uploadedAt: new Date().toISOString(), contentHash: hash, platform: 'timelink.digital', version: 1,
     };
     const tlData = buildTLFile(header, raw, secret);
@@ -812,8 +856,6 @@ app.get('/api/download/:shareId', async (c) => {
   try {
     const share = await c.env.DB.prepare('SELECT id,title,stream_url FROM tl_shares WHERE id=?').bind(shareId).first() as any;
     if (!share) return c.json({ error:'파일 없음' }, 404);
-    // 다운로드는 TL 잔액 무관하게 허용 (앱 플레이어에서 충전 가능)
-    // 캐시 건너뜀 - 유저마다 tl_balance가 달라서 항상 새로 생성
     const streamUrl = share.stream_url || '';
     let rawKey = '';
     if (streamUrl.includes('r2.dev/')) rawKey = streamUrl.split('r2.dev/')[1];
@@ -832,12 +874,10 @@ app.get('/api/download/:shareId', async (c) => {
     const duration2  = Number(shareFull?.duration || 0);
     const xorKey2    = shareId + secret + 'TIMELINK_v1';
 
-    // ★ 핵심: 유저가 이 파일에 충전한 TL (tl_user_files)
     const userFileTL = await c.env.DB.prepare(
       'SELECT tl_balance, total_charged FROM tl_user_files WHERE user_id=? AND share_id=?'
     ).bind(userId, shareId).first() as any;
 
-    // 유저 충전 TL이 있으면 그 값 사용, 없으면 file_tl 또는 기본값
     const fileTL2 = Number(userFileTL?.tl_balance ?? shareFull?.file_tl ?? 3600);
     const tlMax2  = Number(userFileTL?.total_charged ?? shareFull?.file_tl ?? fileTL2);
 
@@ -848,9 +888,9 @@ app.get('/api/download/:shareId', async (c) => {
       title: shareFull?.title||share.title||'', artist: shareFull?.artist||'',
       fileType: rawObj.httpMetadata?.contentType||'audio/mpeg', ext, duration: duration2,
       tl_per_sec: tlPerSec2, plan: shareFull?.plan||'A',
-      tl_balance: fileTL2,   // ★ 유저가 충전한 실제 TL 잔액
-      tl_max: tlMax2,        // ★ 총 충전량
-      xorKey: xorKey2,       // ★ 로컬 복호화 키
+      tl_balance: fileTL2,
+      tl_max: tlMax2,
+      xorKey: xorKey2,
       uploadedAt: new Date().toISOString(), contentHash: hash,
       platform: 'timelink.digital', version: 1,
     };
@@ -868,7 +908,7 @@ app.get('/api/download/:shareId', async (c) => {
 });
 
 
-// ── AI 윤리 검사 프록시 (CORS 우회) ──
+// ── AI 윤리 검사 프록시 ──
 app.post('/api/ethics/check', async (c) => {
   try {
     const { title, desc, url } = await c.req.json() as any;
@@ -882,7 +922,6 @@ app.post('/api/ethics/check', async (c) => {
       + '{"pass":true,"score":85,"category":"통과","reason":"일반 상업 광고입니다.","suggestion":""}';
 
     if (!secret) {
-      // API 키 없으면 기본 통과
       return c.json({ result: { pass: true, score: 85, category: '통과', reason: 'AI 검사 생략 (키 미설정)', suggestion: '' } });
     }
 
@@ -907,7 +946,6 @@ app.post('/api/ethics/check', async (c) => {
     const result = JSON.parse(clean);
     return c.json({ result });
   } catch(e: any) {
-    // 오류 시 통과 처리
     return c.json({ result: { pass: true, score: 75, category: '통과', reason: '검사 중 오류 — 수동 검토 예정', suggestion: '' } });
   }
 });
@@ -1187,7 +1225,25 @@ app.get('/api/users', async (c) => {
 });
 
 // ── Admin SQL ──
+const ADMIN_EMAILS = ['mununglee@gmail.com'];
+const ADMIN_USER_IDS = [1, 2];
+
+async function requireAdmin(c: any): Promise<{ ok: boolean; reason?: string }> {
+  const token = (c.req.header('Authorization') || '').replace('Bearer ', '').trim();
+  if (!token) return { ok: false, reason: '인증 토큰 없음' };
+  const userId = parseTokenUserId(token);
+  if (!userId) return { ok: false, reason: '유효하지 않은 토큰' };
+  if (ADMIN_USER_IDS.includes(userId)) return { ok: true };
+  try {
+    const user = await c.env.DB.prepare('SELECT email FROM users WHERE id=?').bind(userId).first() as any;
+    if (user && ADMIN_EMAILS.includes(user.email)) return { ok: true };
+  } catch {}
+  return { ok: false, reason: '관리자 권한 없음' };
+}
+
 app.post('/api/admin/sql', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason || '접근 거부' }, 403);
   try {
     const body = await c.req.json() as any;
     const sql: string = (body.sql || body.query || '').trim();
@@ -1216,6 +1272,8 @@ app.post('/api/admin/sql', async (c) => {
 });
 
 app.get('/api/admin/settings/:key', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason || '접근 거부' }, 403);
   try {
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime('now')))`).run().catch(() => {});
     const row = await c.env.DB.prepare('SELECT value FROM tl_settings WHERE key=? LIMIT 1').bind(c.req.param('key')).first() as any;
@@ -1224,6 +1282,8 @@ app.get('/api/admin/settings/:key', async (c) => {
 });
 
 app.post('/api/admin/settings/:key', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason || '접근 거부' }, 403);
   try {
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime('now')))`).run().catch(() => {});
     const body = await c.req.json() as any;
@@ -1235,6 +1295,8 @@ app.post('/api/admin/settings/:key', async (c) => {
 });
 
 app.delete('/api/admin/settings/:key', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason || '접근 거부' }, 403);
   try {
     await c.env.DB.prepare('DELETE FROM tl_settings WHERE key=?').bind(c.req.param('key')).run();
     return c.json({ ok: true, key: c.req.param('key'), deleted: true });
@@ -1242,6 +1304,8 @@ app.delete('/api/admin/settings/:key', async (c) => {
 });
 
 app.get('/api/admin/revenue', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason || '접근 거부' }, 403);
   try {
     const db = c.env.DB;
     await db.prepare(`CREATE TABLE IF NOT EXISTS tl_payments (
@@ -1328,46 +1392,39 @@ app.post('/api/eco/calc-poc', async (c) => {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
 
-    // ── 1. 콘텐츠 창작 기여 (40%) - 월 재생수 / 500, 최대 2.0 ──
     const playRow = await c.env.DB.prepare(
       "SELECT COALESCE(SUM(seconds),0) as total_sec FROM poc_logs WHERE user_id=? AND mode='listen' AND created_at>=?"
     ).bind(userId, monthStart).first() as any;
-    // 재생수 = 총 재생 횟수 (tl_user_files 기준)
     const creationRow = await c.env.DB.prepare(
       "SELECT COALESCE(SUM(pulse),0) as plays FROM tl_shares WHERE user_id=? AND created_at>=?"
     ).bind(String(userId), monthStart).first() as any;
     const monthPlays = Number(creationRow?.plays || 0);
     const creationScore = Math.min(monthPlays / 500 * 2.0, 2.0);
 
-    // ── 2. TL_P 소비 기여 (30%) - 월 TL_P 소비 / 5000, 최대 1.5 ──
     const spendRow = await c.env.DB.prepare(
       "SELECT COALESCE(SUM(tl_spent),0) as spent FROM poc_logs WHERE user_id=? AND created_at>=?"
     ).bind(userId, monthStart).first() as any;
     const monthSpent = Number(spendRow?.spent || 0);
     const spendScore = Math.min(monthSpent / 5000 * 1.5, 1.5);
 
-    // ── 3. 방송 청취 기여 (20%) - 월 청취시간 / 30시간(108000초), 최대 1.0 ──
     const listenRow = await c.env.DB.prepare(
       "SELECT COALESCE(SUM(seconds),0) as secs FROM poc_logs WHERE user_id=? AND created_at>=?"
     ).bind(userId, monthStart).first() as any;
     const monthSecs = Number(listenRow?.secs || 0);
     const listenScore = Math.min(monthSecs / 108000 * 1.0, 1.0);
 
-    // ── 4. 업로드 기여 (10%) - 월 신규 업로드 / 5개, 최대 0.5 ──
     const uploadRow = await c.env.DB.prepare(
       "SELECT COUNT(*) as cnt FROM tl_shares WHERE user_id=? AND created_at>=?"
     ).bind(String(userId), monthStart).first() as any;
     const monthUploads = Number(uploadRow?.cnt || 0);
     const uploadScore = Math.min(monthUploads / 5 * 0.5, 0.5);
 
-    // ── POC Index 합산 (최대 5.0) ──
     const pocIndex = Math.round(Math.min(
       creationScore + spendScore + listenScore + uploadScore, 5.0
     ) * 100) / 100;
 
     await c.env.DB.prepare('UPDATE users SET poc_index=? WHERE id=?').bind(pocIndex, userId).run();
 
-    // 채굴 가능 TLC = 월 TL_P 소비 × poc_index × 0.1
     const mineableTlc = Math.floor(monthSpent * pocIndex * 0.1 * 100) / 100;
 
     return c.json({
@@ -1402,16 +1459,13 @@ app.post('/api/eco/mine', async (c) => {
     const pocIndex = Number(user.poc_index || 0);
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10);
 
-    // 이번 달 TL_P 소비량
     const spendRow = await c.env.DB.prepare(
       "SELECT COALESCE(SUM(tl_spent),0) as spent FROM poc_logs WHERE user_id=? AND created_at>=?"
     ).bind(userId, monthStart).first() as any;
     const monthSpent = Number(spendRow?.spent || 0);
 
-    // 채굴 가능량 = 월 TL_P 소비 × poc_index × 0.1
     const maxMineable = Math.floor(monthSpent * pocIndex * 0.1 * 100) / 100;
 
-    // 이번 달 이미 채굴한 양
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tlc_mining_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
       tlc_mined REAL DEFAULT 0, poc_index REAL DEFAULT 1,
@@ -1427,7 +1481,7 @@ app.post('/api/eco/mine', async (c) => {
       return c.json({ ok: false, error: 'POC 기여 지수가 없습니다. 청취·창작·업로드로 기여도를 쌓으세요.', mined: 0, tlc_total: Number(user.tlc || 0) });
     }
     if (actualMine <= 0) {
-      return c.json({ ok: false, error: `이번 달 채굴 가능한 TLC가 없습니다. (이미 채굴: \${alreadyMined} TLC / 최대: \${maxMineable} TLC)`, mined: 0, tlc_total: Number(user.tlc || 0) });
+      return c.json({ ok: false, error: `이번 달 채굴 가능한 TLC가 없습니다. (이미 채굴: ${alreadyMined} TLC / 최대: ${maxMineable} TLC)`, mined: 0, tlc_total: Number(user.tlc || 0) });
     }
 
     await c.env.DB.prepare('UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)+?, tlc=COALESCE(tlc,0)+? WHERE id=?').bind(actualMine, actualMine, userId).run();
@@ -1435,7 +1489,7 @@ app.post('/api/eco/mine', async (c) => {
     const updated = await c.env.DB.prepare('SELECT COALESCE(tlc_balance,tlc,0) as tlc FROM users WHERE id=?').bind(userId).first() as any;
     return c.json({
       ok: true, mined: actualMine, poc_index: pocIndex, tlc_total: Number(updated?.tlc || 0),
-      formula: `월 TL_P 소비(\${monthSpent}) × POC지수(\${pocIndex}) × 10% = \${maxMineable} TLC (이번달 가능)`,
+      formula: `월 TL_P 소비(${monthSpent}) × POC지수(${pocIndex}) × 10% = ${maxMineable} TLC (이번달 가능)`,
       already_mined: alreadyMined, max_mineable: maxMineable
     });
   } catch(e: any) { return c.json({ error: e.message }, 500); }
@@ -1531,7 +1585,6 @@ app.post('/api/ton/withdraw', async (c) => {
     const { tlc_amount } = await c.req.json() as any;
     if (!tlc_amount || tlc_amount < 1) return c.json({ error:'최소 출금 1 TLC' }, 400);
 
-    // 테이블 생성 보장
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tlc_withdrawals (
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
       ton_address TEXT NOT NULL, tlc_amount REAL NOT NULL,
@@ -1539,7 +1592,6 @@ app.post('/api/ton/withdraw', async (c) => {
       created_at TEXT DEFAULT (datetime('now')), processed_at TEXT DEFAULT ''
     )`).run().catch(()=>{});
 
-    // 유저 정보 조회
     const user = await c.env.DB.prepare(
       "SELECT COALESCE(tlc_balance,tlc,0) as tlc, ton_address FROM users WHERE id=?"
     ).bind(userId).first() as any;
@@ -1551,7 +1603,6 @@ app.post('/api/ton/withdraw', async (c) => {
       return c.json({ error:`TLC 잔액 부족 (보유: ${tlcBalance.toFixed(2)} TLC)`, balance: tlcBalance }, 402);
     }
 
-    // 중복 출금 방지 (pending AND processing 둘 다 체크)
     const pending = await c.env.DB.prepare(
       "SELECT COUNT(*) as cnt FROM tlc_withdrawals WHERE user_id=? AND status IN ('pending','processing')"
     ).bind(userId).first() as any;
@@ -1559,18 +1610,14 @@ app.post('/api/ton/withdraw', async (c) => {
       return c.json({ error:'이미 처리 중인 출금 신청이 있습니다. 처리 완료 후 다시 시도하세요.', code:'PENDING_EXISTS' }, 409);
     }
 
-    // TLC 차감 (선차감)
     await c.env.DB.prepare(
       "UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)-?, tlc=COALESCE(tlc,0)-? WHERE id=?"
     ).bind(tlc_amount, tlc_amount, userId).run();
 
-    // 출금 신청 저장 (pending)
-    // 실제 Jetton 민팅은 Admin API /api/admin/ton/approve-withdrawal 에서 처리
     const txHash = '';
     const status = 'pending';
     const message = `${tlc_amount} TLC 출금 신청 완료! 관리자 검토(1-3일) 후 TON 지갑으로 전송됩니다.`;
 
-    // 출금 기록 저장
     await c.env.DB.prepare(
       "INSERT INTO tlc_withdrawals (user_id, ton_address, tlc_amount, status, tx_hash) VALUES (?,?,?,?,?)"
     ).bind(userId, user.ton_address, tlc_amount, status, txHash).run();
@@ -1587,7 +1634,7 @@ app.post('/api/ton/withdraw', async (c) => {
   } catch(e:any) { return c.json({ error: e.message }, 500); }
 });
 
-// ── Jetton 잔액 조회 (TON 체인 실시간) ──────────────────────
+// ── Jetton 잔액 조회 ──
 app.get('/api/ton/jetton-balance', async (c) => {
   const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
   const userId = parseTokenUserId(token);
@@ -1600,8 +1647,10 @@ app.get('/api/ton/jetton-balance', async (c) => {
   } catch(e:any) { return c.json({ error: e.message }, 500); }
 });
 
-// ── Admin: 출금 수동 승인 ────────────────────────────────────
+// ── Admin: 출금 수동 승인 ──
 app.post('/api/admin/ton/approve-withdrawal', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason || '접근 거부' }, 403);
   try {
     const { withdrawal_id } = await c.req.json() as any;
     if (!withdrawal_id) return c.json({ error:'withdrawal_id 필요' }, 400);
@@ -1611,11 +1660,9 @@ app.post('/api/admin/ton/approve-withdrawal', async (c) => {
     ).bind(withdrawal_id).first() as any;
     if (!wd) return c.json({ error:'출금 신청 없음 또는 이미 처리됨' }, 404);
 
-    // Jetton 민팅
     const mintResult = await mintTLC(c.env, wd.ton_address, wd.tlc_amount);
     if (!mintResult.ok) return c.json({ error:'민팅 실패: ' + mintResult.error }, 500);
 
-    // 상태 업데이트
     await c.env.DB.prepare(
       "UPDATE tlc_withdrawals SET status='processing', tx_hash=?, processed_at=datetime('now') WHERE id=?"
     ).bind(mintResult.txHash || '', withdrawal_id).run();
@@ -1768,10 +1815,42 @@ app.post('/api/dj/chat', async (c) => {
       body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: body.max_tokens || 200, system: body.system, messages: body.messages }),
     });
     const data: any = await res.json();
-    if (data.error) return c.json({ reply: '좋은 음악을 선곡하고 있어요!', fallback: true });
-    return c.json({ reply: data.content?.[0]?.text || '좌고의 음악을 선곡하고 있어요!', usage: data.usage });
+    if (data.error) return c.json({ reply: '좋은 음악을 선곡하고 있어요!', fallback: true, error_detail: data.error });
+    const text = data.content?.[0]?.text;
+    if (!text) return c.json({ reply: '최고의 음악을 선곡하고 있어요!', fallback: true, raw: data });
+    return c.json({ reply: text, usage: data.usage });
   } catch (e: any) {
     return c.json({ reply: '최고의 음악을 선곡하고 있어요!', fallback: true, error: e.message });
+  }
+});
+
+// ── 뉴스 헤드라인 ──
+app.get('/api/news/headlines', async (c) => {
+  try {
+    const feeds = [
+      'https://news.naver.com/main/rss/rankingNews.naver?rankingType=popular_day&sectionId=106',
+      'https://rss.etnews.com/Section901.xml',
+    ];
+    const results: string[] = [];
+    for (const url of feeds) {
+      try {
+        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const xml = await r.text();
+        const matches = xml.matchAll(/<title><!\[CDATA\[(.*?)\]\]><\/title>|<title>(.*?)<\/title>/g);
+        let count = 0;
+        for (const m of matches) {
+          const title = (m[1] || m[2] || '').trim();
+          if (title && !title.includes('RSS') && !title.includes('뉴스') && title.length > 5) {
+            results.push(title);
+            if (++count >= 3) break;
+          }
+        }
+      } catch {}
+      if (results.length >= 5) break;
+    }
+    return c.json({ ok: true, headlines: results.slice(0, 5) });
+  } catch (e: any) {
+    return c.json({ ok: true, headlines: [] });
   }
 });
 
@@ -1839,8 +1918,10 @@ app.post('/api/biz/verify', async (c) => {
   }
 });
 
-// ── TL 파일 마이그레이션 (tl/ → tl3/, tl4/, tlg/, tlf/) ──
+// ── TL 파일 마이그레이션 ──
 app.post('/api/admin/migrate-tl-files', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason || '접근 거부' }, 403);
   try {
     const shares = await c.env.DB.prepare(
       "SELECT id, file_type FROM tl_shares WHERE file_type IS NOT NULL AND file_type != ''"
@@ -1854,11 +1935,9 @@ app.post('/api/admin/migrate-tl-files', async (c) => {
       const newKey = `${folder}/${shareId}.${ext}`;
       const oldKey = `tl/${shareId}.tl`;
 
-      // 이미 새 경로에 있으면 스킵
       const exists = await c.env.R2.head(newKey);
       if (exists) { results.skip++; continue; }
 
-      // 구버전 파일 복사
       const oldObj = await c.env.R2.get(oldKey);
       if (!oldObj) { results.skip++; continue; }
 
@@ -1887,11 +1966,9 @@ app.post('/api/covers/generate', async (c) => {
     const { share_id, title, artist, genre } = await c.req.json() as any;
     if (!share_id) return c.json({ ok: false, error: 'share_id 필요' }, 400);
 
-    // DB에 커버 있으면 반환
     const share = await c.env.DB.prepare('SELECT cover_url FROM tl_shares WHERE id=?').bind(share_id).first() as any;
     if (share?.cover_url) return c.json({ ok: true, cover_url: share.cover_url, cached: true });
 
-    // R2에 이미 있으면 반환
     const coverKey = `covers/${share_id}.svg`;
     const existing = await c.env.R2.head(coverKey);
     if (existing) {
@@ -1900,7 +1977,6 @@ app.post('/api/covers/generate', async (c) => {
       return c.json({ ok: true, cover_url: url, cached: true });
     }
 
-    // 장르별 그라데이션 색상
     const genreColors: Record<string, [string,string]> = {
       'K-POP':['#ff6b9d','#c44dff'],'POP':['#f7971e','#ffd200'],
       'BALLAD':['#4facfe','#00f2fe'],'발라드':['#4facfe','#00f2fe'],
@@ -1931,103 +2007,9 @@ app.post('/api/covers/generate', async (c) => {
 });
 
 
-
-// ── 배치 처리: 매일 자정 충전 기록 TON 블록체인에 기록 ──
-async function batchRecordToTON(env: Env) {
-  try {
-    // 어제 날짜
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const dateStr = yesterday.toISOString().slice(0, 10);
-
-    // 어제 충전 기록 집계
-    const logs = await (env as any).DB.prepare(`
-      SELECT user_id, share_id, SUM(amount) as total_amount, COUNT(*) as charge_count
-      FROM tl_charge_logs
-      WHERE date(created_at) = ? AND confirmed = 0
-      GROUP BY user_id, share_id
-    `).bind(dateStr).all();
-
-    if (!logs.results?.length) return { ok: true, message: '기록 없음' };
-
-    // 배치 요약 데이터
-    const batchData = {
-      type: 'tl_charge_batch',
-      date: dateStr,
-      totalRecords: logs.results.length,
-      totalAmount: logs.results.reduce((s: number, r: any) => s + Number(r.total_amount), 0),
-      records: logs.results.map((r: any) => ({
-        u: r.user_id,
-        s: r.share_id,
-        a: r.total_amount,
-        n: r.charge_count
-      })),
-      platform: 'timelink.digital'
-    };
-
-    // SHA256 해시로 요약 (TON memo는 127자 제한)
-    const batchJson = JSON.stringify(batchData);
-    const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(batchJson));
-    const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
-
-    // D1에 배치 기록 저장
-    await (env as any).DB.prepare(`
-      CREATE TABLE IF NOT EXISTS tl_batch_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        batch_date TEXT NOT NULL,
-        record_count INTEGER DEFAULT 0,
-        total_amount INTEGER DEFAULT 0,
-        batch_hash TEXT NOT NULL,
-        batch_json TEXT,
-        ton_tx_hash TEXT DEFAULT '',
-        confirmed INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now'))
-      )
-    `).run().catch(() => {});
-
-    await (env as any).DB.prepare(`
-      INSERT INTO tl_batch_logs (batch_date, record_count, total_amount, batch_hash, batch_json)
-      VALUES (?, ?, ?, ?, ?)
-    `).bind(dateStr, logs.results.length, batchData.totalAmount, hashHex, batchJson).run();
-
-    // TON 트랜잭션으로 해시 기록
-    const { mintTLC } = await import('./jetton');
-    const memo = `TLCHARGE:${dateStr}:${hashHex.slice(0,16)}:${batchData.totalRecords}rec:${batchData.totalAmount}TL`;
-
-    // 관리자 지갑으로 자기 자신에게 0.001 TON + memo 전송
-    const tonApiKey = (env as any).TON_API_KEY || '';
-    const adminWallet = (env as any).TON_ADMIN_WALLET || '';
-    if (adminWallet && tonApiKey) {
-      const tonRes = await fetch(`https://testnet.toncenter.com/api/v2/sendBoc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': tonApiKey },
-        body: JSON.stringify({ boc: memo })
-      }).catch(() => null);
-    }
-
-    // confirmed 업데이트
-    await (env as any).DB.prepare(`
-      UPDATE tl_charge_logs SET confirmed=1 WHERE date(created_at)=?
-    `).bind(dateStr).run();
-
-    return { ok: true, date: dateStr, records: logs.results.length, hash: hashHex };
-  } catch(e: any) {
-    return { ok: false, error: e.message };
-  }
-}
-
-// Cron 핸들러
-export default {
-  fetch: app.fetch,
-  async scheduled(event: any, env: Env, ctx: any) {
-    ctx.waitUntil(batchRecordToTON(env));
-  }
-};
-
-
-// ═══════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
 // SOCIAL API (좋아요/팔로우/댓글/플레이리스트)
-// ═══════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
 
 const POC_SECONDS: Record<string, number> = {
   like: 5, follow: 1, comment: 60, playlist_create: 120,
@@ -2041,14 +2023,12 @@ async function logPocAction(db: any, user_id: number, action_type: string, targe
   ).bind(user_id, action_type, target_id, sec).run();
 }
 
-// ── 좋아요 ──
 app.post('/api/social/like/:shareId', async (c) => {
   const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
   const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
   if (!m) return c.json({ error: '인증 필요' }, 401);
   const user_id = Number(m[1]);
   const share_id = c.req.param('shareId');
-  // 일일 한도 50개 체크
   const todayCount = await c.env.DB.prepare(
     "SELECT COUNT(*) as cnt FROM poc_action_logs WHERE user_id=? AND action_type='like' AND created_at>=date('now')"
   ).bind(user_id).first() as any;
@@ -2074,7 +2054,6 @@ app.delete('/api/social/like/:shareId', async (c) => {
   return c.json({ ok: true, likes: cnt?.cnt||0 });
 });
 
-// ── 팔로우 ──
 app.post('/api/social/follow/:userId', async (c) => {
   const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
   const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
@@ -2101,7 +2080,6 @@ app.delete('/api/social/follow/:userId', async (c) => {
   return c.json({ ok: true });
 });
 
-// ── 댓글 ──
 app.post('/api/social/comment/:shareId', async (c) => {
   const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
   const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
@@ -2110,7 +2088,6 @@ app.post('/api/social/comment/:shareId', async (c) => {
   const share_id = c.req.param('shareId');
   const { content } = await c.req.json();
   if (!content || content.trim().length < 10) return c.json({ error: '댓글은 10자 이상' }, 400);
-  // 중복 댓글 방지 (1시간 내 동일 내용)
   const dup = await c.env.DB.prepare(
     "SELECT id FROM comments WHERE user_id=? AND share_id=? AND content=? AND created_at>=datetime('now','-1 hour')"
   ).bind(user_id, share_id, content.trim()).first();
@@ -2133,12 +2110,10 @@ app.get('/api/social/comments/:shareId', async (c) => {
 app.post('/api/social/report/comment/:commentId', async (c) => {
   const comment_id = Number(c.req.param('commentId'));
   await c.env.DB.prepare('UPDATE comments SET report_count=report_count+1 WHERE id=?').bind(comment_id).run();
-  // 신고 5회 이상 자동 숨김
   await c.env.DB.prepare('UPDATE comments SET is_deleted=1 WHERE id=? AND report_count>=5').bind(comment_id).run();
   return c.json({ ok: true });
 });
 
-// ── 플레이리스트 ──
 app.post('/api/playlist', async (c) => {
   const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
   const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
@@ -2184,7 +2159,6 @@ app.post('/api/playlist/:id/subscribe', async (c) => {
   } catch { return c.json({ ok: false, error: '이미 구독함' }, 409); }
 });
 
-// ── 소셜 통계 ──
 app.get('/api/social/stats/:shareId', async (c) => {
   const share_id = c.req.param('shareId');
   const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
@@ -2196,8 +2170,6 @@ app.get('/api/social/stats/:shareId', async (c) => {
   return c.json({ ok: true, likes: likes?.cnt||0, comments: comments?.cnt||0, my_like: !!myLike });
 });
 
-
-// ── 내 플레이리스트 목록 ──
 app.get('/api/playlist/my', async (c) => {
   const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
   const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
@@ -2209,7 +2181,6 @@ app.get('/api/playlist/my', async (c) => {
   return c.json({ ok: true, playlists: rows.results });
 });
 
-// ── 팔로우 상태 확인 ──
 app.get('/api/social/follow-status/:userId', async (c) => {
   const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
   const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
@@ -2222,8 +2193,6 @@ app.get('/api/social/follow-status/:userId', async (c) => {
   return c.json({ following: !!row });
 });
 
-
-// ── 투자자 문의 이메일 발송 ──
 app.post('/api/investor/contact', async (c) => {
   try {
     const { name, email, message } = await c.req.json() as any;
@@ -2263,35 +2232,264 @@ app.post('/api/investor/contact', async (c) => {
   }
 });
 
+
+// ══════════════════════════════════════════════════════════════
+//  P1: 크리에이터 정산 관리
+// ══════════════════════════════════════════════════════════════
+app.get('/api/admin/creators/payouts', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason }, 403);
+  try {
+    const db = c.env.DB;
+    await db.prepare("ALTER TABLE tl_shares ADD COLUMN creator_earned INTEGER DEFAULT 0").run().catch(()=>{});
+    await db.prepare(`CREATE TABLE IF NOT EXISTS creator_payouts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL, amount_tl INTEGER NOT NULL,
+      amount_krw INTEGER DEFAULT 0, status TEXT DEFAULT 'pending',
+      note TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now')),
+      processed_at TEXT
+    )`).run().catch(()=>{});
+
+    const creators = await db.prepare(`
+      SELECT u.id, u.username, u.email,
+        COALESCE(u.tl_p,u.tl,0)+COALESCE(u.tl_a,0)+COALESCE(u.tl_b,0) as tl_balance,
+        COALESCE(u.total_tl_earned,0) as total_earned,
+        COALESCE(u.total_tl_exchanged,0) as total_exchanged,
+        COUNT(s.id) as track_count,
+        COALESCE(SUM(s.pulse),0) as total_pulse,
+        COALESCE(SUM(s.file_tl),0) as total_file_tl
+      FROM users u
+      LEFT JOIN tl_shares s ON CAST(s.user_id AS TEXT)=CAST(u.id AS TEXT)
+      GROUP BY u.id
+      HAVING COUNT(s.id)>0
+      ORDER BY total_earned DESC LIMIT 50
+    `).all().catch(()=>({results:[]}));
+
+    const requests = await db.prepare(`
+      SELECT cp.*, u.username, u.email
+      FROM creator_payouts cp
+      LEFT JOIN users u ON cp.user_id=u.id
+      ORDER BY cp.created_at DESC LIMIT 20
+    `).all().catch(()=>({results:[]}));
+
+    const summary = await db.prepare(`
+      SELECT COALESCE(SUM(COALESCE(total_tl_earned,0)-COALESCE(total_tl_exchanged,0)),0) as unpaid_tl,
+             COUNT(*) as creator_count
+      FROM users WHERE id IN (SELECT DISTINCT CAST(user_id AS INTEGER) FROM tl_shares)
+    `).first() as any;
+
+    return c.json({ ok: true, creators: creators.results||[], requests: requests.results||[], summary });
+  } catch(e:any) { return c.json({ ok:false, error:e.message },500); }
+});
+
+app.post('/api/admin/creators/:id/payout', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason }, 403);
+  const userId = c.req.param('id');
+  const body = await c.req.json() as any;
+  const amount = Number(body.amount_tl || 0);
+  if (amount <= 0) return c.json({ error: 'amount_tl 필요' }, 400);
+  try {
+    await c.env.DB.prepare(
+      "INSERT INTO creator_payouts (user_id,amount_tl,amount_krw,status,note) VALUES (?,?,?,?,?)"
+    ).bind(userId, amount, body.amount_krw||0, body.status||'completed', body.note||'관리자 수동 정산').run();
+    if (body.status === 'completed') {
+      await c.env.DB.prepare(
+        "UPDATE users SET total_tl_exchanged=COALESCE(total_tl_exchanged,0)+? WHERE id=?"
+      ).bind(amount, userId).run();
+    }
+    return c.json({ ok: true });
+  } catch(e:any) { return c.json({ ok:false, error:e.message },500); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  P1: 실시간 대시보드
+// ══════════════════════════════════════════════════════════════
+app.get('/api/admin/realtime', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason }, 403);
+  try {
+    const db = c.env.DB;
+    const [users, shares, payments, recent] = await Promise.all([
+      db.prepare("SELECT COUNT(*) as cnt, COALESCE(SUM(COALESCE(tl_p,tl,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)),0) as total_tl FROM users").first() as any,
+      db.prepare("SELECT COUNT(*) as cnt, COALESCE(SUM(pulse),0) as pulse, COALESCE(SUM(file_tl),0) as file_tl FROM tl_shares").first() as any,
+      db.prepare("SELECT COUNT(*) as cnt, COALESCE(SUM(amount_krw),0) as total FROM tl_payments WHERE status='success' AND date(created_at)=date('now')").first() as any,
+      db.prepare("SELECT s.title, s.artist, s.pulse, s.cover_url FROM tl_shares s ORDER BY s.pulse DESC LIMIT 5").all().catch(()=>({results:[]})),
+    ]);
+    const cafeChannels = await db.prepare("SELECT COUNT(*) as cnt FROM cafe_channels WHERE is_active=1").first().catch(()=>({cnt:0})) as any;
+    return c.json({
+      ok: true,
+      users: { total: Number(users?.cnt||0), total_tl: Number(users?.total_tl||0) },
+      shares: { total: Number(shares?.cnt||0), total_pulse: Number(shares?.pulse||0), total_file_tl: Number(shares?.file_tl||0) },
+      today: { payments: Number(payments?.cnt||0), revenue_krw: Number(payments?.total||0) },
+      cafe_channels: Number(cafeChannels?.cnt||0),
+      top_tracks: recent.results||[],
+      timestamp: new Date().toISOString(),
+    });
+  } catch(e:any) { return c.json({ ok:false, error:e.message },500); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  P2: 음악 콘텐츠 분석
+// ══════════════════════════════════════════════════════════════
+app.get('/api/admin/music/analytics', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason }, 403);
+  try {
+    const db = c.env.DB;
+    const [genres, bpm, top, recent] = await Promise.all([
+      db.prepare("SELECT category, COUNT(*) as cnt, COALESCE(SUM(pulse),0) as pulse FROM tl_shares GROUP BY category ORDER BY cnt DESC LIMIT 15").all().catch(()=>({results:[]})),
+      db.prepare("SELECT CASE WHEN bpm=0 OR bpm IS NULL THEN '미측정' WHEN bpm<80 THEN '느림(~80)' WHEN bpm<110 THEN '보통(80~110)' WHEN bpm<135 THEN '신남(110~135)' ELSE '빠름(135+)' END as range, COUNT(*) as cnt FROM tl_shares GROUP BY range ORDER BY cnt DESC").all().catch(()=>({results:[]})),
+      db.prepare("SELECT id,title,artist,category,pulse,file_tl,bpm,cover_url FROM tl_shares ORDER BY pulse DESC LIMIT 10").all().catch(()=>({results:[]})),
+      db.prepare("SELECT id,title,artist,category,pulse,created_at FROM tl_shares ORDER BY created_at DESC LIMIT 10").all().catch(()=>({results:[]})),
+    ]);
+    const totals = await db.prepare("SELECT COUNT(*) as total, COALESCE(SUM(pulse),0) as pulse, COALESCE(AVG(NULLIF(bpm,0)),0) as avg_bpm FROM tl_shares").first() as any;
+    return c.json({ ok:true, genres:genres.results||[], bpm_dist:bpm.results||[], top_tracks:top.results||[], recent_tracks:recent.results||[], totals });
+  } catch(e:any) { return c.json({ ok:false, error:e.message },500); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  P2: 카페방송 채널 관리
+// ══════════════════════════════════════════════════════════════
+app.get('/api/admin/cafe/channels', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason }, 403);
+  try {
+    const db = c.env.DB;
+    await db.prepare("ALTER TABLE cafe_channels ADD COLUMN monthly_fee INTEGER DEFAULT 50000").run().catch(()=>{});
+    const channels = await db.prepare(`
+      SELECT cc.*, u.username, u.email,
+        CASE WHEN cc.expires_at > datetime('now') THEN 'active' ELSE 'expired' END as status,
+        CAST((julianday(cc.expires_at) - julianday('now')) AS INTEGER) as days_left
+      FROM cafe_channels cc
+      LEFT JOIN users u ON CAST(cc.owner_id AS TEXT)=CAST(u.id AS TEXT)
+      ORDER BY cc.created_at DESC
+    `).all().catch(()=>({results:[]}));
+
+    const summary = await db.prepare(`
+      SELECT COUNT(*) as total,
+        COUNT(CASE WHEN expires_at > datetime('now') THEN 1 END) as active,
+        COUNT(CASE WHEN expires_at <= datetime('now') THEN 1 END) as expired
+      FROM cafe_channels
+    `).first().catch(()=>null) as any;
+
+    return c.json({ ok:true, channels:channels.results||[], summary });
+  } catch(e:any) { return c.json({ ok:false, error:e.message },500); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  P3: 인프라/운영 비용 추적
+// ══════════════════════════════════════════════════════════════
+app.get('/api/admin/infra/stats', async (c) => {
+  const auth = await requireAdmin(c);
+  if (!auth.ok) return c.json({ error: auth.reason }, 403);
+  try {
+    const db = c.env.DB;
+    const storage = await db.prepare("SELECT COUNT(*) as files, COALESCE(SUM(file_size),0) as total_bytes FROM upload_logs").first().catch(()=>({files:0,total_bytes:0})) as any;
+    const workers = await db.prepare("SELECT COUNT(*) as requests FROM api_logs WHERE created_at >= date('now','-30 days')").first().catch(()=>({requests:0})) as any;
+
+    const gb = Number(storage?.total_bytes||0) / (1024**3);
+    const r2_cost_usd = gb * 0.015;
+    const workers_requests = Number(workers?.requests||0);
+    const workers_cost_usd = Math.max(0, (workers_requests - 10_000_000) / 1_000_000 * 0.30);
+
+    return c.json({
+      ok: true,
+      storage: { files: Number(storage?.files||0), total_gb: gb.toFixed(3), cost_usd: r2_cost_usd.toFixed(4) },
+      workers: { requests_30d: workers_requests, cost_usd: workers_cost_usd.toFixed(4) },
+      estimated_monthly_usd: (r2_cost_usd + workers_cost_usd).toFixed(2),
+      estimated_monthly_krw: Math.round((r2_cost_usd + workers_cost_usd) * 1350),
+    });
+  } catch(e:any) { return c.json({ ok:false, error:e.message },500); }
+});
+
+// ── 배치 처리: 매일 자정 충전 기록 TON 블록체인에 기록 ──
+async function batchRecordToTON(env: Env) {
+  try {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const dateStr = yesterday.toISOString().slice(0, 10);
+
+    const logs = await (env as any).DB.prepare(`
+      SELECT user_id, share_id, SUM(amount) as total_amount, COUNT(*) as charge_count
+      FROM tl_charge_logs
+      WHERE date(created_at) = ? AND confirmed = 0
+      GROUP BY user_id, share_id
+    `).bind(dateStr).all();
+
+    if (!logs.results?.length) return { ok: true, message: '기록 없음' };
+
+    const batchData = {
+      type: 'tl_charge_batch',
+      date: dateStr,
+      totalRecords: logs.results.length,
+      totalAmount: logs.results.reduce((s: number, r: any) => s + Number(r.total_amount), 0),
+      records: logs.results.map((r: any) => ({
+        u: r.user_id,
+        s: r.share_id,
+        a: r.total_amount,
+        n: r.charge_count
+      })),
+      platform: 'timelink.digital'
+    };
+
+    const batchJson = JSON.stringify(batchData);
+    const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(batchJson));
+    const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
+
+    await (env as any).DB.prepare(`
+      CREATE TABLE IF NOT EXISTS tl_batch_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_date TEXT NOT NULL,
+        record_count INTEGER DEFAULT 0,
+        total_amount INTEGER DEFAULT 0,
+        batch_hash TEXT NOT NULL,
+        batch_json TEXT,
+        ton_tx_hash TEXT DEFAULT '',
+        confirmed INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `).run().catch(() => {});
+
+    await (env as any).DB.prepare(`
+      INSERT INTO tl_batch_logs (batch_date, record_count, total_amount, batch_hash, batch_json)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(dateStr, logs.results.length, batchData.totalAmount, hashHex, batchJson).run();
+
+    const { mintTLC } = await import('./jetton');
+    const memo = `TLCHARGE:${dateStr}:${hashHex.slice(0,16)}:${batchData.totalRecords}rec:${batchData.totalAmount}TL`;
+
+    const tonApiKey = (env as any).TON_API_KEY || '';
+    const adminWallet = (env as any).TON_ADMIN_WALLET || '';
+    if (adminWallet && tonApiKey) {
+      const tonRes = await fetch(`https://testnet.toncenter.com/api/v2/sendBoc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': tonApiKey },
+        body: JSON.stringify({ boc: memo })
+      }).catch(() => null);
+    }
+
+    await (env as any).DB.prepare(`
+      UPDATE tl_charge_logs SET confirmed=1 WHERE date(created_at)=?
+    `).bind(dateStr).run();
+
+    return { ok: true, date: dateStr, records: logs.results.length, hash: hashHex };
+  } catch(e: any) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Not Found 핸들러
+// ══════════════════════════════════════════════════════════════
 app.notFound((c) => c.json({ detail: 'Not found' }, 404));
 
-// export default app; // Cron 핸들러로 대체됨
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// ══════════════════════════════════════════════════════════════
+//  Cron 핸들러 (배치 작업)
+// ══════════════════════════════════════════════════════════════
+export default {
+  fetch: app.fetch,
+  async scheduled(event: any, env: Env, ctx: any) {
+    ctx.waitUntil(batchRecordToTON(env));
+  }
+};
