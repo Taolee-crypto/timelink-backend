@@ -13,6 +13,7 @@ import paymentRouter from './payment';
 import ecoRouter from './economics';
 import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
+import { sendVerificationEmail, sendPayoutEmail } from './email';
 import sunoVerifyRouter from './routes/suno-verify';
 
 
@@ -494,6 +495,46 @@ app.post('/api/auth/register', async (c) => {
   }
 });
 
+
+// 이메일 인증 코드 발송
+app.post('/api/auth/send-code', async (c) => {
+  try {
+    const { email, username } = await c.req.json() as any;
+    if (!email) return c.json({ error: 'email 필요' }, 400);
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL, code TEXT NOT NULL,
+      expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
+    )`).run().catch(()=>{});
+    await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
+    await c.env.DB.prepare(
+      'INSERT INTO email_verifications (email, code, expires_at) VALUES (?,?,?)'
+    ).bind(email, code, expiresAt).run();
+    await sendVerificationEmail(c.env, email, username||'', code);
+    return c.json({ ok: true, message: '인증 코드를 발송했습니다' });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// 이메일 인증 코드 확인
+app.post('/api/auth/verify-code', async (c) => {
+  try {
+    const { email, code } = await c.req.json() as any;
+    if (!email || !code) return c.json({ error: 'email/code 필요' }, 400);
+    const row = await c.env.DB.prepare(
+      'SELECT * FROM email_verifications WHERE email=? AND code=?'
+    ).bind(email, code).first() as any;
+    if (!row) return c.json({ error: '인증 코드가 올바르지 않습니다' }, 400);
+    if (new Date(row.expires_at) < new Date()) return c.json({ error: '인증 코드가 만료되었습니다' }, 400);
+    await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
+    return c.json({ ok: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
 // 로그인
 app.post('/api/auth/login', async (c) => {
   try {
@@ -519,22 +560,52 @@ app.post('/api/auth/check-email', async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
-// 회원가입 (signup)
+// 회원가입 (signup) - 이메일 인증 코드 발송
 app.post('/api/auth/signup', async (c) => {
   try {
-    const { email, password, username, business_name: businessName, biz_reg_num: bizRegNum, is_advertiser: isAdvertiser } = await c.req.json();
+    const { email, password, username, business_name: businessName, biz_reg_num: bizRegNum, is_advertiser: isAdvertiser, verify_code: verifyCode } = await c.req.json();
     if (!email || !username) return c.json({ error: '필수 항목 누락' }, 400);
     const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
     if (exists) return c.json({ error: '이미 가입된 이메일입니다. 로그인을 이용해 주세요.' }, 409);
     const nameExists = await c.env.DB.prepare('SELECT id FROM users WHERE username=?').bind(username).first();
     if (nameExists) return c.json({ error: '이미 사용 중인 닉네임입니다.' }, 409);
-    const now = new Date().toISOString().replace('T',' ').substring(0,19);
+
+    // 인증 코드 검증
+    if (verifyCode) {
+      await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL, code TEXT NOT NULL,
+        expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
+      )`).run().catch(()=>{});
+      const row = await c.env.DB.prepare(
+        'SELECT * FROM email_verifications WHERE email=? AND code=?'
+      ).bind(email, verifyCode).first() as any;
+      if (!row) return c.json({ error: '인증 코드가 올바르지 않습니다' }, 400);
+      if (new Date(row.expires_at) < new Date()) return c.json({ error: '인증 코드가 만료되었습니다' }, 400);
+      await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
+      const now = new Date().toISOString().replace('T',' ').substring(0,19);
+      await c.env.DB.prepare(
+        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,10000,10000,0,?,?,?,?)'
+      ).bind(email, username, password||'', now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
+      const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
+      const token = 'token_' + (user as any).id + '_' + Date.now();
+      return c.json({ ok: true, token, user });
+    }
+
+    // 인증 코드 발송
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL, code TEXT NOT NULL,
+      expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
+    )`).run().catch(()=>{});
+    await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
     await c.env.DB.prepare(
-      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,10000,10000,0,?,?,?,?)'
-    ).bind(email, username, password||'', now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
-    const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
-    const token = 'token_' + (user as any).id + '_' + Date.now();
-    return c.json({ ok: true, token, user });
+      'INSERT INTO email_verifications (email, code, expires_at) VALUES (?,?,?)'
+    ).bind(email, code, expiresAt).run();
+    await sendVerificationEmail(c.env, email, username, code);
+    return c.json({ ok: true, step: 'verify', message: '인증 코드를 이메일로 발송했습니다' });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
@@ -2297,6 +2368,10 @@ app.post('/api/admin/creators/:id/payout', async (c) => {
       await c.env.DB.prepare(
         "UPDATE users SET total_tl_exchanged=COALESCE(total_tl_exchanged,0)+? WHERE id=?"
       ).bind(amount, userId).run();
+      try {
+        const u = await c.env.DB.prepare('SELECT email, username FROM users WHERE id=?').bind(userId).first() as any;
+        if (u && u.email) await sendPayoutEmail(c.env, u.email, u.username, amount, body.amount_krw||0);
+      } catch(emailErr) { console.warn('정산 이메일 발송 실패:', emailErr); }
     }
     return c.json({ ok: true });
   } catch(e:any) { return c.json({ ok:false, error:e.message },500); }
