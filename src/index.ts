@@ -457,6 +457,78 @@ app.get('/api/shares/:id', async (c) => {
   return c.json(row);
 });
 
+
+// ══════════════════════════════════════════════════════════
+// PATCH /api/shares/:id — 창작자 정보 편집 (곡명 불변)
+// ══════════════════════════════════════════════════════════
+app.patch('/api/shares/:id', async (c) => {
+  const auth = (c.req.header('Authorization') || '').replace('Bearer ', '').trim();
+  if (!auth) return c.json({ error: '인증 필요' }, 401);
+
+  let userId: number;
+  try {
+    const p = parseJWT(auth);
+    userId = p.userId || p.id || p.sub;
+    if (!userId) throw new Error('no userId');
+  } catch {
+    return c.json({ error: '토큰 오류' }, 401);
+  }
+
+  const shareId = c.req.param('id');
+
+  const existing = await c.env.DB.prepare(
+    'SELECT id, user_id, title FROM tl_shares WHERE id=?'
+  ).bind(shareId).first() as any;
+  if (!existing) return c.json({ error: '파일 없음' }, 404);
+  if (String(existing.user_id) !== String(userId)) return c.json({ error: '권한 없음' }, 403);
+
+  const body = await c.req.json<any>().catch(() => ({}));
+
+  // 새 컬럼 자동 생성
+  const newCols = [
+    "ALTER TABLE tl_shares ADD COLUMN creation_story TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN mood_tags TEXT DEFAULT '[]'",
+    "ALTER TABLE tl_shares ADD COLUMN musical_key TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN credits TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN social_links TEXT DEFAULT '{}'",
+    "ALTER TABLE tl_shares ADD COLUMN gallery_images TEXT DEFAULT '[]'",
+    "ALTER TABLE tl_shares ADD COLUMN production_note TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN origin_hash TEXT DEFAULT ''",
+  ];
+  for (const sql of newCols) {
+    await c.env.DB.prepare(sql).run().catch(() => {});
+  }
+
+  // 수정 가능 필드 (title 제외 — 불변)
+  const allowed: Record<string, string> = {
+    artist:'artist', album:'album', category:'category',
+    description:'description', composer:'composer', lyricist:'lyricist',
+    lyrics:'lyrics', cover_url:'cover_url', creation_story:'creation_story',
+    production_note:'production_note', musical_key:'musical_key',
+    credits:'credits', mood_tags:'mood_tags', social_links:'social_links',
+    gallery_images:'gallery_images',
+  };
+
+  const updates: string[] = [];
+  const values: any[] = [];
+  for (const [key, col] of Object.entries(allowed)) {
+    if (body[key] !== undefined) {
+      updates.push(`${col}=?`);
+      values.push(typeof body[key] === 'object' ? JSON.stringify(body[key]) : body[key]);
+    }
+  }
+
+  if (updates.length === 0) return c.json({ ok: true, message: '변경 없음' });
+
+  values.push(shareId);
+  await c.env.DB.prepare(
+    `UPDATE tl_shares SET ${updates.join(',')} WHERE id=?`
+  ).bind(...values).run();
+
+  const updated = await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first();
+  return c.json({ ok: true, share: updated });
+});
+
 app.delete('/api/shares/:id', async (c) => {
   const auth = (c.req.header('Authorization') || '').replace('Bearer ', '').trim();
   if (!auth) return c.json({ error: '인증 필요' }, 401);
@@ -1070,6 +1142,20 @@ app.post('/api/decrypt/:shareId', async (c) => {
         'pdf':'application/pdf','txt':'text/plain',
       };
       const contentType = rawObj.httpMetadata?.contentType || extMimeMap[rawExt] || 'audio/mpeg';
+      // .tl3 v2 감지 (브라우저 생성 파일)
+      if (raw[0]===0x54&&raw[1]===0x4C&&raw[2]===0x4E&&raw[3]===0x4B&&raw[4]===0x02) {
+        const metaLen=(raw[5]<<8)|raw[6];
+        const meta=JSON.parse(new TextDecoder().decode(raw.slice(7,7+metaLen))) as Record<string,any>;
+        const encAudio=raw.slice(7+metaLen);
+        const fixedKey=new TextEncoder().encode('TIMELINK_XOR_KEY_2026_SECURE');
+        const audioData=xorData(encAudio,fixedKey);
+        return new Response(audioData,{
+          status:200,
+          headers:{...cors,'Content-Type':'audio/mpeg','Content-Length':String(audioData.length),
+            'X-TL-Header':JSON.stringify({title:meta.title||share.title,artist:meta.name||share.artist,duration:meta.dur||0,bpm:meta.bpm||0}),
+            'Cache-Control':'no-store'},
+        });
+      }
       return new Response(raw, {
         status: 200,
         headers: { ...cors, 'Content-Type': contentType, 'Content-Length': String(raw.length),
@@ -1083,6 +1169,21 @@ app.post('/api/decrypt/:shareId', async (c) => {
     if (tlData[0]!==0x54||tlData[1]!==0x4C||tlData[2]!==0x4E||tlData[3]!==0x4B) {
       return new Response(JSON.stringify({ error:'유효하지 않은 .tl 파일' }), {status:400,headers:cors});
     }
+    // v2 감지 (브라우저 생성)
+    if (tlData[4]===0x02) {
+      const metaLen=(tlData[5]<<8)|tlData[6];
+      const meta=JSON.parse(new TextDecoder().decode(tlData.slice(7,7+metaLen))) as Record<string,any>;
+      const encAudio=tlData.slice(7+metaLen);
+      const fixedKey=new TextEncoder().encode('TIMELINK_XOR_KEY_2026_SECURE');
+      const rawData=xorData(encAudio,fixedKey);
+      return new Response(rawData,{
+        status:200,
+        headers:{...cors,'Content-Type':'audio/mpeg','Content-Length':String(rawData.length),
+          'X-TL-Header':JSON.stringify({title:meta.title,artist:meta.name,duration:meta.dur,bpm:meta.bpm}),
+          'Cache-Control':'no-store'},
+      });
+    }
+    // v1 기존 포맷
     const hdrLen = tlData[6]|(tlData[7]<<8)|(tlData[8]<<16)|(tlData[9]<<24);
     const hdrBytes = tlData.slice(10, 10+hdrLen);
     const header   = JSON.parse(new TextDecoder().decode(hdrBytes)) as Record<string,any>;
