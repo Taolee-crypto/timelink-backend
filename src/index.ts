@@ -243,6 +243,33 @@ app.post('/api/upload', async (c) => {
   }
 });
 
+// TL3 정식 출시: 크리에이터가 가격을 직접 설정한다.
+app.post('/api/v1/tl3/releases', async (c) => {
+  try {
+    const body = await c.req.json<any>();
+    const fileId = Number(body.file_id || 0);
+    const price = Math.max(0, Math.floor(Number(body.price_tl || 0)));
+    if (!fileId || !body.title || !body.artist) return c.json({ ok:false, error:'file_id, title, artist가 필요합니다.' },400);
+    const userEmail = String(body.user_email || '').trim();
+    const user = userEmail ? await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(userEmail).first<any>() : null;
+    if (!user) return c.json({ok:false,error:'사용자를 확인할 수 없습니다.'},401);
+    const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_files WHERE id=?').bind(fileId).first<any>();
+    if (!file || Number(file.user_id)!==Number(user.id)) return c.json({ok:false,error:'본인의 음원만 TL3로 출시할 수 있습니다.'},403);
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_releases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL UNIQUE, user_id INTEGER NOT NULL,
+      title TEXT NOT NULL, artist TEXT NOT NULL, price_tl INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'released', created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`).run();
+    await c.env.DB.prepare(`INSERT INTO tl3_releases
+      (file_id,user_id,title,artist,price_tl,status) VALUES (?,?,?,?,?,'released')
+      ON CONFLICT(file_id) DO UPDATE SET price_tl=excluded.price_tl,status='released',updated_at=datetime('now')
+    `).bind(fileId,user.id,file.title,file.artist,price).run();
+    await c.env.DB.prepare("UPDATE tl_files SET shared=1, shared_to_shareplace=1, updated_at=datetime('now') WHERE id=?").bind(fileId).run();
+    return c.json({ok:true,file_id:fileId,price_tl:price,status:'released'});
+  } catch(e:any) { return c.json({ok:false,error:e.message},500); }
+});
+
 // Spotify 검색
 let _spToken: string | null = null;
 let _spExp = 0;
