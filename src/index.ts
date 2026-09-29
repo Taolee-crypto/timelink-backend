@@ -253,6 +253,30 @@ app.post('/api/v1/tl3/releases', async (c) => {
   } catch(e:any) { return c.json({ok:false,error:e.message},500); }
 });
 
+// GET /api/v1/tl3/segment/:id — 인증된 소형 Range 세그먼트
+app.get('/api/v1/tl3/segment/:id', async (c) => {
+  try {
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
+    if (!payload) return c.json({ ok:false, error:'로그인이 필요합니다.' }, 401);
+    const fileId = Number(c.req.param('id') || 0);
+    const offset = Math.max(0, Number(c.req.query('offset') || 0));
+    const requested = Math.min(512 * 1024, Math.max(1, Number(c.req.query('length') || 512 * 1024)));
+    const file = await c.env.DB.prepare(`SELECT f.id,f.stream_url,f.revenue_held,r.status AS tl3_status FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
+    if (!file) return c.json({ok:false,error:'TL3 release not found'},404);
+    if (file.revenue_held) return c.json({ok:false,error:'File under dispute'},400);
+    const target = new URL(String(file.stream_url));
+    if (!target.hostname.endsWith('.r2.dev')) return c.json({ok:false,error:'허용되지 않은 스트림 원본입니다.'},400);
+    const end = offset + requested - 1;
+    const upstream = await fetch(target.toString(), {headers:{Range:`bytes=${offset}-${end}`}});
+    if (!(upstream.ok || upstream.status === 206)) return c.json({ok:false,error:'세그먼트를 가져올 수 없습니다.'},502);
+    const headers = new Headers();
+    for (const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges']) { const v=upstream.headers.get(name); if(v) headers.set(name,v); }
+    headers.set('Cache-Control','private, no-store');
+    headers.set('X-TL3-Max-Bytes',String(512*1024));
+    return new Response(upstream.body,{status:upstream.status,headers});
+  } catch(e:any) { return c.json({ok:false,error:e.message||'TL3 segment error'},500); }
+});
 // GET /api/v1/tl3/stream/:id — 인증된 TL3 스트림 게이트
 // 무료 MP3 스트림은 기존 공개 스트림을 그대로 사용한다.
 app.get('/api/v1/tl3/stream/:id', async (c) => {
