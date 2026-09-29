@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
+import { verifyToken } from './auth';
 
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
