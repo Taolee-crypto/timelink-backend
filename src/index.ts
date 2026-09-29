@@ -292,7 +292,7 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     const creator=await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
     if(creator){ await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+3.5,total_tl_earned=total_tl_earned+3.5 WHERE id=?').bind(creator.id).run(); await c.env.DB.prepare(`INSERT INTO transactions (user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES (?,?,'earn',?,?,?,?)`).bind(creator.id,fileId,3.5,Number(creator.tl_balance||0)+3.5,u.id,'TL3 세그먼트 5초 정산').run(); }
     await c.env.DB.prepare(`INSERT INTO play_events (file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES (?,?,?,?,?,?,0)`).bind(fileId,u.id,5,3.5,null,5).run();
-    const headers=new Headers(); for(const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges']){const v=upstream.headers.get(name);if(v)headers.set(name,v);} headers.set('Cache-Control','private, no-store'); headers.set('X-TL3-Reserved-Seconds','5');
+    const headers=new Headers(); for(const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges']){const v=upstream.headers.get(name);if(v)headers.set(name,v);} headers.set('Cache-Control','private, no-store'); const freshUser=await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>(); headers.set('X-TL3-Reserved-Seconds','5'); headers.set('X-TL3-Remaining-TL',String(Number(freshUser?.tl_balance||0)));
     return new Response(upstream.body,{status:upstream.status,headers});
   } catch(e:any){ return c.json({ok:false,error:e.message||'TL3 segment error'},500); }
 });
