@@ -330,7 +330,8 @@ app.post('/api/v1/tl3/releases', async (c) => {
     if (raw.length > 100*1024*1024) return c.json({ok:false,error:'TL3 출시용 음원은 100MB 이하만 지원합니다.'},413);
     const segments = parseMp3Segments(raw,5000);
     const durationMs = segments.reduce((n,x)=>n+x.durationMs,0);
-    const hash = await sha256Hex(raw);
+    const hashBuf = await crypto.subtle.digest('SHA-256', raw);
+    const hash = Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,'0')).join('');
     const meta = {version:2,format:'TL3',file_id:fileId,title:file.title,artist:file.artist,duration_ms:durationMs,segment_count:segments.length,contentHash:hash,platform:'timelink.digital'};
     const container = buildTL3V2(meta,raw);
     const tl3Key = `tl3/releases/${fileId}.tl3`;
