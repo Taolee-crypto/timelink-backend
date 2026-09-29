@@ -415,7 +415,7 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     await c.env.DB.prepare(`INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode)
       VALUES(?,?,?,?,?,?,0)`).bind(fileId,u.id,cost,revenue,null,Math.round(Number(seg.duration_ms)/1000)).run();
     const headers=new Headers({'Content-Type':'audio/mpeg','Content-Length':String(seg.length),'Cache-Control':'private, no-store',
-      'X-TL3-Segment-Index':String(segmentIndex),'X-TL3-Segment-Duration-Ms':String(seg.duration_ms),
+      'X-TL3-Segment-Index':String(segmentIndex),'X-TL3-Segment-Duration-Ms':String(seg.duration_ms), 'X-TL3-Payload-Offset':String(seg.offset),
       'X-TL3-Next-Segment':String(segmentIndex+1)});
     const fresh=await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
     headers.set('X-TL3-Remaining-TL',String(Number(fresh?.tl_balance||0)));
