@@ -77,15 +77,25 @@ const USER_SELECT = `
 // GET /api/tracks
 app.get('/api/tracks', async (c) => {
   try {
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_releases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL UNIQUE, user_id INTEGER NOT NULL,
+      title TEXT NOT NULL, artist TEXT NOT NULL, price_tl INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'released', tl3_key TEXT, payload_offset INTEGER DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0, segment_count INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )`).run();
     const genre = c.req.query('genre');
     const limit = Math.min(Number(c.req.query('limit') || 50), 100);
     let query = `
       SELECT f.id, f.title, f.artist, f.genre, f.icon,
         f.pulse, f.price_per_sec, f.stream_url, f.cover_image,
         f.spotify_album, f.auth_status, f.file_type,
-        f.play_count, f.created_at, u.username as creator
+        f.play_count, f.created_at, u.username as creator,
+        r.status AS tl3_status, r.price_tl AS price_tl,
+        r.duration_ms AS tl3_duration_ms, r.segment_count AS tl3_segment_count
       FROM tl_files f
       LEFT JOIN users u ON f.user_id = u.id
+      LEFT JOIN tl3_releases r ON r.file_id = f.id
       WHERE (f.shared = 1 OR f.shared_to_shareplace = 1)
         AND f.stream_url IS NOT NULL AND f.stream_url != ''`;
     const params: (string | number)[] = [];
