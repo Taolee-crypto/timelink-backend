@@ -395,7 +395,16 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     }
     if (Number(ss.next_segment)!==segmentIndex) return c.json({ok:false,error:'순차 재생 세그먼트만 허용됩니다.',expected_segment:Number(ss.next_segment)},409);
     if (ss.pending_segment !== null && ss.pending_segment !== undefined) {
-      return c.json({ok:false,error:'이전 세그먼트의 재생 정산이 필요합니다.',pending_segment:Number(ss.pending_segment)},409);
+      const pendingAge=now-Number(ss.pending_delivered_at||now);
+      const pendingDuration=Number(ss.pending_duration_ms||0)/1000;
+      if (pendingAge > pendingDuration + 10) {
+        const pendingCost=Number(ss.pending_cost||0);
+        await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(pendingCost,pendingCost,u.id).run();
+        await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime(\'now\') WHERE id=?').bind(sessionId).run();
+        ss.next_segment=Number(ss.pending_segment)+1; ss.pending_segment=null;
+      } else {
+        return c.json({ok:false,error:'이전 세그먼트의 재생 정산이 필요합니다.',pending_segment:Number(ss.pending_segment)},409);
+      }
     }
     if (Number(ss.last_segment_at) && now-Number(ss.last_segment_at)<4) return c.json({ok:false,error:'다음 재생 구간을 받을 수 없습니다.',retry_after:4-(now-Number(ss.last_segment_at))},429);
 
