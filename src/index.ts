@@ -377,9 +377,15 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
 
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_stream_sessions (
       id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,file_id INTEGER NOT NULL,next_segment INTEGER NOT NULL DEFAULT 0,
-      last_segment_at INTEGER NOT NULL DEFAULT 0,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now'))
+      last_segment_at INTEGER NOT NULL DEFAULT 0,pending_segment INTEGER, pending_cost REAL DEFAULT 0, pending_duration_ms INTEGER DEFAULT 0, pending_delivered_at INTEGER DEFAULT 0,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now'))
     )`).run();
-    for (const sql of ["ALTER TABLE tl3_stream_sessions ADD COLUMN next_segment INTEGER NOT NULL DEFAULT 0"]) { try { await c.env.DB.prepare(sql).run(); } catch (_) {} }
+    for (const sql of [
+      "ALTER TABLE tl3_stream_sessions ADD COLUMN next_segment INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE tl3_stream_sessions ADD COLUMN pending_segment INTEGER",
+      "ALTER TABLE tl3_stream_sessions ADD COLUMN pending_cost REAL DEFAULT 0",
+      "ALTER TABLE tl3_stream_sessions ADD COLUMN pending_duration_ms INTEGER DEFAULT 0",
+      "ALTER TABLE tl3_stream_sessions ADD COLUMN pending_delivered_at INTEGER DEFAULT 0"
+    ]) { try { await c.env.DB.prepare(sql).run(); } catch (_) {} }
     const now=Math.floor(Date.now()/1000);
     let ss=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
     if (!ss) {
@@ -388,6 +394,9 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
       ss={next_segment:0,last_segment_at:0};
     }
     if (Number(ss.next_segment)!==segmentIndex) return c.json({ok:false,error:'순차 재생 세그먼트만 허용됩니다.',expected_segment:Number(ss.next_segment)},409);
+    if (ss.pending_segment !== null && ss.pending_segment !== undefined) {
+      return c.json({ok:false,error:'이전 세그먼트의 재생 정산이 필요합니다.',pending_segment:Number(ss.pending_segment)},409);
+    }
     if (Number(ss.last_segment_at) && now-Number(ss.last_segment_at)<4) return c.json({ok:false,error:'다음 재생 구간을 받을 수 없습니다.',retry_after:4-(now-Number(ss.last_segment_at))},429);
 
     const cost=Number((Number(seg.duration_ms)/1000).toFixed(3));
@@ -403,17 +412,11 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
       return c.json({ok:false,error:'TL3 세그먼트를 가져올 수 없습니다.'},502);
     }
 
-    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?')
-      .bind(segmentIndex+1,now,sessionId).run();
-    const revenue=cost*0.7;
+    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET pending_segment=?,pending_cost=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?')
+      .bind(segmentIndex,cost,Number(seg.duration_ms),now,now,sessionId).run();
+    const revenue=0;
     const creator=await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
-    if(creator) {
-      await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,creator.id).run();
-      await c.env.DB.prepare(`INSERT INTO transactions(user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES (?,?,'earn',?,?,?,?)`)
-        .bind(creator.id,fileId,revenue,Number(creator.tl_balance||0)+revenue,u.id,`TL3 ${Number(seg.duration_ms)/1000}초 정산`).run();
-    }
-    await c.env.DB.prepare(`INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode)
-      VALUES(?,?,?,?,?,?,0)`).bind(fileId,u.id,cost,revenue,null,Math.round(Number(seg.duration_ms)/1000)).run();
+    // 정산은 /confirm에서 실제 재생시간을 확정한 뒤 수행한다.
     const headers=new Headers({'Content-Type':'audio/mpeg','Content-Length':String(seg.length),'Cache-Control':'private, no-store',
       'X-TL3-Segment-Index':String(segmentIndex),'X-TL3-Segment-Duration-Ms':String(seg.duration_ms), 'X-TL3-Payload-Offset':String(seg.offset),
       'X-TL3-Next-Segment':String(segmentIndex+1)});
@@ -421,6 +424,46 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     headers.set('X-TL3-Remaining-TL',String(Number(fresh?.tl_balance||0)));
     return new Response(obj.body,{status:206,headers});
   } catch(e:any) { return c.json({ok:false,error:e.message||'TL3 segment error'},500); }
+});
+
+
+// POST /api/v1/tl3/segment/confirm/:id — 실제 재생시간 확정 및 미사용분 환급
+app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
+  try {
+    const auth=c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+    const payload=auth?await verifyToken(auth,c.env.JWT_SECRET):null;
+    if(!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const u=await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
+    if(!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
+    const fileId=Number(c.req.param('id')||0);
+    const body=await c.req.json<any>().catch(()=>({}));
+    const sessionId=String(body.session_id||'').slice(0,80);
+    const reported=Number(body.played_seconds||0);
+    if(!fileId||!sessionId) return c.json({ok:false,error:'재생 세션이 필요합니다.'},400);
+    const file=await c.env.DB.prepare(`SELECT f.id,f.user_id,f.revenue_held,r.status,r.segment_count FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
+    if(!file||file.revenue_held) return c.json({ok:false,error:'TL3 release not available'},404);
+    const ss=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
+    if(!ss||ss.pending_segment===null||ss.pending_segment===undefined) return c.json({ok:false,error:'대기 중인 세그먼트가 없습니다.'},409);
+    const now=Math.floor(Date.now()/1000);
+    const duration=Number(ss.pending_duration_ms||0)/1000;
+    const wallCap=Math.min(duration,Math.max(0,now-Number(ss.pending_delivered_at||now))+1);
+    const played=Math.max(0,Math.min(duration,reported,wallCap));
+    const reserved=Number(ss.pending_cost||0);
+    const refund=Number(Math.max(0,reserved-played).toFixed(3));
+    const revenue=Number((played*0.7).toFixed(3));
+    await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(refund,refund,u.id).run();
+    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime(\'now\') WHERE id=?').bind(sessionId).run();
+    const creator=await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
+    if(creator&&revenue>0){
+      await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,creator.id).run();
+      await c.env.DB.prepare(`INSERT INTO transactions(user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES (?,?,'earn',?,?,?,?)`)
+        .bind(creator.id,fileId,revenue,Number(creator.tl_balance||0)+revenue,u.id,`TL3 실제 ${played.toFixed(3)}초 정산`).run();
+    }
+    await c.env.DB.prepare(`INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)`)
+      .bind(fileId,u.id,played,revenue,null,Math.round(played),0).run();
+    const fresh=await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
+    return c.json({ok:true,segment:Number(ss.pending_segment),reserved,played_seconds:played,refund,settled_tl:played,creator_revenue:revenue,remaining_tl:Number(fresh?.tl_balance||0)});
+  } catch(e:any){ return c.json({ok:false,error:e.message||'TL3 confirm error'},500); }
 });
 // Spotify 검색
 let _spToken: string | null = null;
