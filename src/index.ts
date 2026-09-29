@@ -16,6 +16,7 @@ import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
 import sunoVerifyRouter from './routes/suno-verify';
 import { checkPublishedRelease } from './published-release-check';
+import { verifyToken } from './auth';
 
 
 const app = new Hono<{ Bindings: Env }>();
@@ -250,8 +251,10 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const fileId = Number(body.file_id || 0);
     const price = Math.max(0, Math.floor(Number(body.price_tl || 0)));
     if (!fileId || !body.title || !body.artist) return c.json({ ok:false, error:'file_id, title, artist가 필요합니다.' },400);
-    const userEmail = String(body.user_email || '').trim();
-    const user = userEmail ? await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(userEmail).first<any>() : null;
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
+    if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const user = await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(payload.sub).first<any>();
     if (!user) return c.json({ok:false,error:'사용자를 확인할 수 없습니다.'},401);
     const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_files WHERE id=?').bind(fileId).first<any>();
     if (!file || Number(file.user_id)!==Number(user.id)) return c.json({ok:false,error:'본인의 음원만 TL3로 출시할 수 있습니다.'},403);
