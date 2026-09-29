@@ -259,14 +259,14 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
     if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
-    const u = await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND active=1').bind(payload.userId).first<any>();
+    const u = await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
     if (!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
     const fileId = Number(c.req.param('id') || 0);
     const offset = Math.max(0, Number(c.req.query('offset') || 0));
     const requested = Math.min(512*1024, Math.max(1, Number(c.req.query('length') || 512*1024)));
     const sessionId = String(c.req.query('session_id') || '').slice(0,80);
     if (!fileId || !sessionId) return c.json({ok:false,error:'재생 세션이 필요합니다.'},400);
-    const file = await c.env.DB.prepare(`SELECT f.id,f.stream_url,f.revenue_held,r.status AS tl3_status FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
+    const file = await c.env.DB.prepare(`SELECT f.id,f.user_id,f.stream_url,f.revenue_held,r.status AS tl3_status FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
     if (!file) return c.json({ok:false,error:'TL3 release not found'},404);
     if (file.revenue_held) return c.json({ok:false,error:'File under dispute'},400);
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_stream_sessions (id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,file_id INTEGER NOT NULL,next_offset INTEGER NOT NULL DEFAULT 0,last_segment_at INTEGER NOT NULL DEFAULT 0,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now')))`).run();
