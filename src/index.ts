@@ -77,6 +77,13 @@ const USER_SELECT = `
 // GET /api/tracks
 app.get('/api/tracks', async (c) => {
   try {
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_releases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL UNIQUE, user_id INTEGER NOT NULL,
+      title TEXT NOT NULL, artist TEXT NOT NULL, price_tl INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'released', tl3_key TEXT, payload_offset INTEGER DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0, segment_count INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )`).run();
     const genre = c.req.query('genre');
     const limit = Math.min(Number(c.req.query('limit') || 50), 100);
     let query = `
