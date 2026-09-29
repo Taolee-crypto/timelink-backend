@@ -279,14 +279,14 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     }
     if (Number(ss.next_offset) !== offset) return c.json({ok:false,error:'순차 재생 세그먼트만 허용됩니다.',expected_offset:Number(ss.next_offset)},409);
     if (Number(ss.last_segment_at) && now - Number(ss.last_segment_at) < 4) return c.json({ok:false,error:'다음 재생 구간을 받을 수 없습니다.',retry_after:4-(now-Number(ss.last_segment_at))},429);
-    const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-5,total_tl_spent=total_tl_spent+5 WHERE id=? AND tl_balance>=5').bind(u.id).run();
-    if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:5,balance:u.tl_balance},402);
     const target = new URL(String(file.stream_url));
     if (!target.hostname.endsWith('.r2.dev')) return c.json({ok:false,error:'허용되지 않은 스트림 원본입니다.'},400);
+    const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-5,total_tl_spent=total_tl_spent+5 WHERE id=? AND tl_balance>=5').bind(u.id).run();
+    if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:5,balance:u.tl_balance},402);
     const end = offset + requested - 1;
     const upstream = await fetch(target.toString(),{headers:{Range:`bytes=${offset}-${end}`}});
     if (!(upstream.ok || upstream.status===206)) { await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+5,total_tl_spent=total_tl_spent-5 WHERE id=?').bind(u.id).run(); return c.json({ok:false,error:'세그먼트를 가져올 수 없습니다.'},502); }
-    const bytes = Number(upstream.headers.get('Content-Length') || 0);
+    const contentRange = upstream.headers.get('Content-Range') || ''; const rangeMatch = contentRange.match(/bytes (\d+)-(\d+)\/(\d+|\*)/); const bytes = Number(upstream.headers.get('Content-Length') || (rangeMatch ? Number(rangeMatch[2])-Number(rangeMatch[1])+1 : 0));
     await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_offset=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(offset+bytes,now,sessionId).run();
     const revenue=3.5;
     const creator=await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
