@@ -15,6 +15,7 @@ import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
 import sunoVerifyRouter from './routes/suno-verify';
+import { checkPublishedRelease } from './published-release-check';
 
 
 const app = new Hono<{ Bindings: Env }>();
@@ -180,7 +181,26 @@ app.post('/api/upload', async (c) => {
     const formData = await c.req.parseBody({ limit: 500 * 1024 * 1024 });
     const file = formData['file'] as File;
     const trackId = formData['trackId'] as string;
+    const title = String(formData['title'] || '').trim();
+    const artist = String(formData['artist'] || '').trim();
     if (!file || !trackId) return c.json({ ok: false, error: 'file, trackId 필수' }, 400);
+
+    // 기존에 발행된 음원인지 간단히 확인한다.
+    // 확인 결과가 '이미 발행됨'일 때만 업로드를 차단하고,
+    // 외부 카탈로그 조회 자체가 불가능한 경우에는 업로드를 막지 않는다.
+    if (title) {
+      const published = await checkPublishedRelease(c.env, title, artist);
+      if (published.matched) {
+        return c.json({
+          ok: false,
+          code: 'PUBLISHED_RELEASE',
+          error: '이미 발행된 음원으로 확인되었습니다.',
+          message: '본인이 권리자이거나 적법한 이용권한을 보유한 경우 권리 확인 후 업로드할 수 있습니다.',
+          match: published,
+        }, 409);
+      }
+    }
+
     const MAX_SIZE = 500 * 1024 * 1024;
     if (file.size > MAX_SIZE) return c.json({ ok: false, error: `파일이 너무 큽니다 (최대 500MB)` }, 400);
     const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
