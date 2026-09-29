@@ -285,8 +285,17 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:5,balance:u.tl_balance},402);
     const end = offset + requested - 1;
     const upstream = await fetch(target.toString(),{headers:{Range:`bytes=${offset}-${end}`}});
-    if (!(upstream.ok || upstream.status===206)) { await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+5,total_tl_spent=total_tl_spent-5 WHERE id=?').bind(u.id).run(); return c.json({ok:false,error:'세그먼트를 가져올 수 없습니다.'},502); }
-    const contentRange = upstream.headers.get('Content-Range') || ''; const rangeMatch = contentRange.match(/bytes (\d+)-(\d+)\/(\d+|\*)/); const bytes = Number(upstream.headers.get('Content-Length') || (rangeMatch ? Number(rangeMatch[2])-Number(rangeMatch[1])+1 : 0));
+    const contentRange = upstream.headers.get('Content-Range') || '';
+    const rangeMatch = contentRange.match(/bytes (\\d+)-(\\d+)\\/(\\d+|\\*)/);
+    const bytes = Number(upstream.headers.get('Content-Length') || (rangeMatch ? Number(rangeMatch[2])-Number(rangeMatch[1])+1 : 0));
+    const rangeStart = rangeMatch ? Number(rangeMatch[1]) : -1;
+    // Range를 무시한 200 전체파일 응답은 한 번의 5 TL 결제로 전체 파일을 노출할 수 있으므로 거부한다.
+    const validRange = upstream.status === 206 && rangeStart === offset && bytes > 0 && bytes <= requested;
+    if (!validRange) {
+      await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+5,total_tl_spent=total_tl_spent-5 WHERE id=?').bind(u.id).run();
+      try { await upstream.body?.cancel(); } catch (_) {}
+      return c.json({ok:false,error:'유효하지 않은 Range 세그먼트입니다.'},502);
+    }
     await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_offset=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(offset+bytes,now,sessionId).run();
     const revenue=3.5;
     const creator=await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
@@ -295,34 +304,6 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     const headers=new Headers(); for(const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges']){const v=upstream.headers.get(name);if(v)headers.set(name,v);} headers.set('Cache-Control','private, no-store'); const freshUser=await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>(); headers.set('X-TL3-Reserved-Seconds','5'); headers.set('X-TL3-Remaining-TL',String(Number(freshUser?.tl_balance||0)));
     return new Response(upstream.body,{status:upstream.status,headers});
   } catch(e:any){ return c.json({ok:false,error:e.message||'TL3 segment error'},500); }
-});
-// GET /api/v1/tl3/stream/:id — 인증된 TL3 스트림 게이트
-// 무료 MP3 스트림은 기존 공개 스트림을 그대로 사용한다.
-app.get('/api/v1/tl3/stream/:id', async (c) => {
-  try {
-    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
-    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
-    if (!payload) return c.json({ ok:false, error:'로그인이 필요합니다.' }, 401);
-    const fileId = Number(c.req.param('id') || 0);
-    if (!fileId) return c.json({ ok:false, error:'잘못된 음원입니다.' }, 400);
-    const file = await c.env.DB.prepare(`SELECT f.id, f.stream_url, f.auth_status, f.revenue_held, r.status AS tl3_status FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
-    if (!file) return c.json({ ok:false, error:'TL3 release not found' }, 404);
-    if (file.revenue_held) return c.json({ ok:false, error:'File under dispute' }, 400);
-    if (!file.stream_url) return c.json({ ok:false, error:'스트림 파일이 없습니다.' }, 404);
-    const target = new URL(String(file.stream_url));
-    if (!target.hostname.endsWith('.r2.dev')) return c.json({ ok:false, error:'허용되지 않은 스트림 원본입니다.' }, 400);
-    const range = c.req.header('Range');
-    const upstream = await fetch(target.toString(), range ? { headers: { Range: range } } : {});
-    if (!upstream.ok) return c.json({ ok:false, error:'스트림 파일을 가져올 수 없습니다.' }, 502);
-    const headers = new Headers();
-    for (const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges','ETag']) {
-      const value = upstream.headers.get(name); if (value) headers.set(name, value);
-    }
-    headers.set('Cache-Control','private, no-store');
-    return new Response(upstream.body, { status: upstream.status, headers });
-  } catch (e:any) {
-    return c.json({ ok:false, error:e.message || 'TL3 stream error' }, 500);
-  }
 });
 // Spotify 검색
 let _spToken: string | null = null;
