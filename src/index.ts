@@ -253,6 +253,77 @@ app.post('/api/v1/tl3/releases', async (c) => {
   } catch(e:any) { return c.json({ok:false,error:e.message},500); }
 });
 
+// GET /api/v1/tl3/segment/:id — 5초 사용권이 결합된 순차 세그먼트
+app.get('/api/v1/tl3/segment/:id', async (c) => {
+  try {
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
+    if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const u = await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
+    if (!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
+    const fileId = Number(c.req.param('id') || 0);
+    const offset = Math.max(0, Number(c.req.query('offset') || 0));
+    const requested = Math.min(128*1024, Math.max(1, Number(c.req.query('length') || 128*1024)));
+    const sessionId = String(c.req.query('session_id') || '').slice(0,80);
+    if (!fileId || !sessionId) return c.json({ok:false,error:'재생 세션이 필요합니다.'},400);
+    const file = await c.env.DB.prepare(`SELECT f.id,f.user_id,f.stream_url,f.revenue_held,r.status AS tl3_status FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
+    if (!file) return c.json({ok:false,error:'TL3 release not found'},404);
+    if (file.revenue_held) return c.json({ok:false,error:'File under dispute'},400);
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_stream_sessions (id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,file_id INTEGER NOT NULL,next_offset INTEGER NOT NULL DEFAULT 0,last_segment_at INTEGER NOT NULL DEFAULT 0,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now')))`).run();
+    const now = Math.floor(Date.now()/1000);
+    let ss = await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
+    if (!ss) {
+      if (offset !== 0) return c.json({ok:false,error:'첫 세그먼트부터 요청해야 합니다.'},409);
+      await c.env.DB.prepare('INSERT INTO tl3_stream_sessions (id,user_id,file_id,next_offset,last_segment_at) VALUES (?,?,?,?,0)').bind(sessionId,u.id,fileId,0).run();
+      ss = {next_offset:0,last_segment_at:0};
+    }
+    if (Number(ss.next_offset) !== offset) return c.json({ok:false,error:'순차 재생 세그먼트만 허용됩니다.',expected_offset:Number(ss.next_offset)},409);
+    if (Number(ss.last_segment_at) && now - Number(ss.last_segment_at) < 4) return c.json({ok:false,error:'다음 재생 구간을 받을 수 없습니다.',retry_after:4-(now-Number(ss.last_segment_at))},429);
+    const target = new URL(String(file.stream_url));
+    if (!target.hostname.endsWith('.r2.dev')) return c.json({ok:false,error:'허용되지 않은 스트림 원본입니다.'},400);
+    const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-5,total_tl_spent=total_tl_spent+5 WHERE id=? AND tl_balance>=5').bind(u.id).run();
+    if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:5,balance:u.tl_balance},402);
+    const end = offset + requested - 1;
+    const upstream = await fetch(target.toString(),{headers:{Range:`bytes=${offset}-${end}`}});
+    if (!(upstream.ok || upstream.status===206)) { await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+5,total_tl_spent=total_tl_spent-5 WHERE id=?').bind(u.id).run(); return c.json({ok:false,error:'세그먼트를 가져올 수 없습니다.'},502); }
+    const contentRange = upstream.headers.get('Content-Range') || ''; const rangeMatch = contentRange.match(/bytes (\d+)-(\d+)\/(\d+|\*)/); const bytes = Number(upstream.headers.get('Content-Length') || (rangeMatch ? Number(rangeMatch[2])-Number(rangeMatch[1])+1 : 0));
+    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_offset=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(offset+bytes,now,sessionId).run();
+    const revenue=3.5;
+    const creator=await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
+    if(creator){ await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+3.5,total_tl_earned=total_tl_earned+3.5 WHERE id=?').bind(creator.id).run(); await c.env.DB.prepare(`INSERT INTO transactions (user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES (?,?,'earn',?,?,?,?)`).bind(creator.id,fileId,3.5,Number(creator.tl_balance||0)+3.5,u.id,'TL3 세그먼트 5초 정산').run(); }
+    await c.env.DB.prepare(`INSERT INTO play_events (file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES (?,?,?,?,?,?,0)`).bind(fileId,u.id,5,3.5,null,5).run();
+    const headers=new Headers(); for(const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges']){const v=upstream.headers.get(name);if(v)headers.set(name,v);} headers.set('Cache-Control','private, no-store'); const freshUser=await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>(); headers.set('X-TL3-Reserved-Seconds','5'); headers.set('X-TL3-Remaining-TL',String(Number(freshUser?.tl_balance||0)));
+    return new Response(upstream.body,{status:upstream.status,headers});
+  } catch(e:any){ return c.json({ok:false,error:e.message||'TL3 segment error'},500); }
+});
+// GET /api/v1/tl3/stream/:id — 인증된 TL3 스트림 게이트
+// 무료 MP3 스트림은 기존 공개 스트림을 그대로 사용한다.
+app.get('/api/v1/tl3/stream/:id', async (c) => {
+  try {
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
+    if (!payload) return c.json({ ok:false, error:'로그인이 필요합니다.' }, 401);
+    const fileId = Number(c.req.param('id') || 0);
+    if (!fileId) return c.json({ ok:false, error:'잘못된 음원입니다.' }, 400);
+    const file = await c.env.DB.prepare(`SELECT f.id, f.stream_url, f.auth_status, f.revenue_held, r.status AS tl3_status FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
+    if (!file) return c.json({ ok:false, error:'TL3 release not found' }, 404);
+    if (file.revenue_held) return c.json({ ok:false, error:'File under dispute' }, 400);
+    if (!file.stream_url) return c.json({ ok:false, error:'스트림 파일이 없습니다.' }, 404);
+    const target = new URL(String(file.stream_url));
+    if (!target.hostname.endsWith('.r2.dev')) return c.json({ ok:false, error:'허용되지 않은 스트림 원본입니다.' }, 400);
+    const range = c.req.header('Range');
+    const upstream = await fetch(target.toString(), range ? { headers: { Range: range } } : {});
+    if (!upstream.ok) return c.json({ ok:false, error:'스트림 파일을 가져올 수 없습니다.' }, 502);
+    const headers = new Headers();
+    for (const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges','ETag']) {
+      const value = upstream.headers.get(name); if (value) headers.set(name, value);
+    }
+    headers.set('Cache-Control','private, no-store');
+    return new Response(upstream.body, { status: upstream.status, headers });
+  } catch (e:any) {
+    return c.json({ ok:false, error:e.message || 'TL3 stream error' }, 500);
+  }
+});
 // Spotify 검색
 let _spToken: string | null = null;
 let _spExp = 0;
