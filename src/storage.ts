@@ -182,6 +182,26 @@ export async function registerObject(db:D1Database,userId:number,connectionId:nu
   return r?.id;
 }
 
+export async function finalizeUpload(db:D1Database,env:Env,userId:number,connectionId:number,provider:Provider,name:string){
+  await ensureStorageTables(db);
+  const row=await db.prepare("SELECT * FROM storage_connections WHERE id=? AND user_id=? AND provider=? AND status='active'").bind(connectionId,userId,provider).first<ConnectionRow>();
+  if(!row) throw new Error('저장소 연결을 확인할 수 없습니다.');
+  const access=await open(row.access_token,env.STORAGE_ENCRYPTION_KEY||'');
+  let item:any=null;
+  if(provider==='google_drive'){
+    const q="name='"+name.replace(/'/g,"\\'")+"' and '"+String(row.root_id||'')+"' in parents and trashed=false";
+    const r=await fetch('https://www.googleapis.com/drive/v3/files?fields=files(id,name,mimeType,size,md5Checksum,etag,modifiedTime)&q='+encodeURIComponent(q),{headers:{Authorization:'Bearer '+access}});
+    if(!r.ok) throw new Error('Google Drive 파일 확인 실패');
+    item=(await r.json<any>()).files?.[0];
+  }else{
+    const r=await fetch('https://graph.microsoft.com/v1.0/me/drive/special/approot:/'+encodeURIComponent(name)+'?$select=id,name,size,file,eTag', {headers:{Authorization:'Bearer '+access}});
+    if(!r.ok) throw new Error('OneDrive 파일 확인 실패');
+    item=await r.json<any>();
+  }
+  if(!item?.id) throw new Error('업로드된 파일을 찾지 못했습니다.');
+  return {objectId:String(item.id),name:String(item.name||name),mime:String(item.mimeType||item.file?.mimeType||'application/octet-stream'),size:Number(item.size||0),etag:String(item.etag||'')};
+}
+
 export async function getObject(db:D1Database,env:Env,objectId:number){
   await ensureStorageTables(db);
   const o=await db.prepare('SELECT * FROM storage_objects WHERE id=? AND status=\'active\'').bind(objectId).first<any>();
