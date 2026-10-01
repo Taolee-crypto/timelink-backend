@@ -229,8 +229,9 @@ payment.post('/portone/verify', async (c) => {
   if (dup) return c.json({ error: '이미 처리된 결제입니다' }, 409);
 
   // ── 포트원 액세스 토큰 발급 ──
-  const IMP_KEY    = (c.env as any).PORTONE_IMP_KEY    || 'imp00000000';   // 테스트키
-  const IMP_SECRET = (c.env as any).PORTONE_IMP_SECRET || 'test_secret';  // 테스트 시크릿
+  const IMP_KEY    = String((c.env as any).PORTONE_IMP_KEY || '');
+  const IMP_SECRET = String((c.env as any).PORTONE_IMP_SECRET || '');
+  if (!IMP_KEY || !IMP_SECRET) return c.json({ error: 'PortOne 서버 키가 설정되지 않았습니다.' }, 503);
 
   let verified = false;
   let paidAmount = 0;
@@ -262,11 +263,7 @@ payment.post('/portone/verify', async (c) => {
       }
     }
   } catch (_e) {
-    // 테스트 모드: 포트원 API 실패 시 amount 그대로 신뢰 (테스트 전용)
-    if (IMP_KEY === 'imp00000000') {
-      verified = true;
-      paidAmount = Number(amount);
-    }
+    verified = false;
   }
 
   if (!verified) {
@@ -311,7 +308,8 @@ payment.post('/stripe/intent', async (c) => {
     return c.json({ error: '최소 결제 금액은 100원입니다' }, 400);
   }
 
-  const STRIPE_SECRET = (c.env as any).STRIPE_SECRET_KEY || 'sk_test_placeholder';
+  const STRIPE_SECRET = String((c.env as any).STRIPE_SECRET_KEY || '');
+  if (!STRIPE_SECRET) return c.json({ error: 'Stripe 서버 키가 설정되지 않았습니다.' }, 503);
 
   try {
     const res = await fetch('https://api.stripe.com/v1/payment_intents', {
@@ -331,18 +329,7 @@ payment.post('/stripe/intent', async (c) => {
     });
     const data: any = await res.json();
 
-    if (data.error) {
-      // 테스트 키 미설정 시 mock client_secret 반환 (UI 개발용)
-      if (STRIPE_SECRET === 'sk_test_placeholder') {
-        return c.json({
-          client_secret: 'pi_test_mock_secret_for_development',
-          payment_intent_id: 'pi_test_mock_' + Date.now(),
-          amount: amount_krw,
-          test_mode: true,
-        });
-      }
-      return c.json({ error: data.error.message }, 400);
-    }
+    if (data.error) return c.json({ error: data.error.message }, 400);
 
     return c.json({
       client_secret: data.client_secret,
@@ -376,11 +363,7 @@ payment.post('/stripe/confirm', async (c) => {
   let verified = false;
   let paidAmount = Number(amount_krw);
 
-  // 테스트 mock
-  if (payment_intent_id.startsWith('pi_test_mock_')) {
-    verified = true;
-  } else {
-    try {
+  try {
       const res = await fetch(`https://api.stripe.com/v1/payment_intents/${payment_intent_id}`, {
         headers: { 'Authorization': 'Basic ' + btoa(STRIPE_SECRET + ':') },
       });
@@ -389,9 +372,8 @@ payment.post('/stripe/confirm', async (c) => {
         paidAmount = data.amount;
         verified = true;
       }
-    } catch (_e) {
-      if (STRIPE_SECRET === 'sk_test_placeholder') verified = true;
-    }
+  } catch (_e) {
+    verified = false;
   }
 
   if (!verified) return c.json({ error: '결제 검증 실패' }, 400);
