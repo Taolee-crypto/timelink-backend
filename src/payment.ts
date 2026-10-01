@@ -7,25 +7,14 @@ const payment = new Hono<{ Bindings: Env }>();
 /* ──────────────────────────────────────────────────
    공통 유틸: 토큰 파싱 → user_id
 ────────────────────────────────────────────────── */
-function parseUserId(token: string | null): string | null {
-  if (!token) return null;
-  // token_{userId}_{ts} | fallback_{userId}_{ts} | demo_{ts}
-  const m = token.match(/^(?:token|fallback)_([^_]+)_/);
-  return m ? m[1] : null;
-}
-
 async function authUserId(c: any): Promise<string | null> {
   const auth = c.req.header('Authorization') || '';
   const token = auth.replace(/^Bearer\\s+/i, '').trim();
-  if (!token) return null;
-
-  // 현재 TimeLink JWT 인증을 우선 사용한다.
-  const secret = (c.env as any).JWT_SECRET || 'timelink_default_secret_2026';
+  const secret = String((c.env as any).JWT_SECRET || '');
+  if (!token || !secret) return null;
   const payload = await verifyToken(token, secret).catch(() => null);
-  if (payload?.sub) return String(payload.sub);
-
-  // 구버전 token_{userId}_{timestamp} 형식도 기존 사용자 호환을 위해 허용한다.
-  return parseUserId(token);
+  if (!payload?.sub || !/^\\d+$/.test(String(payload.sub))) return null;
+  return String(payload.sub);
 }
 
 /* ──────────────────────────────────────────────────
@@ -59,6 +48,47 @@ async function ensurePaymentTable(db: any) {
 }
 
 /* ══════════════════════════════════════════════════
+   Toss 결제 주문 생성
+   - 주문 ID를 로그인 사용자와 서버에서 묶는다.
+   - 클라이언트가 임의의 orderId로 다른 사용자의 결제를 가로채지 못하게 한다.
+══════════════════════════════════════════════════ */
+async function ensureTossOrderTable(db: any) {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS tl_toss_orders (
+      order_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      amount_krw INTEGER NOT NULL,
+      status TEXT DEFAULT 'ready',
+      payment_key TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `).run();
+}
+
+payment.post('/toss/order', async (c) => {
+  const userId = await authUserId(c);
+  if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
+  try {
+    const { amount } = await c.req.json() as any;
+    const paidAmount = Number(amount);
+    const allowed = [5000, 10000, 30000, 50000, 100000];
+    if (!Number.isInteger(paidAmount) || !allowed.includes(paidAmount)) {
+      return c.json({ error: '지원하지 않는 충전 금액입니다.' }, 400);
+    }
+    await ensureTossOrderTable(c.env.DB);
+    const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase();
+    const orderId = 'TL_' + String(userId) + '_' + Date.now() + '_' + suffix;
+    await c.env.DB.prepare(
+      'INSERT INTO tl_toss_orders (order_id,user_id,amount_krw,status) VALUES (?,?,?,?)'
+    ).bind(orderId, userId, paidAmount, 'ready').run();
+    return c.json({ ok: true, orderId, amount: paidAmount });
+  } catch (e: any) {
+    return c.json({ error: e?.message || '결제 주문 생성 실패' }, 500);
+  }
+});
+
+/* ══════════════════════════════════════════════════
    Toss Payments 결제 승인 + TL 지급
    POST /api/payment/toss/confirm
    body: { paymentKey, orderId, amount }
@@ -69,11 +99,26 @@ payment.post('/toss/confirm', async (c) => {
 
   const { paymentKey, orderId, amount } = await c.req.json() as any;
   const paidAmount = Number(amount);
-  if (!paymentKey || !orderId || !Number.isFinite(paidAmount) || paidAmount <= 0) {
+  if (!paymentKey || !orderId || !Number.isInteger(paidAmount) || paidAmount <= 0) {
     return c.json({ error: '잘못된 결제 요청입니다' }, 400);
   }
 
   await ensurePaymentTable(c.env.DB);
+  await ensureTossOrderTable(c.env.DB);
+
+  // 주문은 서버에서 로그인 사용자에게 발급한 것만 승인한다.
+  const order = await c.env.DB.prepare(
+    'SELECT order_id,user_id,amount_krw,status,payment_key FROM tl_toss_orders WHERE order_id=?'
+  ).bind(String(orderId)).first() as any;
+  if (!order || String(order.user_id) !== String(userId)) {
+    return c.json({ error: '결제 주문의 사용자 정보가 일치하지 않습니다.' }, 403);
+  }
+  if (Number(order.amount_krw) !== paidAmount) {
+    return c.json({ error: '결제 금액이 주문 금액과 일치하지 않습니다.' }, 400);
+  }
+  if (order.status === 'success') {
+    return c.json({ error: '이미 처리된 주문입니다.' }, 409);
+  }
 
   // paymentKey를 고유 키로 사용하여 동일 결제의 중복 지급을 막는다.
   const dup = await c.env.DB.prepare(
@@ -128,15 +173,22 @@ payment.post('/toss/confirm', async (c) => {
     const bonus_tl = bonusMap[paidAmount] || 0;
     const total_tl = paidAmount + bonus_tl;
 
-    // 구매 TL은 tl/tl_p에 동시에 반영한다. tl_p는 교환 가능한 구매 TL이다.
-    await c.env.DB.prepare(
-      'UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+?, tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?'
-    ).bind(total_tl, total_tl, total_tl, userId).run();
-
-    await c.env.DB.prepare(
-      `INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
-       VALUES (?,?,?,?,?,?,?)`
-    ).bind(userId, 'toss', paymentKey, orderId, paidAmount, total_tl, 'success').run();
+    // 사용자 잔액과 결제 원장을 함께 갱신한다.
+    const batch = await c.env.DB.batch([
+      c.env.DB.prepare(
+        'UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+?, tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?'
+      ).bind(total_tl, total_tl, total_tl, userId),
+      c.env.DB.prepare(
+        `INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
+         VALUES (?,?,?,?,?,?,?)`
+      ).bind(userId, 'toss', paymentKey, orderId, paidAmount, total_tl, 'success'),
+      c.env.DB.prepare(
+        "UPDATE tl_toss_orders SET status='success', payment_key=?, updated_at=datetime('now') WHERE order_id=? AND user_id=? AND status='ready'"
+      ).bind(paymentKey, orderId, userId)
+    ]);
+    if (Number(batch[2]?.meta?.changes || 0) !== 1) {
+      return c.json({ error: '결제 주문 상태 갱신에 실패했습니다.' }, 409);
+    }
 
     const user = await c.env.DB.prepare(
       'SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p FROM users WHERE id=?'
@@ -162,7 +214,7 @@ payment.post('/toss/confirm', async (c) => {
    body: { imp_uid, merchant_uid, amount, user_id? }
 ══════════════════════════════════════════════════ */
 payment.post('/portone/verify', async (c) => {
-  const userId = authUserId(c);
+  const userId = await authUserId(c);
   if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
 
   const { imp_uid, merchant_uid, amount } = await c.req.json() as any;
@@ -251,7 +303,7 @@ payment.post('/portone/verify', async (c) => {
    body: { amount_krw }   (1원 단위)
 ══════════════════════════════════════════════════ */
 payment.post('/stripe/intent', async (c) => {
-  const userId = authUserId(c);
+  const userId = await authUserId(c);
   if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
 
   const { amount_krw } = await c.req.json() as any;
@@ -308,7 +360,7 @@ payment.post('/stripe/intent', async (c) => {
    body: { payment_intent_id, amount_krw }
 ══════════════════════════════════════════════════ */
 payment.post('/stripe/confirm', async (c) => {
-  const userId = authUserId(c);
+  const userId = await authUserId(c);
   if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
 
   const { payment_intent_id, amount_krw } = await c.req.json() as any;
@@ -364,7 +416,7 @@ payment.post('/stripe/confirm', async (c) => {
    GET /api/payment/history
 ══════════════════════════════════════════════════ */
 payment.get('/history', async (c) => {
-  const userId = authUserId(c);
+  const userId = await authUserId(c);
   if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
 
   await ensurePaymentTable(c.env.DB);
