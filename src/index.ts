@@ -116,7 +116,7 @@ app.post('/api/storage/object/register', async (c) => {
     if(b.shareId){
       await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_object_id INTEGER").run().catch(()=>{});
       await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_provider TEXT DEFAULT ''").run().catch(()=>{});
-      await c.env.DB.prepare("UPDATE tl_shares SET storage_object_id=?,storage_provider=? WHERE id=? AND CAST(user_id AS INTEGER)=?").bind(id,String(b.provider),String(b.shareId),Number(u.sub)).run();
+      await c.env.DB.prepare("UPDATE tl_shares SET storage_object_id=?,storage_provider=?,stream_url=? WHERE id=? AND CAST(user_id AS INTEGER)=?").bind(id,String(b.provider),`/api/stream/${String(b.shareId)}`,String(b.shareId),Number(u.sub)).run();
     }
     return c.json({ok:true,object_id:id,storage_mode:'external',shareId:b.shareId||null});
   } catch(e:any){ return c.json({ok:false,error:e.message},500); }
