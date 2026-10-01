@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from './types';
+import { verifyToken } from './auth';
 
 const payment = new Hono<{ Bindings: Env }>();
 
@@ -13,9 +14,17 @@ function parseUserId(token: string | null): string | null {
   return m ? m[1] : null;
 }
 
-function authUserId(c: any): string | null {
+async function authUserId(c: any): Promise<string | null> {
   const auth = c.req.header('Authorization') || '';
-  const token = auth.replace('Bearer ', '').trim();
+  const token = auth.replace(/^Bearer\\s+/i, '').trim();
+  if (!token) return null;
+
+  // 현재 TimeLink JWT 인증을 우선 사용한다.
+  const secret = (c.env as any).JWT_SECRET || 'timelink_default_secret_2026';
+  const payload = await verifyToken(token, secret).catch(() => null);
+  if (payload?.sub) return String(payload.sub);
+
+  // 구버전 token_{userId}_{timestamp} 형식도 기존 사용자 호환을 위해 허용한다.
   return parseUserId(token);
 }
 
@@ -55,7 +64,7 @@ async function ensurePaymentTable(db: any) {
    body: { paymentKey, orderId, amount }
 ══════════════════════════════════════════════════ */
 payment.post('/toss/confirm', async (c) => {
-  const userId = authUserId(c);
+  const userId = await authUserId(c);
   if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
 
   const { paymentKey, orderId, amount } = await c.req.json() as any;
