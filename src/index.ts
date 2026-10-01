@@ -16,7 +16,7 @@ import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
 import { ensureD1Storage, initD1Upload, writeD1UploadPart, completeD1Upload, putD1Object, getD1ObjectMeta, readD1Range, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE } from './d1-storage';
-import sunoVerifyRouter from './routes/suno-verify';
+import sunoVerifyRouter from './routes/suno-verify';\nimport { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, registerObject, externalStream, disconnectStorage } from './storage';
 
 
 const app = new Hono<{ Bindings: Env }>();
@@ -29,6 +29,76 @@ app.use('*', cors({
 }));
 
 app.options('*', (c) => c.text('', 204));
+\n// ══════════════════════════════════════════════════════════
+\n// User-owned storage: TimeLink stores metadata, not creator files.
+\n// Files are uploaded directly from the browser to the user's provider
+\n// upload session; playback is authorized through TimeLink.
+\n// ══════════════════════════════════════════════════════════
+async function storageUser(c:any){
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
+  if(!token) return null;
+  return await verifyToken(token,c.env.JWT_SECRET);
+}
+app.get('/api/storage/providers', async (c) => {
+  return c.json({
+    providers:[
+      {id:'google_drive',name:'Google Drive',configured:!!c.env.GOOGLE_CLIENT_ID},
+      {id:'onedrive',name:'Microsoft OneDrive',configured:!!c.env.ONEDRIVE_CLIENT_ID},
+      {id:'local_agent',name:'TimeLink Local Agent',configured:true}
+    ]
+  });
+});
+app.get('/api/storage/connections', async (c) => {
+  const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
+  await ensureStorageTables(c.env.DB);
+  const r=await c.env.DB.prepare("SELECT id,provider,provider_account_id,provider_email,provider_name,root_id,status,created_at,updated_at FROM storage_connections WHERE user_id=? AND status='active' ORDER BY id").bind(Number(u.sub)).all();
+  return c.json({connections:r.results||[]});
+});
+app.get('/api/storage/connect/:provider', async (c) => {
+  const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
+  const provider=c.req.param('provider') as any;
+  if(!['google_drive','onedrive'].includes(provider)) return c.json({error:'지원하지 않는 provider'},400);
+  try { return c.redirect(await beginStorageConnect(c.env.DB,c.env,Number(u.sub),provider)); }
+  catch(e:any){ return c.json({error:e.message},500); }
+});
+app.get('/api/storage/oauth/:provider/callback', async (c) => {
+  const provider=c.req.param('provider') as any,code=c.req.query('code')||'',state=c.req.query('state')||'',error=c.req.query('error');
+  if(error) return c.html('<h2>TimeLink 저장소 연결 취소</h2><p>'+String(error)+'</p>');
+  try {
+    if(!code||!state) throw new Error('code/state가 없습니다.');
+    const r=await finishStorageConnect(c.env.DB,c.env,provider,code,state);
+    return c.html('<h2>TimeLink 저장소 연결 완료</h2><p>'+r.provider+' 연결이 완료되었습니다. 이 창을 닫고 TimeLink로 돌아가십시오.</p><script>window.opener&&window.opener.postMessage({type:"timelink-storage-connected",provider:"'+r.provider+'"},"*");</script>');
+  } catch(e:any){ return c.html('<h2>TimeLink 저장소 연결 실패</h2><p>'+String(e.message).replace(/[<>]/g,'')+'</p>',500); }
+});
+app.delete('/api/storage/connections/:provider', async (c) => {
+  const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
+  const provider=c.req.param('provider') as any;
+  if(!['google_drive','onedrive'].includes(provider)) return c.json({error:'지원하지 않는 provider'},400);
+  await disconnectStorage(c.env.DB,Number(u.sub),provider); return c.json({ok:true});
+});
+app.post('/api/storage/upload-session', async (c) => {
+  const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
+  const b=await c.req.json<any>(),provider=b.provider as any,name=String(b.name||'').trim(),size=Number(b.size||0),mime=String(b.mime||'application/octet-stream');
+  if(!['google_drive','onedrive'].includes(provider)||!name||!Number.isFinite(size)||size<=0) return c.json({error:'provider, name, size가 필요합니다.'},422);
+  try { return c.json({ok:true,upload:await createUploadSession(c.env.DB,c.env,Number(u.sub),provider,name,size,mime)}); }
+  catch(e:any){ return c.json({ok:false,error:e.message},500); }
+});
+app.post('/api/storage/object/register', async (c) => {
+  const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
+  const b=await c.req.json<any>();
+  try {
+    const id=await registerObject(c.env.DB,Number(u.sub),Number(b.connectionId),b.provider,String(b.objectId),String(b.name||'file'),String(b.mime||'application/octet-stream'),Number(b.size||0),b.hash);
+    return c.json({ok:true,object_id:id,storage_mode:'external'});
+  } catch(e:any){ return c.json({ok:false,error:e.message},500); }
+});
+app.get('/api/storage/object/:id/stream', async (c) => {
+  try {
+    const r=await externalStream(c.env.DB,c.env,Number(c.req.param('id')),c.req.header('Range')||'');
+    const h=new Headers(r.headers); h.set('Access-Control-Allow-Origin','*'); h.set('Access-Control-Expose-Headers','Content-Range,Accept-Ranges,Content-Length');
+    return new Response(r.body,{status:r.status,headers:h});
+  } catch(e:any){ return c.json({error:e.message},404); }
+});
+
 
 app.get('/api/v1/health', async (c) => {
   try {
@@ -1087,4 +1157,4 @@ app.get('/api/download/:shareId', async (c) => {
       xorKey: xorKey2,
       uploadedAt: new Date().toISOString(), contentHash: hash,
       platform: 'timelink.digital', version: 1,
-    };
+    };\nexport default app;\n
