@@ -16,7 +16,7 @@ import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
 import { ensureD1Storage, initD1Upload, writeD1UploadPart, completeD1Upload, putD1Object, getD1ObjectMeta, readD1Range, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE } from './d1-storage';
-import sunoVerifyRouter from './routes/suno-verify';\nimport { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, registerObject, externalStream, disconnectStorage } from './storage';
+import sunoVerifyRouter from './routes/suno-verify';\nimport { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, finalizeUpload, registerObject, externalStream, disconnectStorage } from './storage';
 
 
 const app = new Hono<{ Bindings: Env }>();
@@ -82,6 +82,13 @@ app.post('/api/storage/upload-session', async (c) => {
   if(!['google_drive','onedrive'].includes(provider)||!name||!Number.isFinite(size)||size<=0) return c.json({error:'provider, name, size가 필요합니다.'},422);
   try { return c.json({ok:true,upload:await createUploadSession(c.env.DB,c.env,Number(u.sub),provider,name,size,mime)}); }
   catch(e:any){ return c.json({ok:false,error:e.message},500); }
+});
+app.post('/api/storage/finalize', async (c) => {
+  const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
+  const b=await c.req.json<any>(),provider=b.provider as any;
+  if(!['google_drive','onedrive'].includes(provider)) return c.json({error:'지원하지 않는 provider'},400);
+  try{return c.json({ok:true,...await finalizeUpload(c.env.DB,c.env,Number(u.sub),Number(b.connectionId),provider,String(b.name||'file'))});}
+  catch(e:any){return c.json({ok:false,error:e.message},502);}
 });
 app.post('/api/storage/object/register', async (c) => {
   const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
