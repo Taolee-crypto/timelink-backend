@@ -16,7 +16,8 @@ import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
 import { ensureD1Storage, initD1Upload, writeD1UploadPart, completeD1Upload, putD1Object, getD1ObjectMeta, readD1Range, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE } from './d1-storage';
-import sunoVerifyRouter from './routes/suno-verify';\nimport { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, finalizeUpload, registerObject, externalStream, disconnectStorage } from './storage';
+import sunoVerifyRouter from './routes/suno-verify';
+import { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, finalizeUpload, registerObject, externalStream, disconnectStorage } from './storage';
 
 
 const app = new Hono<{ Bindings: Env }>();
@@ -29,11 +30,16 @@ app.use('*', cors({
 }));
 
 app.options('*', (c) => c.text('', 204));
-\n// ══════════════════════════════════════════════════════════
-\n// User-owned storage: TimeLink stores metadata, not creator files.
-\n// Files are uploaded directly from the browser to the user's provider
-\n// upload session; playback is authorized through TimeLink.
-\n// ══════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════
+
+// User-owned storage: TimeLink stores metadata, not creator files.
+
+// Files are uploaded directly from the browser to the user's provider
+
+// upload session; playback is authorized through TimeLink.
+
+// ══════════════════════════════════════════════════════════
 async function storageUser(c:any){
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
   if(!token) return null;
@@ -60,6 +66,18 @@ app.get('/api/storage/connect/:provider', async (c) => {
   if(!['google_drive','onedrive'].includes(provider)) return c.json({error:'지원하지 않는 provider'},400);
   try { return c.redirect(await beginStorageConnect(c.env.DB,c.env,Number(u.sub),provider)); }
   catch(e:any){ return c.json({error:e.message},500); }
+});
+app.post('/api/storage/connect', async (c) => {
+  const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
+  try {
+    const b=await c.req.json<any>();
+    const provider=b.provider as any;
+    if(!['google_drive','onedrive'].includes(provider)) return c.json({error:'지원하지 않는 provider'},400);
+    const url=await beginStorageConnect(c.env.DB,c.env,Number(u.sub),provider);
+    return c.json({ok:true,provider,authorization_url:url});
+  } catch(e:any) {
+    return c.json({error:e?.message||'저장소 연결 시작 실패'},500);
+  }
 });
 app.get('/api/storage/oauth/:provider/callback', async (c) => {
   const provider=c.req.param('provider') as any,code=c.req.query('code')||'',state=c.req.query('state')||'',error=c.req.query('error');
@@ -1185,4 +1203,24 @@ app.get('/api/download/:shareId', async (c) => {
       xorKey: xorKey2,
       uploadedAt: new Date().toISOString(), contentHash: hash,
       platform: 'timelink.digital', version: 1,
-    };\nexport default app;\n
+    };
+
+    const tlData = buildTLFile(header, raw, secret);
+
+    return new Response(tlData, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(tlData.length),
+        'Content-Disposition': `attachment; filename="${shareId}.tl"`,
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Expose-Headers': 'Content-Disposition, Content-Length'
+      }
+    });
+  } catch (e: any) {
+    return c.json({ error: e?.message || '다운로드 파일 생성 실패' }, 500);
+  }
+});
+
+export default app;
