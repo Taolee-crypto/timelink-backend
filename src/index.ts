@@ -182,6 +182,55 @@ app.post('/api/tracks/:id/play', async (c) => {
   }
 });
 
+// ── TL3 대용량 청크 업로드 ─────────────────────────────────────────
+// 브라우저 → Worker 전체 multipart 요청을 피하기 위해 8MB 단위로 R2 Multipart Upload를 사용한다.
+const TL3_CHUNK_SIZE = 8 * 1024 * 1024;
+
+app.post('/api/upload/init', async (c) => {
+  if (!c.env.R2) return c.json({ok:false,error:'R2 바인딩 없음'},500);
+  try {
+    const body = await c.req.json<any>();
+    const trackId = String(body.trackId || '').trim();
+    if (!trackId) return c.json({ok:false,error:'trackId 필수'},400);
+    const key = `tracks/${trackId}.tl3`;
+    const upload = await c.env.R2.createMultipartUpload(key, {
+      httpMetadata: { contentType: 'application/octet-stream' },
+      customMetadata: { originalName: String(body.fileName||key), trackId, releaseMode:'tl3', uploadedAt:new Date().toISOString() }
+    });
+    return c.json({ok:true,key,uploadId:upload.uploadId,chunkSize:TL3_CHUNK_SIZE});
+  } catch(e:any) { return c.json({ok:false,error:e?.message||'TL3 업로드 초기화 실패'},500); }
+});
+
+app.put('/api/upload/part', async (c) => {
+  if (!c.env.R2) return c.json({ok:false,error:'R2 바인딩 없음'},500);
+  try {
+    const key=String(c.req.query('key')||'');
+    const uploadId=String(c.req.query('uploadId')||'');
+    const partNumber=Number(c.req.query('partNumber')||0);
+    if(!key||!uploadId||!Number.isInteger(partNumber)||partNumber<1) return c.json({ok:false,error:'key, uploadId, partNumber 필수'},400);
+    const data=await c.req.arrayBuffer();
+    if(!data.byteLength) return c.json({ok:false,error:'빈 청크'},400);
+    const upload=c.env.R2.resumeMultipartUpload(key,uploadId);
+    const part=await upload.uploadPart(partNumber,data);
+    return c.json({ok:true,partNumber,etag:part.etag});
+  } catch(e:any) { return c.json({ok:false,error:e?.message||'TL3 청크 업로드 실패'},500); }
+});
+
+app.post('/api/upload/complete', async (c) => {
+  if (!c.env.R2) return c.json({ok:false,error:'R2 바인딩 없음'},500);
+  try {
+    const body=await c.req.json<any>();
+    const key=String(body.key||'');
+    const uploadId=String(body.uploadId||'');
+    const parts=Array.isArray(body.parts)?body.parts:[];
+    if(!key||!uploadId||!parts.length) return c.json({ok:false,error:'key, uploadId, parts 필수'},400);
+    const upload=c.env.R2.resumeMultipartUpload(key,uploadId);
+    await upload.complete(parts.map((p:any)=>({partNumber:Number(p.partNumber),etag:String(p.etag)})));
+    const publicUrl=`https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${key}`;
+    return c.json({ok:true,url:publicUrl,stream_url:publicUrl,key,trackId:key.split('/').pop()?.replace(/\\.tl3$/,''),file_type:'audio/tl3',release_mode:'tl3'});
+  } catch(e:any) { return c.json({ok:false,error:e?.message||'TL3 업로드 완료 실패'},500); }
+});
+
 // POST /api/upload — R2 원본/브라우저 생성 TL3 공통 업로드
 //
 // release_mode=free_mp3 : 원본 MP3 그대로 저장
