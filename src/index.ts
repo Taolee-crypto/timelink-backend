@@ -676,9 +676,11 @@ app.post('/api/shares', async (c) => {
       .bind(bodyRaw.email).first<any>().catch(() => null);
   }
   if (!userRow) return c.json({ error: '유저 없음' }, 404);
-  const tl = userRow.tl ?? userRow.tl_balance ?? 0;
-  if (tl < 5000) return c.json({ error: 'TL 부족', required: 5000, current: tl }, 402);
   const body = bodyRaw;
+  const isExternalFree = body.release_mode === 'free_mp3_external' || body.storage_mode === 'external_url';
+  const tl = userRow.tl ?? userRow.tl_balance ?? 0;
+  // 외부 서버 무료 공개는 TimeLink가 파일 저장/호스팅 비용을 부담하지 않으므로 등록 수수료를 차감하지 않는다.
+  if (!isExternalFree && tl < 5000) return c.json({ error: 'TL 부족', required: 5000, current: tl }, 402);
   if (!body.title) return c.json({ error: 'title 필요' }, 400);
   await c.env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS tl_shares (
@@ -695,11 +697,13 @@ app.post('/api/shares', async (c) => {
   const tlColRaw = userRow.tl !== undefined ? 'tl' : 'tl_balance';
   const tlCol = ['tl','tl_balance'].includes(tlColRaw) ? tlColRaw : 'tl';
   const realId = userRow.id;
-  await c.env.DB.prepare(`UPDATE users SET ${tlCol}=${tlCol}-5000 WHERE id=?`).bind(realId).run();
+  if (!isExternalFree) {
+    await c.env.DB.prepare(`UPDATE users SET ${tlCol}=${tlCol}-5000 WHERE id=?`).bind(realId).run();
+  }
   const id = 'sh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
   
-  // 🔥 중요: file_tl을 body에서 받아서 저장 (기본값 5000)
-  const fileTl = body.file_tl || 5000;
+  // 외부 서버 무료 공개는 파일 자체를 TimeLink에 저장하지 않으며 file_tl도 0으로 시작한다.
+  const fileTl = isExternalFree ? 0 : (body.file_tl || 5000);
   
   await c.env.DB.prepare(`
     INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics) 
