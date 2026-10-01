@@ -24,7 +24,7 @@ function authUserId(c: any): string | null {
    CREATE TABLE tl_payments (
      id INTEGER PRIMARY KEY AUTOINCREMENT,
      user_id TEXT NOT NULL,
-     method TEXT NOT NULL,          -- portone | stripe
+     method TEXT NOT NULL,          -- toss | portone | stripe
      pg_id TEXT NOT NULL UNIQUE,    -- imp_uid | payment_intent_id
      merchant_uid TEXT,
      amount_krw INTEGER NOT NULL,   -- 실제 결제 금액 (원)
@@ -48,6 +48,104 @@ async function ensurePaymentTable(db: any) {
     )
   `).run();
 }
+
+/* ══════════════════════════════════════════════════
+   Toss Payments 결제 승인 + TL 지급
+   POST /api/payment/toss/confirm
+   body: { paymentKey, orderId, amount }
+══════════════════════════════════════════════════ */
+payment.post('/toss/confirm', async (c) => {
+  const userId = authUserId(c);
+  if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
+
+  const { paymentKey, orderId, amount } = await c.req.json() as any;
+  const paidAmount = Number(amount);
+  if (!paymentKey || !orderId || !Number.isFinite(paidAmount) || paidAmount <= 0) {
+    return c.json({ error: '잘못된 결제 요청입니다' }, 400);
+  }
+
+  await ensurePaymentTable(c.env.DB);
+
+  // paymentKey를 고유 키로 사용하여 동일 결제의 중복 지급을 막는다.
+  const dup = await c.env.DB.prepare(
+    'SELECT id,status,tl_granted FROM tl_payments WHERE pg_id=?'
+  ).bind(paymentKey).first() as any;
+  if (dup?.status === 'success') {
+    const user = await c.env.DB.prepare(
+      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p FROM users WHERE id=?'
+    ).bind(userId).first() as any;
+    return c.json({
+      success: true,
+      already_processed: true,
+      total_tl: Number(dup.tl_granted || 0),
+      bonus_tl: Math.max(0, Number(dup.tl_granted || 0) - paidAmount),
+      tl_balance: Number(user?.tl || 0),
+      tl_p: Number(user?.tl_p || 0)
+    });
+  }
+
+  const TOSS_SECRET = (c.env as any).TOSS_SECRET_KEY || '';
+  if (!TOSS_SECRET) {
+    return c.json({ error: 'Toss 결제 검증 키(TOSS_SECRET_KEY)가 서버에 설정되지 않았습니다.' }, 503);
+  }
+
+  try {
+    const auth = btoa(TOSS_SECRET + ':');
+    const verifyRes = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + auth,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ paymentKey, orderId, amount: paidAmount })
+    });
+    const verified: any = await verifyRes.json();
+
+    if (!verifyRes.ok || Number(verified?.totalAmount) !== paidAmount || verified?.status !== 'DONE') {
+      return c.json({
+        error: verified?.message || 'Toss 결제 승인/금액 검증 실패',
+        code: verified?.code || 'TOSS_VERIFY_FAILED'
+      }, 400);
+    }
+
+    // 결제 금액별 보너스는 SharePlace의 충전 패키지와 동일하게 적용한다.
+    const bonusMap: Record<number, number> = {
+      5000: 0,
+      10000: 500,
+      30000: 2000,
+      50000: 5000,
+      100000: 15000
+    };
+    const bonus_tl = bonusMap[paidAmount] || 0;
+    const total_tl = paidAmount + bonus_tl;
+
+    // 구매 TL은 tl/tl_p에 동시에 반영한다. tl_p는 교환 가능한 구매 TL이다.
+    await c.env.DB.prepare(
+      'UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+?, tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?'
+    ).bind(total_tl, total_tl, total_tl, userId).run();
+
+    await c.env.DB.prepare(
+      `INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
+       VALUES (?,?,?,?,?,?,?)`
+    ).bind(userId, 'toss', paymentKey, orderId, paidAmount, total_tl, 'success').run();
+
+    const user = await c.env.DB.prepare(
+      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p FROM users WHERE id=?'
+    ).bind(userId).first() as any;
+
+    return c.json({
+      success: true,
+      paid_amount: paidAmount,
+      bonus_tl,
+      total_tl,
+      tl_granted: total_tl,
+      tl_balance: Number(user?.tl || 0),
+      tl_p: Number(user?.tl_p || 0)
+    });
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Toss 결제 처리 실패' }, 500);
+  }
+});
 
 /* ══════════════════════════════════════════════════
    포트원(아임포트) 결제 검증 + TL 지급
