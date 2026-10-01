@@ -814,8 +814,8 @@ app.post('/api/shares/:id/charge', async (c) => {
 
     const user=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first<any>();
     if(!user) return c.json({error:'유저 없음'},404);
-    const tlCol=user.tl!==undefined?'tl':'tl_balance';
-    const current=Number(user[tlCol]||0);
+    const tlCol='tl_balance';
+    const current=Number(user.tl_balance||0);
     if(current<amount) return c.json({error:'TL 잔액이 부족합니다.',required:amount,current},402);
 
     const batch=await c.env.DB.batch([
@@ -831,7 +831,7 @@ app.post('/api/shares/:id/charge', async (c) => {
     ]);
     if(Number(batch[0]?.meta?.changes||0)!==1) return c.json({error:'TL 충전에 실패했습니다.'},409);
 
-    const freshUser=await c.env.DB.prepare('SELECT '+tlCol+' as tl FROM users WHERE id=?').bind(userId).first<any>();
+    const freshUser=await c.env.DB.prepare('SELECT tl_balance as tl FROM users WHERE id=?').bind(userId).first<any>();
     const freshFile=await c.env.DB.prepare('SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?').bind(userId,shareId).first<any>();
     return c.json({ok:true,amount,user_tl:Number(freshUser?.tl||0),tl_balance:Number(freshFile?.tl_balance||0),total_charged:Number(freshFile?.total_charged||0)});
   }catch(e:any){
@@ -862,7 +862,7 @@ app.post('/api/shares/:id/consume', async (c) => {
     const revenue=seconds*0.7;
     const creatorId=Number(share.user_id||0);
     const creator=creatorId?await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(creatorId).first<any>():null;
-    const creatorCol=creator?.tl!==undefined?'tl':'tl_balance';
+    const creatorCol='tl_balance';
 
     const statements=[
       c.env.DB.prepare('UPDATE tl_user_files SET tl_balance=tl_balance-?,updated_at=datetime("now") WHERE user_id=? AND share_id=? AND tl_balance>=?').bind(seconds,userId,shareId,seconds),
