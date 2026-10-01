@@ -105,10 +105,18 @@ app.post('/api/storage/object/register', async (c) => {
 });
 app.get('/api/storage/object/:id/stream', async (c) => {
   try {
-    const r=await externalStream(c.env.DB,c.env,Number(c.req.param('id')),c.req.header('Range')||'');
-    const h=new Headers(r.headers); h.set('Access-Control-Allow-Origin','*'); h.set('Access-Control-Expose-Headers','Content-Range,Accept-Ranges,Content-Length');
+    const objectId=Number(c.req.param('id'));
+    await ensureStorageTables(c.env.DB);
+    const linked=await c.env.DB.prepare('SELECT id FROM tl_shares WHERE storage_object_id=? LIMIT 1').bind(objectId).first();
+    if(!linked){
+      const u=await storageUser(c);
+      const own= u ? await c.env.DB.prepare('SELECT id FROM storage_objects WHERE id=? AND user_id=?').bind(objectId,Number(u.sub)).first() : null;
+      if(!own) return c.json({error:'접근 권한 없음'},403);
+    }
+    const r=await externalStream(c.env.DB,c.env,objectId,c.req.header('Range')||'');
+    const h=new Headers(r.headers);h.set('Access-Control-Allow-Origin','*');h.set('Access-Control-Expose-Headers','Content-Range,Accept-Ranges,Content-Length');
     return new Response(r.body,{status:r.status,headers:h});
-  } catch(e:any){ return c.json({error:e.message},404); }
+  } catch(e:any){return c.json({error:e.message},404);}
 });
 
 
