@@ -7,9 +7,6 @@ binding = "DB"
 database_name = "timelink-db"
 database_id = "7a61cb9f-d368-439e-b175-f3e958aeb84f"
 
-[[r2_buckets]]
-binding = "R2"
-bucket_name = "timelink-audio"
 
 [vars]
 ENVIRONMENT = "production"
