@@ -767,7 +767,7 @@ async function ensureShareTLBalances(db: D1Database){
   `).run();
 }
 async function shareAuthUser(c:any){
-  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
   if(!token) return null;
   const payload=await verifyToken(token,c.env.JWT_SECRET);
   if(!payload?.sub) return null;
