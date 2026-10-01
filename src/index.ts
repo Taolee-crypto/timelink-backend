@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
-import { verifyToken } from './auth';
+import { verifyToken, makeAccessToken } from './auth';
 
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
@@ -893,7 +893,7 @@ app.post('/api/auth/register', async (c) => {
       'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at) VALUES (?,?,?,10000,10000,0,?)'
     ).bind(email, username, password, now).run();
     const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
-    const token = 'token_' + (user as any).id + '_' + Date.now();
+    const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
     return c.json({ ok: true, token, user });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -948,7 +948,7 @@ app.post('/api/auth/login', async (c) => {
     const check = await c.env.DB.prepare('SELECT id FROM users WHERE email=? AND password_hash=?').bind(email, password).first();
     if (!check) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
     const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
-    const token = 'token_' + (user as any).id + '_' + Date.now();
+    const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
     return c.json({ ok: true, token, user });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -993,7 +993,7 @@ app.post('/api/auth/signup', async (c) => {
         'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,10000,10000,0,?,?,?,?)'
       ).bind(email, username, password||'', now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
       const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
-      const token = 'token_' + (user as any).id + '_' + Date.now();
+      const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
       return c.json({ ok: true, token, user });
     }
 
