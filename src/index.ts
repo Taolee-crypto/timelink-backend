@@ -694,6 +694,9 @@ app.post('/api/shares', async (c) => {
       pulse INTEGER DEFAULT 0, created_at INTEGER NOT NULL
     )
   `).run().catch(() => {});
+  // 무료/외부/창작자 PC 공개 여부를 share 자체에 저장한다.
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN release_mode TEXT DEFAULT ''").run().catch(() => {});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_mode TEXT DEFAULT ''").run().catch(() => {});
   const tlColRaw = userRow.tl !== undefined ? 'tl' : 'tl_balance';
   const tlCol = ['tl','tl_balance'].includes(tlColRaw) ? tlColRaw : 'tl';
   const realId = userRow.id;
@@ -706,15 +709,16 @@ app.post('/api/shares', async (c) => {
   const fileTl = isExternalFree ? 0 : (body.file_tl || 5000);
   
   await c.env.DB.prepare(`
-    INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics) 
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)
+    INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics,release_mode,storage_mode) 
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)
   `).bind(
     id, String(realId), username, body.title, body.artist || '', body.album || '',
     body.duration || 0, fileTl, body.category || 'Music', body.file_type || '', body.category_type || '',
     body.description || '', body.plan || 'A', body.spotify_id || null, body.spotify_url || null,
     body.cover_url || null, body.preview_url || null, body.stream_url || null,
     body.country || 'KR', body.content_lang || 'ko', Date.now(), body.price_per_sec || 1.0,
-    body.composer || '', body.lyricist || '', body.lyrics || ''
+    body.composer || '', body.lyricist || '', body.lyrics || '',
+    body.release_mode || '', body.storage_mode || ''
   ).run();
   
   // 🔥 중요: tl_user_files에 초기 레코드 생성 (직접 업로드한 파일 대응)
@@ -1627,7 +1631,17 @@ app.post('/api/shares/:id/consume', async (c) => {
       last_played=datetime('now'), updated_at=datetime('now')
       WHERE user_id=? AND share_id=?`)
       .bind(consume, consume, user_id, share_id).run();
-    const share = await c.env.DB.prepare('SELECT user_id,plan FROM tl_shares WHERE id=?').bind(share_id).first() as any;
+    const share = await c.env.DB.prepare('SELECT user_id,plan,release_mode,storage_mode FROM tl_shares WHERE id=?').bind(share_id).first() as any;
+    // 무료 MP3/창작자 PC/외부 URL은 재생에 TL을 사용하지 않는다.
+    const isFreeShare = !!share && (
+      share.release_mode === 'free_mp3_local' ||
+      share.release_mode === 'free_mp3_external' ||
+      share.storage_mode === 'creator_pc' ||
+      share.storage_mode === 'external_url'
+    );
+    if(isFreeShare){
+      return c.json({ok:true, free:true, user_tl:null, new_balance:null});
+    }
     if(share){
       const rate = share.plan==='B' ? 0.45 : 0.62;
     const earn = Math.floor(consume * rate);
