@@ -358,7 +358,8 @@ payment.post('/stripe/confirm', async (c) => {
   const dup = await c.env.DB.prepare('SELECT id,status FROM tl_payments WHERE pg_id=?').bind(payment_intent_id).first() as any;
   if (dup?.status === 'success') return c.json({ error: '이미 처리된 결제입니다' }, 409);
 
-  const STRIPE_SECRET = (c.env as any).STRIPE_SECRET_KEY || 'sk_test_placeholder';
+  const STRIPE_SECRET = String((c.env as any).STRIPE_SECRET_KEY || '');
+  if (!STRIPE_SECRET) return c.json({ error: 'Stripe 서버 키가 설정되지 않았습니다.' }, 503);
 
   let verified = false;
   let paidAmount = Number(amount_krw);
