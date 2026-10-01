@@ -182,44 +182,77 @@ app.post('/api/tracks/:id/play', async (c) => {
   }
 });
 
-// POST /api/upload (R2 Multipart)
+// POST /api/upload — R2 원본/브라우저 생성 TL3 공통 업로드
+//
+// release_mode=free_mp3 : 원본 MP3 그대로 저장
+// isTl3=true             : 브라우저에서 이미 생성된 TL3 v2를 그대로 저장
+// 일반 업로드             : 기존 호환 경로(파일 형식 그대로 R2 저장)
 app.post('/api/upload', async (c) => {
   if (!c.env.R2) {
-    return c.json({ ok: false, error: 'R2 바인딩 없음 — wrangler.toml [[r2_buckets]] 확인' }, 500);
+    return c.json({ ok: false, error: 'R2 바인딩 없음 — Cloudflare R2 timelink-audio 연결을 확인하십시오.' }, 500);
   }
+
   try {
     const formData = await c.req.parseBody({ limit: 500 * 1024 * 1024 });
     const file = formData['file'] as File;
-    const trackId = formData['trackId'] as string;
-    if (!file || !trackId) return c.json({ ok: false, error: 'file, trackId 필수' }, 400);
+    const trackId = String(formData['trackId'] || '').trim();
+    const releaseMode = String(formData['release_mode'] || '').trim().toLowerCase();
+    const isTl3 = String(formData['isTl3'] || '').toLowerCase() === 'true';
+
+    if (!file || !trackId) {
+      return c.json({ ok: false, error: 'file, trackId 필수' }, 400);
+    }
+
     const MAX_SIZE = 500 * 1024 * 1024;
-    if (file.size > MAX_SIZE) return c.json({ ok: false, error: `파일이 너무 큽니다 (최대 500MB)` }, 400);
-    const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
+    if (file.size > MAX_SIZE) {
+      return c.json({ ok: false, error: '파일이 너무 큽니다 (최대 500MB)' }, 413);
+    }
+
+    // 브라우저 TL3는 반드시 TL3 v2 컨테이너인지 확인한 뒤 저장한다.
+    if (isTl3) {
+      if (file.size < 7) return c.json({ ok: false, error: '잘못된 TL3 파일입니다.' }, 400);
+      const head = new Uint8Array(await file.slice(0, 7).arrayBuffer());
+      if (head[0] !== 0x54 || head[1] !== 0x4c || head[2] !== 0x4e || head[3] !== 0x4b || head[4] !== 0x02) {
+        return c.json({ ok: false, error: 'TL3 v2 헤더가 아닙니다.' }, 400);
+      }
+    }
+
+    const ext = isTl3 ? 'tl3' : (releaseMode === 'free_mp3' ? 'mp3' : (file.name.split('.').pop() || 'bin').toLowerCase());
     const key = `tracks/${trackId}.${ext}`;
-    const contentType = file.type || 'application/octet-stream';
+    const contentType = isTl3
+      ? 'application/octet-stream'
+      : (releaseMode === 'free_mp3' ? 'audio/mpeg' : (file.type || 'application/octet-stream'));
+    const metadata: Record<string,string> = {
+      originalName: file.name || `${trackId}.${ext}`,
+      trackId,
+      releaseMode: isTl3 ? 'tl3' : (releaseMode || 'original'),
+      uploadedAt: new Date().toISOString(),
+    };
+
+    // 50MB 이하 단일 PUT. 50MB 초과는 파일 전체를 메모리에 올리지 않고
+    // 50MB 조각씩 R2 Multipart Upload로 전송한다.
     const CHUNK = 50 * 1024 * 1024;
     if (file.size <= CHUNK) {
-      const buffer = await file.arrayBuffer();
-      await c.env.R2.put(key, buffer, {
+      await c.env.R2.put(key, await file.arrayBuffer(), {
         httpMetadata: { contentType },
-        customMetadata: { originalName: file.name, trackId, uploadedAt: Date.now().toString() },
+        customMetadata: metadata,
       });
     } else {
       const upload = await c.env.R2.createMultipartUpload(key, {
         httpMetadata: { contentType },
-        customMetadata: { originalName: file.name, trackId, uploadedAt: Date.now().toString() },
+        customMetadata: metadata,
       });
       try {
         const parts: any[] = [];
-        const buffer = await file.arrayBuffer();
-        const total = buffer.byteLength;
-        let offset = 0, partNum = 1;
-        while (offset < total) {
-          const end = Math.min(offset + CHUNK, total);
-          const chunk = buffer.slice(offset, end);
+        let offset = 0;
+        let partNum = 1;
+        while (offset < file.size) {
+          const end = Math.min(offset + CHUNK, file.size);
+          const chunk = await file.slice(offset, end).arrayBuffer();
           const part = await upload.uploadPart(partNum, chunk);
           parts.push(part);
-          offset = end; partNum++;
+          offset = end;
+          partNum++;
         }
         await upload.complete(parts);
       } catch (uploadErr: any) {
@@ -227,13 +260,22 @@ app.post('/api/upload', async (c) => {
         throw uploadErr;
       }
     }
+
     const publicUrl = `https://pub-c8d04f598d434d2f9568c08938d892a7.r2.dev/${key}`;
-    return c.json({ ok: true, url: publicUrl, key, size: file.size });
+    return c.json({
+      ok: true,
+      url: publicUrl,
+      stream_url: publicUrl,
+      key,
+      trackId,
+      file_type: isTl3 ? 'audio/tl3' : (releaseMode === 'free_mp3' ? 'audio/mp3' : contentType),
+      release_mode: isTl3 ? 'tl3' : (releaseMode || 'original'),
+      size: file.size,
+    });
   } catch (e: any) {
-    return c.json({ ok: false, error: e.message }, 500);
+    return c.json({ ok: false, error: e?.message || 'R2 업로드 실패' }, 500);
   }
 });
-
 
 // ── TL3 시간 세그먼트: MP3 프레임 경계 기반 ─────────────────────────
 const TL3_XOR_KEY = 'TIMELINK_XOR_KEY_2026_SECURE';
