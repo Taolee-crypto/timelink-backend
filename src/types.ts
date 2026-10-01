@@ -2,7 +2,14 @@ export interface Env {
   DB: D1Database;
   JWT_SECRET: string;
   RESEND_API_KEY: string;
-  ENVIRONMENT: string;\n  GOOGLE_CLIENT_ID?: string;\n  GOOGLE_CLIENT_SECRET?: string;\n  GOOGLE_REDIRECT_URI?: string;\n  ONEDRIVE_CLIENT_ID?: string;\n  ONEDRIVE_CLIENT_SECRET?: string;\n  ONEDRIVE_REDIRECT_URI?: string;\n  STORAGE_ENCRYPTION_KEY?: string;
+  ENVIRONMENT: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_REDIRECT_URI?: string;
+  ONEDRIVE_CLIENT_ID?: string;
+  ONEDRIVE_CLIENT_SECRET?: string;
+  ONEDRIVE_REDIRECT_URI?: string;
+  STORAGE_ENCRYPTION_KEY?: string;
 }
 
 export interface JWTPayload {
