@@ -677,9 +677,9 @@ app.post('/api/shares', async (c) => {
   }
   if (!userRow) return c.json({ error: '유저 없음' }, 404);
   const body = bodyRaw;
-  const isExternalFree = body.release_mode === 'free_mp3_external' || body.storage_mode === 'external_url';
+  const isExternalFree = body.release_mode === 'free_mp3_external' || body.release_mode === 'free_mp3_local' || body.storage_mode === 'external_url' || body.storage_mode === 'creator_pc';
   const tl = userRow.tl ?? userRow.tl_balance ?? 0;
-  // 외부 서버 무료 공개는 TimeLink가 파일 저장/호스팅 비용을 부담하지 않으므로 등록 수수료를 차감하지 않는다.
+  // 외부 서버/창작자 PC 무료 공개는 TimeLink가 원본 파일 저장·호스팅 비용을 부담하지 않으므로 등록 수수료를 차감하지 않는다.
   if (!isExternalFree && tl < 5000) return c.json({ error: 'TL 부족', required: 5000, current: tl }, 402);
   if (!body.title) return c.json({ error: 'title 필요' }, 400);
   await c.env.DB.prepare(`
