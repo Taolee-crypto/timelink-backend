@@ -814,12 +814,29 @@ app.post('/api/shares/:id/charge', async (c) => {
 
     const user=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first<any>();
     if(!user) return c.json({error:'유저 없음'},404);
-    const tlCol='tl_balance';
-    const current=Number(user.tl_balance||0);
-    if(current<amount) return c.json({error:'TL 잔액이 부족합니다.',required:amount,current},402);
+    // 구매/보너스/광고 TL을 합산한 실제 공용 잔액을 사용한다.
+    // 결제 시스템은 tl + tl_p/tl_a/tl_b 구조를 사용하므로 레거시 tl_balance에만 의존하지 않는다.
+    const tlP=Number(user.tl_p ?? user.tl ?? user.tl_balance ?? 0);
+    const tlA=Number(user.tl_a ?? 0);
+    const tlB=Number(user.tl_b ?? 0);
+    const current=tlP+tlA+tlB;
+    if(current<amount) return c.json({error:'TL 잔액이 부족합니다.',required:amount,current,tl:current,tl_balance:current},402);
+
+    // 소비 우선순위는 광고/보너스(TL_A/TL_B) → 구매 TL(TL_P)로 맞춰
+    // 구매 TL을 가능한 한 보존한다.
+    let rem=amount;
+    const takeA=Math.min(rem,tlA); rem-=takeA;
+    const takeB=Math.min(rem,tlB); rem-=takeB;
+    const takeP=rem;
+    const newA=tlA-takeA;
+    const newB=tlB-takeB;
+    const newP=tlP-takeP;
+    const newTotal=newP+newA+newB;
 
     const batch=await c.env.DB.batch([
-      c.env.DB.prepare('UPDATE users SET '+tlCol+'='+tlCol+'-? WHERE id=? AND '+tlCol+'>=?').bind(amount,userId,amount),
+      c.env.DB.prepare(
+        'UPDATE users SET tl=?, tl_p=?, tl_a=?, tl_b=?, total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND (COALESCE(tl_p,tl,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0))>=?'
+      ).bind(newTotal,newP,newA,newB,amount,userId,amount),
       c.env.DB.prepare(`
         INSERT INTO tl_user_files (user_id,share_id,tl_balance,total_charged)
         VALUES (?,?,?,?)
@@ -829,11 +846,14 @@ app.post('/api/shares/:id/charge', async (c) => {
           updated_at=datetime('now')
       `).bind(userId,shareId,amount,amount)
     ]);
-    if(Number(batch[0]?.meta?.changes||0)!==1) return c.json({error:'TL 충전에 실패했습니다.'},409);
+    if(Number(batch[0]?.meta?.changes||0)!==1) return c.json({error:'TL 충전에 실패했습니다. 잔액이 변경되었을 수 있으니 다시 확인해주세요.'},409);
 
-    const freshUser=await c.env.DB.prepare('SELECT tl_balance as tl FROM users WHERE id=?').bind(userId).first<any>();
+    const freshUser=await c.env.DB.prepare(
+      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?'
+    ).bind(userId).first<any>();
     const freshFile=await c.env.DB.prepare('SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?').bind(userId,shareId).first<any>();
-    return c.json({ok:true,amount,user_tl:Number(freshUser?.tl||0),tl_balance:Number(freshFile?.tl_balance||0),total_charged:Number(freshFile?.total_charged||0)});
+    const freshTotal=Number(freshUser?.tl_p||0)+Number(freshUser?.tl_a||0)+Number(freshUser?.tl_b||0);
+    return c.json({ok:true,amount,user_tl:freshTotal,tl_balance:Number(freshFile?.tl_balance||0),total_charged:Number(freshFile?.total_charged||0),tl_p:Number(freshUser?.tl_p||0),tl_a:Number(freshUser?.tl_a||0),tl_b:Number(freshUser?.tl_b||0)});
   }catch(e:any){
     return c.json({error:e?.message||'TL 충전 실패'},500);
   }
