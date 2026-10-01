@@ -190,7 +190,7 @@ export async function finalizeUpload(db:D1Database,env:Env,userId:number,connect
   let item:any=null;
   if(provider==='google_drive'){
     const q="name='"+name.replace(/'/g,"\\'")+"' and '"+String(row.root_id||'')+"' in parents and trashed=false";
-    const r=await fetch('https://www.googleapis.com/drive/v3/files?fields=files(id,name,mimeType,size,md5Checksum,etag,modifiedTime)&q='+encodeURIComponent(q),{headers:{Authorization:'Bearer '+access}});
+    const r=await fetch('https://www.googleapis.com/drive/v3/files?fields=files(id,name,mimeType,size,md5Checksum,modifiedTime)&q='+encodeURIComponent(q),{headers:{Authorization:'Bearer '+access}});
     if(!r.ok) throw new Error('Google Drive 파일 확인 실패');
     item=(await r.json<any>()).files?.[0];
   }else{
