@@ -381,14 +381,14 @@ payment.post('/stripe/confirm', async (c) => {
 
   const tlGranted = paidAmount;
   try {
-    await c.env.DB.prepare('UPDATE users SET tl=tl+? WHERE id=?').bind(tlGranted, userId).run();
+    await c.env.DB.prepare('UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+?, tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?').bind(tlGranted,tlGranted,tlGranted,userId).run();
     await c.env.DB.prepare(
       `INSERT OR REPLACE INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
        VALUES (?,?,?,?,?,?,?)`
     ).bind(userId, 'stripe', payment_intent_id, '', paidAmount, tlGranted, 'success').run();
 
-    const user = await c.env.DB.prepare('SELECT tl FROM users WHERE id=?').bind(userId).first() as any;
-    return c.json({ success: true, tl_granted: tlGranted, tl_balance: user?.tl || 0 });
+    const user = await c.env.DB.prepare('SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p FROM users WHERE id=?').bind(userId).first() as any;
+    return c.json({ success: true, tl_granted: tlGranted, tl_balance: user?.tl || 0, tl_p: user?.tl_p || 0 });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
