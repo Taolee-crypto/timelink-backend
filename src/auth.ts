@@ -56,7 +56,10 @@ export async function createToken(payload: JWTPayload, secret: string): Promise<
 
 export async function verifyToken(token: string, secret: string): Promise<JWTPayload | null> {
   try {
-    const [header, body, sig] = token.split('.');
+    if (!secret || typeof token !== 'string') return null;
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [header, body, sig] = parts;
     const key = await getKey(secret);
     const valid = await crypto.subtle.verify('HMAC', key,
       new Uint8Array(base64urlDecode(sig).split('').map(c => c.charCodeAt(0))),
@@ -64,7 +67,8 @@ export async function verifyToken(token: string, secret: string): Promise<JWTPay
     );
     if (!valid) return null;
     const payload: JWTPayload = JSON.parse(base64urlDecode(body));
-    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+    if (!payload || typeof payload.sub !== 'string' || !/^\\d+$/.test(payload.sub)) return null;
+    if (!Number.isFinite(Number(payload.exp)) || Number(payload.exp) <= Math.floor(Date.now() / 1000)) return null;
     return payload;
   } catch {
     return null;
