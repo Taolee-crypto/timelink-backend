@@ -53,27 +53,27 @@ function cfg(env:Env,p:Provider){
 }
 
 export async function ensureStorageTables(db:D1Database){
-  await db.prepare(\`CREATE TABLE IF NOT EXISTS storage_connections(
+  await db.prepare(`CREATE TABLE IF NOT EXISTS storage_connections(
     id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,provider TEXT NOT NULL,
     provider_account_id TEXT,provider_email TEXT,provider_name TEXT,
     access_token TEXT NOT NULL,refresh_token TEXT,expires_at INTEGER NOT NULL DEFAULT 0,
     root_id TEXT,status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT DEFAULT(datetime('now')),updated_at TEXT DEFAULT(datetime('now')),
     UNIQUE(user_id,provider)
-  )\`).run();
+  )`).run();
 
-  await db.prepare(\`CREATE TABLE IF NOT EXISTS storage_oauth_states(
+  await db.prepare(`CREATE TABLE IF NOT EXISTS storage_oauth_states(
     state TEXT PRIMARY KEY,user_id INTEGER NOT NULL,provider TEXT NOT NULL,
     expires_at INTEGER NOT NULL,created_at TEXT DEFAULT(datetime('now'))
-  )\`).run();
+  )`).run();
 
-  await db.prepare(\`CREATE TABLE IF NOT EXISTS storage_objects(
+  await db.prepare(`CREATE TABLE IF NOT EXISTS storage_objects(
     id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,connection_id INTEGER NOT NULL,
     provider TEXT NOT NULL,provider_object_id TEXT NOT NULL,name TEXT NOT NULL,
     mime_type TEXT,size INTEGER DEFAULT 0,content_hash TEXT,provider_etag TEXT,
     status TEXT NOT NULL DEFAULT 'active',created_at TEXT DEFAULT(datetime('now')),updated_at TEXT DEFAULT(datetime('now')),
     UNIQUE(connection_id,provider_object_id)
-  )\`).run();
+  )`).run();
 }
 
 async function connection(db:D1Database,env:Env,userId:number,provider:Provider):Promise<{row:ConnectionRow;access:string}>{
