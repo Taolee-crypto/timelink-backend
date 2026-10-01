@@ -41,7 +41,7 @@ app.options('*', (c) => c.text('', 204));
 
 // ══════════════════════════════════════════════════════════
 async function storageUser(c:any){
-  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
   if(!token) return null;
   return await verifyToken(token,c.env.JWT_SECRET);
 }
