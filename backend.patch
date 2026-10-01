@@ -1,0 +1,138 @@
+diff --git a/src/index.ts b/src/index.ts
+index 4578975..f623ae2 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -659,7 +659,8 @@ app.get('/api/shares', async (c) => {
+       LEFT JOIN users u ON CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT)
+       ORDER BY s.created_at DESC LIMIT 200
+     `).all();
+-    return c.json({ shares: results || [] });
++    const _o = new URL(c.req.url).origin;
++    return c.json({ shares: (results || []).map((r:any)=>({ ...r, content_kind: shareKind(r), stream_url: (typeof r.stream_url==='string' && r.stream_url.startsWith('/')) ? _o + r.stream_url : r.stream_url })) });
+   } catch (e: any) {
+     return c.json({ shares: [], _note: e.message });
+   }
+@@ -698,7 +699,7 @@ app.post('/api/shares', async (c) => {
+   }
+   if (!userRow) return c.json({ error: '유저 없음' }, 404);
+   const body = bodyRaw;
+-  const isExternalFree = body.release_mode === 'free_mp3_external' || body.release_mode === 'free_mp3_local' || body.storage_mode === 'external_url' || body.storage_mode === 'creator_pc';
++  const isExternalFree = shareKind(body)==='mp3';
+   const tl = userRow.tl ?? userRow.tl_balance ?? 0;
+   // 외부 서버/창작자 PC 무료 공개는 TimeLink가 원본 파일 저장·호스팅 비용을 부담하지 않으므로 등록 수수료를 차감하지 않는다.
+   if (!isExternalFree && tl < 5000) return c.json({ error: 'TL 부족', required: 5000, current: tl }, 402);
+@@ -718,6 +719,7 @@ app.post('/api/shares', async (c) => {
+   // 무료/외부/창작자 PC 공개 여부를 share 자체에 저장한다.
+   await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN release_mode TEXT DEFAULT ''").run().catch(() => {});
+   await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_mode TEXT DEFAULT ''").run().catch(() => {});
++  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN content_kind TEXT DEFAULT ''").run().catch(() => {});
+   const tlColRaw = userRow.tl !== undefined ? 'tl' : 'tl_balance';
+   const tlCol = ['tl','tl_balance'].includes(tlColRaw) ? tlColRaw : 'tl';
+   const realId = userRow.id;
+@@ -742,6 +744,7 @@ app.post('/api/shares', async (c) => {
+     body.release_mode || '', body.storage_mode || ''
+   ).run();
+   
++  await c.env.DB.prepare('UPDATE tl_shares SET content_kind=? WHERE id=?').bind(shareKind(body),id).run().catch(() => {});
+   // 🔥 중요: tl_user_files에 초기 레코드 생성 (직접 업로드한 파일 대응)
+   await c.env.DB.prepare(`
+     INSERT OR IGNORE INTO tl_user_files (user_id, share_id, tl_balance, total_charged, created_at)
+@@ -752,6 +755,19 @@ app.post('/api/shares', async (c) => {
+   return c.json({ ok: true, id, tl_remaining: updated?.tl || 0 });
+ });
+ 
++// ── MP3/TL3 분류: 서버 단일 기준 (프론트는 content_kind만 신뢰) ──
++function shareKind(r:any):'mp3'|'tl3'{
++  const ft=String(r?.file_type||'').toLowerCase();
++  const ck=String(r?.content_kind||'').toLowerCase();
++  const rm=String(r?.release_mode||'').toLowerCase();
++  const su=String(r?.stream_url||'').toLowerCase();
++  if(rm.startsWith('free_mp3')||ck==='mp3'||ft==='audio/mp3') return 'mp3';
++  if(rm==='tl3'||ck==='tl3'||ft==='audio/tl3'||/\.(tl3|tl4|tlg|tlf)(\?|$)/.test(su)) return 'tl3';
++  // 영상/이미지/문서는 TL 콘텐츠, 표시 없는 오디오(옛 곡)는 무료 MP3
++  if(ft.startsWith('video/')||ft.startsWith('image/')||ft.includes('pdf')||ft.includes('document')) return 'tl3';
++  return 'mp3';
++}
++
+ async function ensureShareTLBalances(db: D1Database){
+   await db.prepare(`
+     CREATE TABLE IF NOT EXISTS tl_user_files (
+@@ -806,10 +822,9 @@ app.post('/api/shares/:id/charge', async (c) => {
+     const amount=Math.floor(Number(body.amount||0));
+     if(!Number.isFinite(amount)||amount<=0) return c.json({error:'충전 TL은 1 이상이어야 합니다.'},400);
+     await ensureShareTLBalances(c.env.DB);
+-    const share=await c.env.DB.prepare('SELECT id,user_id,file_tl,file_type,release_mode FROM tl_shares WHERE id=?').bind(shareId).first<any>();
++    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+     if(!share) return c.json({error:'파일 없음'},404);
+-    const isMp3=String(share.file_type||'').toLowerCase()==='audio/mp3' ||
+-      String(share.release_mode||'').toLowerCase().startsWith('free_mp3');
++    const isMp3=shareKind(share)==='mp3';
+     if(isMp3) return c.json({error:'MP3는 무료 재생이며 TL 충전 대상이 아닙니다.'},400);
+ 
+     const user=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first<any>();
+@@ -868,10 +883,9 @@ app.post('/api/shares/:id/consume', async (c) => {
+     const body=await c.req.json<any>().catch(()=>({}));
+     const seconds=Math.max(1,Math.min(30,Math.floor(Number(body.seconds||0))));
+     await ensureShareTLBalances(c.env.DB);
+-    const share=await c.env.DB.prepare('SELECT id,user_id,file_tl,file_type,release_mode FROM tl_shares WHERE id=?').bind(shareId).first<any>();
++    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+     if(!share) return c.json({error:'파일 없음'},404);
+-    const isMp3=String(share.file_type||'').toLowerCase()==='audio/mp3' ||
+-      String(share.release_mode||'').toLowerCase().startsWith('free_mp3');
++    const isMp3=shareKind(share)==='mp3';
+     if(isMp3) return c.json({ok:true,consumed:0,user_tl:0,tl_balance:0,free:true});
+ 
+     const row=await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?')
+@@ -908,7 +922,7 @@ app.get('/api/shares/:id', async (c) => {
+     'SELECT * FROM tl_shares WHERE id=?'
+   ).bind(id).first();
+   if (!row) return c.json({ error: 'not found' }, 404);
+-  return c.json(row);
++  { const _o = new URL(c.req.url).origin, _r:any = row; return c.json({ ..._r, content_kind: shareKind(_r), stream_url: (typeof _r.stream_url==='string' && _r.stream_url.startsWith('/')) ? _o + _r.stream_url : _r.stream_url }); }
+ });
+ 
+ 
+@@ -1199,6 +1213,8 @@ app.post('/api/stream/:shareId/tick', async (c) => {
+   const shareId = c.req.param('shareId');
+   if (!userId) return c.json({ error: '인증 필요' }, 401);
+   try {
++    const _sh = await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first() as any;
++    if (_sh && shareKind(_sh)==='mp3') return c.json({ ok:true, free:true, consumed:0, can_play:true });
+     const body = await c.req.json() as any;
+     const seconds = Math.min(Number(body.seconds || 5), 30);
+     const deductRate = Number(body.deduct_rate || 1.0);
+@@ -1286,12 +1302,12 @@ app.get('/api/download/:shareId', async (c) => {
+   if(!userId) return c.json({error:'인증 필요'},401);
+   try{
+     const share=await c.env.DB.prepare(
+-      'SELECT id,title,stream_url,file_type,storage_object_id,storage_provider FROM tl_shares WHERE id=?'
++      'SELECT * FROM tl_shares WHERE id=?'
+     ).bind(shareId).first<any>();
+     if(!share) return c.json({error:'파일 없음'},404);
+ 
+     const fileType=String(share.file_type||'').toLowerCase();
+-    if(fileType==='audio/mp3') return c.json({error:'MP3는 무료 재생 전용이며 TL3 다운로드 대상이 아닙니다.'},400);
++    if(shareKind(share)==='mp3') return c.json({error:'MP3는 무료 재생 전용이며 TL3 다운로드 대상이 아닙니다.'},400);
+ 
+     const safeTitle=String(share.title||'file').replace(/[<>:"/\\|?*]/g,'_');
+     const downloadName=safeTitle+(fileType==='audio/tl3'?'.tl3':fileType.startsWith('video/')?'.tl4':fileType.startsWith('image/')?'.tlg':'.tlf');
+diff --git a/src/types.ts b/src/types.ts
+index d99d4a0..2180f08 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -2,7 +2,14 @@ export interface Env {
+   DB: D1Database;
+   JWT_SECRET: string;
+   RESEND_API_KEY: string;
+-  ENVIRONMENT: string;\n  GOOGLE_CLIENT_ID?: string;\n  GOOGLE_CLIENT_SECRET?: string;\n  GOOGLE_REDIRECT_URI?: string;\n  ONEDRIVE_CLIENT_ID?: string;\n  ONEDRIVE_CLIENT_SECRET?: string;\n  ONEDRIVE_REDIRECT_URI?: string;\n  STORAGE_ENCRYPTION_KEY?: string;
++  ENVIRONMENT: string;
++  GOOGLE_CLIENT_ID?: string;
++  GOOGLE_CLIENT_SECRET?: string;
++  GOOGLE_REDIRECT_URI?: string;
++  ONEDRIVE_CLIENT_ID?: string;
++  ONEDRIVE_CLIENT_SECRET?: string;
++  ONEDRIVE_REDIRECT_URI?: string;
++  STORAGE_ENCRYPTION_KEY?: string;
+ }
+ 
+ export interface JWTPayload {
