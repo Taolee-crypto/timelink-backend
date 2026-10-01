@@ -1260,67 +1260,62 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 
 app.post('/api/upload/tl',async(c)=>{try{await ensureD1Storage(c.env.DB);const f=await c.req.parseBody({limit:D1_MAX_FILE_SIZE}),file=f['file'] as File,shareId=(f['shareId'] as string)||('s_'+Date.now()),meta=JSON.parse((f['meta'] as string)||'{}');if(!file)return c.json({ok:false,error:'file 필요'},400);if(file.size>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'100MB 초과'},400);const raw=new Uint8Array(await file.arrayBuffer()),hash=await sha256Hex(raw),ext=(file.name.split('.').pop()||'bin').toLowerCase(),secret=(c.env as any).TL_SECRET||'timelink_default_secret_2026',tlPerSec=Number(meta.tl_per_sec||1),duration=Number(meta.duration||0),fileTL=Math.ceil(duration*tlPerSec)||3600,xorKey=shareId+secret+'TIMELINK_v1',header={shareId,creatorId:Number(meta.creatorId||0),creatorName:String(meta.creatorName||''),title:String(meta.title||file.name.replace(/\\.[^.]+$/, '')),artist:String(meta.artist||''),fileType:file.type||'application/octet-stream',ext,duration,tl_per_sec:tlPerSec,plan:String(meta.plan||'A'),tl_balance:fileTL,tl_max:fileTL,xorKey,uploadedAt:new Date().toISOString(),contentHash:hash,platform:'timelink.digital',version:1},tlData=buildTLFile(header,raw,secret),key=`tl/${shareId}.tl`;await putD1Object(c.env.DB,key,tlData,'application/octet-stream',`${shareId}.tl`);return c.json({ok:true,key,shareId,size:tlData.length,hash,storage_mode:'d1',url:`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`});}catch(e:any){return c.json({ok:false,error:e.message},500);}});
 app.get('/api/download/:shareId', async (c) => {
-  const token   = (c.req.header('Authorization')||'').replace('Bearer ','');
-  const userId  = parseTokenUserId(token);
-  const shareId = c.req.param('shareId');
-  if (!userId) return c.json({ error:'인증 필요' }, 401);
-  try {
-    const share = await c.env.DB.prepare('SELECT id,title,stream_url FROM tl_shares WHERE id=?').bind(shareId).first() as any;
-    if (!share) return c.json({ error:'파일 없음' }, 404);
-    const streamUrl = share.stream_url || '';
-    let rawKey = '';
-    if (streamUrl.includes('/api/storage/')) rawKey = decodeURIComponent(streamUrl.split('/api/storage/')[1].split('?')[0]);
-    else if (streamUrl.startsWith('tracks/')) rawKey = streamUrl;
-    else { const fn=streamUrl.split('/').pop()?.split('?')[0]||''; rawKey='tracks/'+fn; }
-    const rawMeta = await getD1ObjectMeta(c.env.DB,rawKey);
-    if (!rawMeta) return c.json({ error:'원본 파일 없음' }, 404);
-    const raw = await readD1Range(c.env.DB,rawKey,0,rawMeta.size);
-    const secret = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
-    const ext    = rawKey.split('.').pop() || 'bin';
-    const hash   = await sha256Hex(raw);
-    const shareFull = await c.env.DB.prepare(
-      'SELECT title, artist, duration, file_tl, plan FROM tl_shares WHERE id=?'
-    ).bind(shareId).first() as any;
-    const tlPerSec2  = Number(shareFull?.tl_per_sec || 1.0);
-    const duration2  = Number(shareFull?.duration || 0);
-    const xorKey2    = shareId + secret + 'TIMELINK_v1';
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
+  const userId=parseTokenUserId(token);
+  const shareId=c.req.param('shareId');
+  if(!userId) return c.json({error:'인증 필요'},401);
+  try{
+    const share=await c.env.DB.prepare(
+      'SELECT id,title,stream_url,file_type,storage_object_id,storage_provider FROM tl_shares WHERE id=?'
+    ).bind(shareId).first<any>();
+    if(!share) return c.json({error:'파일 없음'},404);
 
-    const userFileTL = await c.env.DB.prepare(
-      'SELECT tl_balance, total_charged FROM tl_user_files WHERE user_id=? AND share_id=?'
-    ).bind(userId, shareId).first() as any;
+    const fileType=String(share.file_type||'').toLowerCase();
+    if(fileType==='audio/mp3') return c.json({error:'MP3는 무료 재생 전용이며 TL3 다운로드 대상이 아닙니다.'},400);
 
-    const fileTL2 = Number(userFileTL?.tl_balance ?? shareFull?.file_tl ?? 3600);
-    const tlMax2  = Number(userFileTL?.total_charged ?? shareFull?.file_tl ?? fileTL2);
+    const safeTitle=String(share.title||'file').replace(/[<>:"/\\|?*]/g,'_');
+    const downloadName=safeTitle+(fileType==='audio/tl3'?'.tl3':fileType.startsWith('video/')?'.tl4':fileType.startsWith('image/')?'.tlg':'.tlf');
 
-    const header = {
-      shareId,
-      userId,
-      creatorId: 0, creatorName: shareFull?.artist||'',
-      title: shareFull?.title||share.title||'', artist: shareFull?.artist||'',
-      fileType: rawMeta.content_type||'audio/mpeg', ext, duration: duration2,
-      tl_per_sec: tlPerSec2, plan: shareFull?.plan||'A',
-      tl_balance: fileTL2,
-      tl_max: tlMax2,
-      xorKey: xorKey2,
-      uploadedAt: new Date().toISOString(), contentHash: hash,
-      platform: 'timelink.digital', version: 1,
-    };
+    if(share.storage_object_id){
+      const r=await externalStream(c.env.DB,c.env,Number(share.storage_object_id),'');
+      if(!r.ok) return c.json({error:'외부 저장소 파일을 가져오지 못했습니다.'},502);
+      const h=new Headers(r.headers);
+      h.set('Content-Disposition',`attachment; filename="${downloadName}"`);
+      h.set('Content-Type','application/octet-stream');
+      h.set('Cache-Control','no-store');
+      return new Response(r.body,{status:200,headers:h});
+    }
 
-    const tlData = buildTLFile(header, raw, secret);
+    const streamUrl=String(share.stream_url||'');
+    if(/127\.0\.0\.1|localhost/i.test(streamUrl)){
+      return c.json({error:'이 파일은 창작자 PC에 저장되어 있습니다. 창작자 PC의 Local Agent에서 다운로드하세요.'},409);
+    }
 
-    return new Response(tlData, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': String(tlData.length),
-        'Content-Disposition': `attachment; filename="${shareId}.tl"`,
-        'Cache-Control': 'no-store',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Expose-Headers': 'Content-Disposition, Content-Length'
+    let rawKey='';
+    if(streamUrl.includes('/api/storage/')) rawKey=decodeURIComponent(streamUrl.split('/api/storage/')[1].split('?')[0]);
+    else if(streamUrl.startsWith('tracks/')||streamUrl.startsWith('tl/')) rawKey=streamUrl;
+    else if(streamUrl.startsWith('http')){
+      const fn=streamUrl.split('/').pop()?.split('?')[0]||'';
+      rawKey=fn.endsWith('.tl3')?'tl3/'+fn:fn.endsWith('.tl')?'tl/'+fn:'tracks/'+fn;
+    }else rawKey=streamUrl;
+    if(!rawKey) return c.json({error:'다운로드 파일 경로가 없습니다.'},404);
+
+    const meta=await getD1ObjectMeta(c.env.DB,rawKey);
+    if(!meta) return c.json({error:'원본 파일 없음'},404);
+    const bytes=await readD1Range(c.env.DB,rawKey,0,meta.size);
+    return new Response(bytes,{
+      status:200,
+      headers:{
+        'Content-Type':meta.content_type||'application/octet-stream',
+        'Content-Length':String(bytes.byteLength),
+        'Content-Disposition':`attachment; filename="${downloadName}"`,
+        'Cache-Control':'no-store',
+        'Access-Control-Allow-Origin':'*',
+        'Access-Control-Expose-Headers':'Content-Disposition, Content-Length'
       }
     });
-  } catch (e: any) {
-    return c.json({ error: e?.message || '다운로드 파일 생성 실패' }, 500);
+  }catch(e:any){
+    return c.json({error:e?.message||'다운로드 실패'},500);
   }
 });
 
