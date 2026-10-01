@@ -752,32 +752,133 @@ app.post('/api/shares', async (c) => {
   return c.json({ ok: true, id, tl_remaining: updated?.tl || 0 });
 });
 
-// ── 유저의 특정 곡 TL 잔액 조회 (수정: 없으면 초기값 생성) ──
+async function ensureShareTLBalances(db: D1Database){
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS tl_user_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      share_id TEXT NOT NULL,
+      tl_balance REAL DEFAULT 0,
+      total_charged REAL DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(user_id, share_id)
+    )
+  `).run();
+}
+async function shareAuthUser(c:any){
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
+  if(!token) return null;
+  const payload=await verifyToken(token,c.env.JWT_SECRET);
+  if(!payload?.sub) return null;
+  return Number(payload.sub);
+}
+
+// ── 유저의 특정 곡 TL 잔액 조회 ──
 app.get('/api/shares/:id/my-tl', async (c) => {
-  const auth = c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
-  const m = auth.match(/^(?:token|fallback)_([^_]+)_/);
-  if (!m) return c.json({ tl_balance: 0 });
-  const user_id = Number(m[1]);
-  const share_id = c.req.param('id');
-  
-  let row = await c.env.DB.prepare(
-    'SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?'
-  ).bind(user_id, share_id).first() as any;
-  
-  // 🔥 중요: tl_user_files에 레코드가 없으면 생성 (직접 업로드한 파일 대응)
-  if (!row) {
-    const share = await c.env.DB.prepare('SELECT file_tl FROM tl_shares WHERE id=?').bind(share_id).first() as any;
-    const initialTL = share?.file_tl || 5000;
-    
-    await c.env.DB.prepare(`
-      INSERT INTO tl_user_files (user_id, share_id, tl_balance, total_charged, created_at)
-      VALUES (?, ?, ?, ?, datetime('now'))
-    `).bind(user_id, share_id, initialTL, initialTL).run();
-    
-    row = { tl_balance: initialTL };
+  const userId=await shareAuthUser(c);
+  if(!userId) return c.json({error:'인증 필요'},401);
+  const shareId=c.req.param('id');
+  try{
+    await ensureShareTLBalances(c.env.DB);
+    const share=await c.env.DB.prepare('SELECT id,file_tl,file_type,release_mode FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    if(!share) return c.json({error:'파일 없음'},404);
+    let row=await c.env.DB.prepare('SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?')
+      .bind(userId,shareId).first<any>();
+    if(!row){
+      await c.env.DB.prepare('INSERT OR IGNORE INTO tl_user_files (user_id,share_id,tl_balance,total_charged) VALUES (?,?,0,0)')
+        .bind(userId,shareId).run();
+      row={tl_balance:0,total_charged:0};
+    }
+    return c.json({ok:true,tl_balance:Number(row.tl_balance||0),total_charged:Number(row.total_charged||0),file_tl:Number(share.file_tl||0)});
+  }catch(e:any){
+    return c.json({error:e?.message||'TL 잔액 조회 실패'},500);
   }
-  
-  return c.json({ tl_balance: Number(row?.tl_balance||0) });
+});
+
+// ── TL3 전용 TL 충전: 사용자의 공용 TL을 특정 파일 잔액으로 이동 ──
+app.post('/api/shares/:id/charge', async (c) => {
+  const userId=await shareAuthUser(c);
+  if(!userId) return c.json({error:'인증 필요'},401);
+  const shareId=c.req.param('id');
+  try{
+    const body=await c.req.json<any>().catch(()=>({}));
+    const amount=Math.floor(Number(body.amount||0));
+    if(!Number.isFinite(amount)||amount<=0) return c.json({error:'충전 TL은 1 이상이어야 합니다.'},400);
+    await ensureShareTLBalances(c.env.DB);
+    const share=await c.env.DB.prepare('SELECT id,user_id,file_tl,file_type,release_mode FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    if(!share) return c.json({error:'파일 없음'},404);
+    const isMp3=String(share.file_type||'').toLowerCase()==='audio/mp3' ||
+      String(share.release_mode||'').toLowerCase().startsWith('free_mp3');
+    if(isMp3) return c.json({error:'MP3는 무료 재생이며 TL 충전 대상이 아닙니다.'},400);
+
+    const user=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first<any>();
+    if(!user) return c.json({error:'유저 없음'},404);
+    const tlCol=user.tl!==undefined?'tl':'tl_balance';
+    const current=Number(user[tlCol]||0);
+    if(current<amount) return c.json({error:'TL 잔액이 부족합니다.',required:amount,current},402);
+
+    const batch=await c.env.DB.batch([
+      c.env.DB.prepare('UPDATE users SET '+tlCol+'='+tlCol+'-? WHERE id=? AND '+tlCol+'>=?').bind(amount,userId,amount),
+      c.env.DB.prepare(`
+        INSERT INTO tl_user_files (user_id,share_id,tl_balance,total_charged)
+        VALUES (?,?,?,?)
+        ON CONFLICT(user_id,share_id) DO UPDATE SET
+          tl_balance=tl_user_files.tl_balance+excluded.tl_balance,
+          total_charged=tl_user_files.total_charged+excluded.total_charged,
+          updated_at=datetime('now')
+      `).bind(userId,shareId,amount,amount)
+    ]);
+    if(Number(batch[0]?.meta?.changes||0)!==1) return c.json({error:'TL 충전에 실패했습니다.'},409);
+
+    const freshUser=await c.env.DB.prepare('SELECT '+tlCol+' as tl FROM users WHERE id=?').bind(userId).first<any>();
+    const freshFile=await c.env.DB.prepare('SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?').bind(userId,shareId).first<any>();
+    return c.json({ok:true,amount,user_tl:Number(freshUser?.tl||0),tl_balance:Number(freshFile?.tl_balance||0),total_charged:Number(freshFile?.total_charged||0)});
+  }catch(e:any){
+    return c.json({error:e?.message||'TL 충전 실패'},500);
+  }
+});
+
+// ── TL3 재생 시간 소비: 파일 잔액에서 차감하고 창작자 수익 정산 ──
+app.post('/api/shares/:id/consume', async (c) => {
+  const userId=await shareAuthUser(c);
+  if(!userId) return c.json({error:'인증 필요'},401);
+  const shareId=c.req.param('id');
+  try{
+    const body=await c.req.json<any>().catch(()=>({}));
+    const seconds=Math.max(1,Math.min(30,Math.floor(Number(body.seconds||0))));
+    await ensureShareTLBalances(c.env.DB);
+    const share=await c.env.DB.prepare('SELECT id,user_id,file_tl,file_type,release_mode FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    if(!share) return c.json({error:'파일 없음'},404);
+    const isMp3=String(share.file_type||'').toLowerCase()==='audio/mp3' ||
+      String(share.release_mode||'').toLowerCase().startsWith('free_mp3');
+    if(isMp3) return c.json({ok:true,consumed:0,user_tl:0,tl_balance:0,free:true});
+
+    const row=await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?')
+      .bind(userId,shareId).first<any>();
+    const before=Number(row?.tl_balance||0);
+    if(before<seconds) return c.json({ok:false,error:'TL이 부족합니다.',required:seconds,user_tl:before,tl_balance:before},402);
+
+    const revenue=seconds*0.7;
+    const creatorId=Number(share.user_id||0);
+    const creator=creatorId?await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(creatorId).first<any>():null;
+    const creatorCol=creator?.tl!==undefined?'tl':'tl_balance';
+
+    const statements=[
+      c.env.DB.prepare('UPDATE tl_user_files SET tl_balance=tl_balance-?,updated_at=datetime("now") WHERE user_id=? AND share_id=? AND tl_balance>=?').bind(seconds,userId,shareId,seconds),
+      c.env.DB.prepare('UPDATE tl_shares SET pulse=COALESCE(pulse,0)+? WHERE id=?').bind(seconds,shareId)
+    ];
+    if(creator) statements.push(
+      c.env.DB.prepare('UPDATE users SET '+creatorCol+'='+creatorCol+'+?, total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,creatorId)
+    );
+    const batch=await c.env.DB.batch(statements);
+    if(Number(batch[0]?.meta?.changes||0)!==1) return c.json({ok:false,error:'TL 소비 처리에 실패했습니다.'},409);
+
+    const fresh=await c.env.DB.prepare('SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?').bind(userId,shareId).first<any>();
+    return c.json({ok:true,consumed:seconds,revenue_credited:revenue,user_tl:Number(fresh?.tl_balance||0),tl_balance:Number(fresh?.tl_balance||0),total_charged:Number(fresh?.total_charged||0)});
+  }catch(e:any){
+    return c.json({ok:false,error:e?.message||'TL 소비 실패'},500);
+  }
 });
 
 // ── 단일 share 조회 ──
