@@ -291,6 +291,37 @@ app.post('/api/tracks/:id/play', async (c) => {
   }
 });
 
+// ── 인증된 TL3 컨테이너 저장 ──
+// 브라우저에서 생성한 TLNK v2 컨테이너를 D1 Object Storage에 저장한다.
+// share 생성 전용 단계이며 파일명/경로는 서버가 결정한다.
+app.post('/api/upload/tl3', async (c) => {
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  const user=token ? await verifyToken(token,c.env.JWT_SECRET).catch(()=>null) : null;
+  const userId=Number(user?.sub||0);
+  if(!userId) return c.json({ok:false,error:'인증 필요'},401);
+  try{
+    await ensureD1Storage(c.env.DB);
+    const form=await c.req.parseBody({limit:D1_MAX_FILE_SIZE});
+    const file=form['file'] as File;
+    if(!file) return c.json({ok:false,error:'TL3 파일이 없습니다.'},400);
+    if(file.size<=7) return c.json({ok:false,error:'TL3 파일이 너무 작습니다.'},400);
+    if(file.size>D1_MAX_FILE_SIZE) return c.json({ok:false,error:'파일당 100MB까지 지원합니다.'},413);
+    const raw=new Uint8Array(await file.arrayBuffer());
+    if(raw[0]!==0x54||raw[1]!==0x4c||raw[2]!==0x4e||raw[3]!==0x4b||raw[4]!==0x02)
+      return c.json({ok:false,error:'유효한 TL3(v2) 파일이 아닙니다.'},400);
+    const headerLen=(raw[5]<<8)|raw[6];
+    if(7+headerLen>raw.length) return c.json({ok:false,error:'TL3 헤더가 손상되었습니다.'},400);
+    let meta:any;
+    try{ meta=JSON.parse(new TextDecoder().decode(raw.slice(7,7+headerLen))); }
+    catch(_){ return c.json({ok:false,error:'TL3 메타데이터가 손상되었습니다.'},400); }
+    if(String(meta.cid||'')!==String(userId)) return c.json({ok:false,error:'TL3 창작자 정보가 로그인 사용자와 일치하지 않습니다.'},403);
+    const shareId='tl3_'+userId+'_'+crypto.randomUUID().replace(/-/g,'');
+    const key='tracks/'+shareId+'.tl3';
+    await putD1Object(c.env.DB,key,raw,'application/octet-stream',shareId+'.tl3');
+    return c.json({ok:true,shareId,key,stream_url:'https://api.timelink.digital/api/storage/'+encodeURIComponent(key),size:raw.length,storage_mode:'timelink_d1',release_mode:'tl3'});
+  }catch(e:any){ return c.json({ok:false,error:e?.message||'TL3 저장 실패'},500); }
+});
+
 // ── TL3 / 파일 업로드 — R2 없는 D1 Object Storage
 const D1_CHUNK_SIZE=D1_OBJECT_CHUNK_SIZE,D1_MAX_FILE_SIZE=D1_MAX_OBJECT_SIZE;
 app.post('/api/upload/init',async(c)=>{try{await ensureD1Storage(c.env.DB);const b=await c.req.json<any>(),id=String(b.trackId||'').trim(),name=String(b.fileName||`${id}.tl3`),size=Number(b.totalSize||0);if(!id)return c.json({ok:false,error:'trackId 필수'},400);if(size>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'무료 저장소는 파일당 100MB까지 지원합니다.'},413);const key=`tracks/${id}.tl3`;await initD1Upload(c.env.DB,key,name,size,'application/octet-stream');return c.json({ok:true,key,uploadId:id,chunkSize:D1_CHUNK_SIZE,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 초기화 실패'},500);}});
