@@ -812,6 +812,10 @@ app.post('/api/shares', async (c) => {
   await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN origin_hash TEXT DEFAULT ''").run().catch(()=>{});
   await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN release_check TEXT DEFAULT ''").run().catch(()=>{});
   await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN content_kind TEXT DEFAULT ''").run().catch(()=>{});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN price_per_sec REAL DEFAULT 1").run().catch(()=>{});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN composer TEXT DEFAULT ''").run().catch(()=>{});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN lyricist TEXT DEFAULT ''").run().catch(()=>{});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN lyrics TEXT DEFAULT ''").run().catch(()=>{});
 
   const isFreeMp3=String(body.release_mode||'').startsWith('free_mp3');
   if(isFreeMp3){
