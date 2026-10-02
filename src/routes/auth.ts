@@ -33,7 +33,8 @@ router.post('/register', async (c) => {
   ).bind(result.id, TL_INITIAL_BONUS, TL_INITIAL_BONUS).run();
 
   const token = await makeAccessToken(result.id, c.env.JWT_SECRET);
-  return c.json({ access_token: token, token_type: 'bearer', user_id: result.id }, 201);
+  const user = { id: result.id, email: body.email, username: body.username, tl: TL_INITIAL_BONUS };
+  return c.json({ access_token: token, token: token, token_type: 'bearer', user_id: result.id, user }, 201);
 });
 
 // POST /login
@@ -47,7 +48,8 @@ router.post('/login', async (c) => {
   if (!valid) return c.json({ detail: 'Invalid credentials' }, 401);
 
   const token = await makeAccessToken(user.id, c.env.JWT_SECRET);
-  return c.json({ access_token: token, token_type: 'bearer', user_id: user.id });
+  const safeUser = { id: user.id, email: user.email, username: user.username, tl: Number((user as any).tl_balance || 0) };
+  return c.json({ access_token: token, token: token, token_type: 'bearer', user_id: user.id, user: safeUser });
 });
 
 export default router;
