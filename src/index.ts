@@ -161,6 +161,8 @@ app.route('/api/v1/users', usersRouter);
 app.route('/api/v1/files', filesRouter);
 app.route('/api/v1/playback', playbackRouter);
 app.route('/api/v1/shareplace', shareplaceRouter);
+// SharePlace legacy endpoint: 기존 프론트엔드가 사용하는 /api/shares 경로를 유지한다.
+app.route('/api/shares', shareplaceRouter);
 app.route('/api/v1/disputes', disputesRouter);
 app.route('/api/v1/charts', chartsRouter);
 app.route('/api/payment', paymentRouter);
