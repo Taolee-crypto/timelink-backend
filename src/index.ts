@@ -296,6 +296,31 @@ app.post('/api/tracks/:id/play', async (c) => {
 // ── 인증된 TL3 컨테이너 저장 ──
 // 브라우저에서 생성한 TLNK v2 컨테이너를 D1 Object Storage에 저장한다.
 // share 생성 전용 단계이며 파일명/경로는 서버가 결정한다.
+// ── 무료 MP3 원본 저장 ──
+// 무료 공개 음원은 재생을 위해 TimeLink D1 Object Storage에 저장한다.
+app.post('/api/upload/mp3', async (c) => {
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  const user=token ? await verifyToken(token,c.env.JWT_SECRET).catch(()=>null) : null;
+  const userId=Number(user?.sub||0);
+  if(!userId) return c.json({ok:false,error:'인증 필요'},401);
+  try{
+    await ensureD1Storage(c.env.DB);
+    const form=await c.req.parseBody({limit:D1_MAX_FILE_SIZE});
+    const file=form['file'] as File;
+    if(!file) return c.json({ok:false,error:'MP3 파일이 없습니다.'},400);
+    const name=String(file.name||'audio.mp3').replace(/[^a-zA-Z0-9._-]/g,'_');
+    const mime=String(file.type||'audio/mpeg').toLowerCase();
+    if(file.size<=0) return c.json({ok:false,error:'빈 파일입니다.'},400);
+    if(file.size>D1_MAX_FILE_SIZE) return c.json({ok:false,error:'파일당 100MB까지 지원합니다.'},413);
+    if(mime!=='audio/mpeg' && !/\\.mp3$/i.test(name)) return c.json({ok:false,error:'MP3 파일만 업로드할 수 있습니다.'},400);
+    const raw=new Uint8Array(await file.arrayBuffer());
+    const hash=await sha256Hex(raw);
+    const key='tracks/mp3_'+userId+'_'+Date.now()+'_'+name;
+    await putD1Object(c.env.DB,key,raw,'audio/mpeg',name);
+    return c.json({ok:true,key,size:raw.length,hash,stream_url:'https://api.timelink.digital/api/storage/'+encodeURIComponent(key),storage_mode:'timelink_d1',release_mode:'free_mp3'});
+  }catch(e:any){ return c.json({ok:false,error:e?.message||'MP3 저장 실패'},500); }
+});
+
 app.post('/api/upload/tl3', async (c) => {
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
   const user=token ? await verifyToken(token,c.env.JWT_SECRET).catch(()=>null) : null;
