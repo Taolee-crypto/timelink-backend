@@ -67,7 +67,7 @@ export async function verifyToken(token: string, secret: string): Promise<JWTPay
     );
     if (!valid) return null;
     const payload: JWTPayload = JSON.parse(base64urlDecode(body));
-    if (!payload || typeof payload.sub !== 'string' || !/^\\d+$/.test(payload.sub)) return null;
+    if (!payload || typeof payload.sub !== 'string' || !/^[0-9]+$/.test(payload.sub)) return null;
     if (!Number.isFinite(Number(payload.exp)) || Number(payload.exp) <= Math.floor(Date.now() / 1000)) return null;
     return payload;
   } catch {
