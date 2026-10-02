@@ -755,13 +755,33 @@ app.get('/api/shares', async (c) => {
     const { results } = await c.env.DB.prepare(`
       SELECT s.*,
         COALESCE(u.username, s.username, 'User') as username,
-        COALESCE(u.email, '') as user_email
+        COALESCE(u.email, '') as user_email,
+        'share' as source_table
       FROM tl_shares s
       LEFT JOIN users u ON CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT)
-      ORDER BY s.created_at DESC LIMIT 200
+      UNION ALL
+      SELECT
+        CAST(f.id AS TEXT) as id, f.user_id, u.username as username,
+        f.title, f.artist, '' as album, 0 as duration, f.file_tl,
+        'Music' as category, f.file_type, '' as category_type,
+        '' as description, 'A' as plan, '' as spotify_id, '' as spotify_url,
+        '' as cover_url, '' as preview_url, f.file_url as stream_url,
+        f.country, '' as content_lang, f.auth_status, f.shared,
+        f.revenue, f.hold_revenue, f.revenue_held, f.pulse, f.play_count,
+        f.created_at, f.updated_at,
+        CASE WHEN lower(f.file_type) LIKE '%mp3%' OR lower(f.file_type) LIKE 'audio/%' THEN 'mp3' ELSE 'file' END as content_kind,
+        'tl_file' as source_table
+      FROM tl_files f
+      LEFT JOIN users u ON f.user_id = u.id
+      WHERE f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+      ORDER BY created_at DESC LIMIT 200
     `).all();
     const _o = new URL(c.req.url).origin;
-    return c.json({ shares: (results || []).map((r:any)=>({ ...r, content_kind: shareKind(r), stream_url: (typeof r.stream_url==='string' && r.stream_url.startsWith('/')) ? _o + r.stream_url : r.stream_url })) });
+    return c.json({ shares: (results || []).map((r:any)=>({
+      ...r,
+      content_kind: r.content_kind || shareKind(r),
+      stream_url: (typeof r.stream_url==='string' && r.stream_url.startsWith('/')) ? _o + r.stream_url : r.stream_url
+    })) });
   } catch (e: any) {
     return c.json({ shares: [], _note: e.message });
   }
