@@ -98,7 +98,7 @@ app.post('/api/storage/upload-session', async (c) => {
   const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
   const b=await c.req.json<any>(),provider=b.provider as any,name=String(b.name||'').trim(),size=Number(b.size||0),mime=String(b.mime||'application/octet-stream');
   if(!['google_drive','onedrive'].includes(provider)||!name||!Number.isFinite(size)||size<=0) return c.json({error:'provider, name, size가 필요합니다.'},422);
-  try { return c.json({ok:true,upload:await createUploadSession(c.env.DB,c.env,Number(u.sub),provider,name,size,mime)}); }
+  try { return c.json({ok:true,upload:await createUploadSession(c.env.DB,c.env,Number(u.sub),provider,name,size,mime,c.req.header('Origin')||'')}); }
   catch(e:any){ return c.json({ok:false,error:e.message},500); }
 });
 app.post('/api/storage/finalize', async (c) => {
@@ -289,6 +289,37 @@ app.post('/api/tracks/:id/play', async (c) => {
   } catch (e: any) {
     return c.json({ ok: false, error: e.message });
   }
+});
+
+// ── 인증된 TL3 컨테이너 저장 ──
+// 브라우저에서 생성한 TLNK v2 컨테이너를 D1 Object Storage에 저장한다.
+// share 생성 전용 단계이며 파일명/경로는 서버가 결정한다.
+app.post('/api/upload/tl3', async (c) => {
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  const user=token ? await verifyToken(token,c.env.JWT_SECRET).catch(()=>null) : null;
+  const userId=Number(user?.sub||0);
+  if(!userId) return c.json({ok:false,error:'인증 필요'},401);
+  try{
+    await ensureD1Storage(c.env.DB);
+    const form=await c.req.parseBody({limit:D1_MAX_FILE_SIZE});
+    const file=form['file'] as File;
+    if(!file) return c.json({ok:false,error:'TL3 파일이 없습니다.'},400);
+    if(file.size<=7) return c.json({ok:false,error:'TL3 파일이 너무 작습니다.'},400);
+    if(file.size>D1_MAX_FILE_SIZE) return c.json({ok:false,error:'파일당 100MB까지 지원합니다.'},413);
+    const raw=new Uint8Array(await file.arrayBuffer());
+    if(raw[0]!==0x54||raw[1]!==0x4c||raw[2]!==0x4e||raw[3]!==0x4b||raw[4]!==0x02)
+      return c.json({ok:false,error:'유효한 TL3(v2) 파일이 아닙니다.'},400);
+    const headerLen=(raw[5]<<8)|raw[6];
+    if(7+headerLen>raw.length) return c.json({ok:false,error:'TL3 헤더가 손상되었습니다.'},400);
+    let meta:any;
+    try{ meta=JSON.parse(new TextDecoder().decode(raw.slice(7,7+headerLen))); }
+    catch(_){ return c.json({ok:false,error:'TL3 메타데이터가 손상되었습니다.'},400); }
+    if(String(meta.cid||'')!==String(userId)) return c.json({ok:false,error:'TL3 창작자 정보가 로그인 사용자와 일치하지 않습니다.'},403);
+    const shareId='tl3_'+userId+'_'+crypto.randomUUID().replace(/-/g,'');
+    const key='tracks/'+shareId+'.tl3';
+    await putD1Object(c.env.DB,key,raw,'application/octet-stream',shareId+'.tl3');
+    return c.json({ok:true,shareId,key,stream_url:'https://api.timelink.digital/api/storage/'+encodeURIComponent(key),size:raw.length,storage_mode:'timelink_d1',release_mode:'tl3'});
+  }catch(e:any){ return c.json({ok:false,error:e?.message||'TL3 저장 실패'},500); }
 });
 
 // ── TL3 / 파일 업로드 — R2 없는 D1 Object Storage
@@ -591,6 +622,49 @@ app.get('/api/spotify/audio-features/:trackId', async (c) => {
   }
 });
 
+// 무료 MP3 기출시/중복 검증
+app.post('/api/music/verify-release', async (c) => {
+  try {
+    const auth=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
+    const payload=await verifyToken(auth,c.env.JWT_SECRET);
+    if(!payload?.sub) return c.json({error:'인증 필요'},401);
+    const body=await c.req.json<any>().catch(()=>({}));
+    const title=String(body.title||'').trim(), artist=String(body.artist||'').trim();
+    const duration=Number(body.duration||0), originHash=String(body.origin_hash||'').trim().toLowerCase();
+    if(!title) return c.json({error:'title 필요'},400);
+    await c.env.DB.prepare("CREATE TABLE IF NOT EXISTS tl_shares (id TEXT PRIMARY KEY)").run().catch(()=>{});
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN origin_hash TEXT DEFAULT ''").run().catch(()=>{});
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN release_check TEXT DEFAULT ''").run().catch(()=>{});
+    if(originHash){
+      const same=await c.env.DB.prepare("SELECT id,title,artist FROM tl_shares WHERE lower(COALESCE(origin_hash,''))=? LIMIT 1").bind(originHash).first<any>().catch(()=>null);
+      if(same) return c.json({blocked:true,reason:'timelink_duplicate',message:'동일한 원본 파일이 이미 TimeLink에 등록되어 있습니다.',existing:same});
+    }
+    const env=c.env as any;
+    if(!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET)
+      return c.json({blocked:false,verification:'unavailable',message:'Spotify 외부 검증 키가 설정되지 않았습니다.'});
+    const spToken=await getSpotifyToken(c.env);
+    const q=[title,artist].filter(Boolean).join(' ');
+    const r=await fetch('https://api.spotify.com/v1/search?q='+encodeURIComponent(q)+'&type=track&limit=10&market=KR',{headers:{Authorization:'Bearer '+spToken}});
+    if(!r.ok) return c.json({blocked:false,verification:'unavailable',message:'외부 음악 카탈로그 확인을 완료하지 못했습니다.'});
+    const d:any=await r.json();
+    const norm=(v:any)=>String(v||'').toLowerCase().normalize('NFKC').replace(/\s+/g,' ').trim();
+    const nt=norm(title),na=norm(artist);
+    const matches=(d.tracks?.items||[]).map((t:any)=>{
+      const ta=(t.artists||[]).map((a:any)=>a.name).join(', ');
+      const tm=norm(t.name)===nt, am=na ? (norm(ta)===na || (t.artists||[]).some((a:any)=>norm(a.name)===na)) : true;
+      const dm=!duration || !t.duration_ms || Math.abs(Number(t.duration_ms)/1000-duration)<=5;
+      return {t,ta,tm,am,dm};
+    }).filter((x:any)=>x.tm&&x.am&&x.dm);
+    if(matches.length){
+      const x=matches[0],t=x.t;
+      return c.json({blocked:true,verification:'spotify_match',message:'Spotify에서 동일 곡으로 확인되어 무료 MP3 공개를 차단합니다.',match:{id:t.id,title:t.name,artist:x.ta,duration:Math.round((t.duration_ms||0)/1000),spotify_url:t.external_urls?.spotify||'',release_date:t.album?.release_date||''}});
+    }
+    return c.json({blocked:false,verification:'spotify_no_match',message:'Spotify에서 동일 조건의 기출시 곡을 확인하지 못했습니다.'});
+  } catch(e:any) {
+    return c.json({blocked:false,verification:'unavailable',message:'외부 검증 중 오류가 발생했습니다. 창작자 확인 절차로 진행할 수 있습니다.'});
+  }
+});
+
 // Spotify 검색
 app.get('/api/spotify/search', async (c) => {
   const q = c.req.query('q');
@@ -666,93 +740,77 @@ app.get('/api/shares', async (c) => {
   }
 });
 
-// 🔥 POST /api/shares - 새 파일 공유 (직접 업로드한 파일 처리)
+// 🔥 POST /api/shares - 새 파일 공유
 app.post('/api/shares', async (c) => {
-  const auth = (c.req.header('Authorization') || '').replace('Bearer ', '').trim();
-  if (!auth) return c.json({ error: '인증 필요' }, 401);
-  let userId: number, username: string;
-  try {
-    const p = parseJWT(auth);
-    userId = p.userId; username = p.username;
-  } catch (e) { return c.json({ error: 'Invalid token: ' + (e as Error).message }, 401); }
-  const bodyRaw = await c.req.json<any>();
-  if (!userId || userId === 0) {
-    userId = Number(bodyRaw.user_id || bodyRaw.userId || 0);
-    username = bodyRaw.username || username || 'User';
+  const auth=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
+  if(!auth) return c.json({error:'인증 필요'},401);
+  let payload:any;
+  try { payload=await verifyToken(auth,c.env.JWT_SECRET); } catch { return c.json({error:'Invalid token'},401); }
+  const userId=Number(payload?.sub||0);
+  if(!userId) return c.json({error:'인증 사용자 확인 불가'},401);
+  const body=await c.req.json<any>().catch(()=>({}));
+  if(!body.title) return c.json({error:'title 필요'},400);
+  const userRow=await c.env.DB.prepare('SELECT id,username,email FROM users WHERE id=?').bind(userId).first<any>();
+  if(!userRow) return c.json({error:'유저 없음'},404);
+
+  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_shares (
+    id TEXT PRIMARY KEY, user_id TEXT, username TEXT, title TEXT NOT NULL, artist TEXT DEFAULT '', album TEXT DEFAULT '',
+    duration INTEGER DEFAULT 0, file_tl INTEGER DEFAULT 0, category TEXT DEFAULT 'Music', file_type TEXT DEFAULT '',
+    category_type TEXT DEFAULT '', description TEXT DEFAULT '', plan TEXT DEFAULT 'A', spotify_id TEXT, spotify_url TEXT,
+    cover_url TEXT, preview_url TEXT, stream_url TEXT DEFAULT '', country TEXT DEFAULT 'KR', content_lang TEXT DEFAULT 'ko',
+    pulse INTEGER DEFAULT 0, created_at INTEGER NOT NULL
+  )`).run().catch(()=>{});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN release_mode TEXT DEFAULT ''").run().catch(()=>{});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_mode TEXT DEFAULT ''").run().catch(()=>{});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN origin_hash TEXT DEFAULT ''").run().catch(()=>{});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN release_check TEXT DEFAULT ''").run().catch(()=>{});
+  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN content_kind TEXT DEFAULT ''").run().catch(()=>{});
+
+  const isFreeMp3=String(body.release_mode||'').startsWith('free_mp3');
+  if(isFreeMp3){
+    if(String(body.file_type||'').toLowerCase()!=='audio/mp3') return c.json({error:'무료 공개는 MP3만 가능합니다.'},400);
+    if(body.rights_confirmed!==true) return c.json({error:'창작자 권리 확인이 필요합니다.'},400);
+    if(String(body.release_check||'')==='spotify_match') return c.json({error:'기출시 곡으로 확인되어 무료 공개할 수 없습니다.'},409);
+    const originHash=String(body.origin_hash||'').trim().toLowerCase();
+    if(originHash){
+      const same=await c.env.DB.prepare("SELECT id,title,artist FROM tl_shares WHERE lower(COALESCE(origin_hash,''))=? LIMIT 1").bind(originHash).first<any>().catch(()=>null);
+      if(same) return c.json({error:'동일한 원본 파일이 이미 등록되어 있습니다.',existing:same},409);
+    }
   }
-  if (!userId) return c.json({ error: 'user_id 확인 불가' }, 401);
-  let userRow = await c.env.DB.prepare('SELECT * FROM users WHERE id=? OR email=?')
-    .bind(userId, bodyRaw.email || '').first<any>().catch(() => null);
-  if (!userRow && bodyRaw.email) {
-    await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO users (username, email, password_hash, tl_balance)
-       VALUES (?, ?, 'fallback', 10000)`
-    ).bind(bodyRaw.username || 'User', bodyRaw.email).run()
-      .catch(() =>
-        c.env.DB.prepare(
-          `INSERT OR IGNORE INTO users (username, email, password_hash, tl)
-           VALUES (?, ?, 'fallback', 10000)`
-        ).bind(bodyRaw.username || 'User', bodyRaw.email).run().catch(() => {})
-      );
-    userRow = await c.env.DB.prepare('SELECT * FROM users WHERE email=?')
-      .bind(bodyRaw.email).first<any>().catch(() => null);
+
+  const tlP=Number((await c.env.DB.prepare('SELECT COALESCE(tl_p,tl,0) v FROM users WHERE id=?').bind(userId).first<any>())?.v||0);
+  const tlA=Number((await c.env.DB.prepare('SELECT COALESCE(tl_a,0) v FROM users WHERE id=?').bind(userId).first<any>())?.v||0);
+  const tlB=Number((await c.env.DB.prepare('SELECT COALESCE(tl_b,0) v FROM users WHERE id=?').bind(userId).first<any>())?.v||0);
+  const currentTL=tlP+tlA+tlB;
+  if(!isFreeMp3 && currentTL<5000) return c.json({error:'TL 부족',required:5000,current:currentTL},402);
+  if(!isFreeMp3){
+    let rem=5000,a=tlA,b=tlB,p=tlP;
+    const da=Math.min(rem,a);a-=da;rem-=da;
+    const db=Math.min(rem,b);b-=db;rem-=db;
+    const dp=Math.min(rem,p);p-=dp;rem-=dp;
+    if(rem>0) return c.json({error:'TL 잔액이 부족합니다.',required:5000,current:currentTL},402);
+    await c.env.DB.prepare('UPDATE users SET tl=?,tl_p=?,tl_a=?,tl_b=?,total_tl_spent=COALESCE(total_tl_spent,0)+5000 WHERE id=?').bind(a+b+p,p,a,b,userId).run();
   }
-  if (!userRow) return c.json({ error: '유저 없음' }, 404);
-  const body = bodyRaw;
-  const isExternalFree = shareKind(body)==='mp3';
-  const tl = userRow.tl ?? userRow.tl_balance ?? 0;
-  // 외부 서버/창작자 PC 무료 공개는 TimeLink가 원본 파일 저장·호스팅 비용을 부담하지 않으므로 등록 수수료를 차감하지 않는다.
-  if (!isExternalFree && tl < 5000) return c.json({ error: 'TL 부족', required: 5000, current: tl }, 402);
-  if (!body.title) return c.json({ error: 'title 필요' }, 400);
-  await c.env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS tl_shares (
-      id TEXT PRIMARY KEY, user_id TEXT, username TEXT,
-      title TEXT NOT NULL, artist TEXT DEFAULT '', album TEXT DEFAULT '',
-      duration INTEGER DEFAULT 0, file_tl INTEGER DEFAULT 0,
-      category TEXT DEFAULT 'Music', file_type TEXT DEFAULT '', category_type TEXT DEFAULT '',
-      description TEXT DEFAULT '', plan TEXT DEFAULT 'A',
-      spotify_id TEXT, spotify_url TEXT, cover_url TEXT, preview_url TEXT,
-      stream_url TEXT DEFAULT '', country TEXT DEFAULT 'KR', content_lang TEXT DEFAULT 'ko',
-      pulse INTEGER DEFAULT 0, created_at INTEGER NOT NULL
-    )
-  `).run().catch(() => {});
-  // 무료/외부/창작자 PC 공개 여부를 share 자체에 저장한다.
-  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN release_mode TEXT DEFAULT ''").run().catch(() => {});
-  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_mode TEXT DEFAULT ''").run().catch(() => {});
-  await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN content_kind TEXT DEFAULT ''").run().catch(() => {});
-  const tlColRaw = userRow.tl !== undefined ? 'tl' : 'tl_balance';
-  const tlCol = ['tl','tl_balance'].includes(tlColRaw) ? tlColRaw : 'tl';
-  const realId = userRow.id;
-  if (!isExternalFree) {
-    await c.env.DB.prepare(`UPDATE users SET ${tlCol}=${tlCol}-5000 WHERE id=?`).bind(realId).run();
-  }
-  const id = 'sh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-  
-  // 외부 서버 무료 공개는 파일 자체를 TimeLink에 저장하지 않으며 file_tl도 0으로 시작한다.
-  const fileTl = isExternalFree ? 0 : (body.file_tl || 5000);
-  
-  await c.env.DB.prepare(`
-    INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics,release_mode,storage_mode) 
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)
-  `).bind(
-    id, String(realId), username, body.title, body.artist || '', body.album || '',
-    body.duration || 0, fileTl, body.category || 'Music', body.file_type || '', body.category_type || '',
-    body.description || '', body.plan || 'A', body.spotify_id || null, body.spotify_url || null,
-    body.cover_url || null, body.preview_url || null, body.stream_url || null,
-    body.country || 'KR', body.content_lang || 'ko', Date.now(), body.price_per_sec || 1.0,
-    body.composer || '', body.lyricist || '', body.lyrics || '',
-    body.release_mode || '', body.storage_mode || ''
-  ).run();
-  
-  await c.env.DB.prepare('UPDATE tl_shares SET content_kind=? WHERE id=?').bind(shareKind(body),id).run().catch(() => {});
-  // 🔥 중요: tl_user_files에 초기 레코드 생성 (직접 업로드한 파일 대응)
-  await c.env.DB.prepare(`
-    INSERT OR IGNORE INTO tl_user_files (user_id, share_id, tl_balance, total_charged, created_at)
-    VALUES (?, ?, ?, ?, datetime('now'))
-  `).bind(realId, id, fileTl, fileTl).run();
-  
-  const updated = await c.env.DB.prepare(`SELECT ${tlCol} as tl FROM users WHERE id=?`).bind(realId).first<{ tl: number }>();
-  return c.json({ ok: true, id, tl_remaining: updated?.tl || 0 });
+
+  const id='sh_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
+  const fileTl=isFreeMp3?0:Number(body.file_tl||5000);
+  await c.env.DB.prepare(`INSERT INTO tl_shares
+    (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,
+     spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,
+     composer,lyricist,lyrics,release_mode,storage_mode,origin_hash,release_check)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?)`).bind(
+      id,String(userId),userRow.username||'User',String(body.title),String(body.artist||''),String(body.album||''),
+      Number(body.duration||0),fileTl,String(body.category||'Music'),String(body.file_type||''),String(body.category_type||''),
+      String(body.description||''),String(body.plan||'A'),body.spotify_id||null,body.spotify_url||null,body.cover_url||null,
+      body.preview_url||null,String(body.stream_url||''),String(body.country||'KR'),String(body.content_lang||'ko'),Date.now(),
+      Number(body.price_per_sec||1),String(body.composer||''),String(body.lyricist||''),String(body.lyrics||''),
+      String(body.release_mode||''),String(body.storage_mode||''),String(body.origin_hash||''),String(body.release_check||'')
+    ).run();
+
+  await c.env.DB.prepare('INSERT OR IGNORE INTO tl_user_files (user_id,share_id,tl_balance,total_charged,created_at) VALUES (?,?,?,?,datetime(\'now\'))')
+    .bind(userId,id,fileTl,fileTl).run().catch(()=>{});
+  await c.env.DB.prepare('UPDATE tl_shares SET content_kind=? WHERE id=?').bind(isFreeMp3?'mp3':'tl3',id).run().catch(()=>{});
+  return c.json({ok:true,id,tl_remaining:currentTL-(isFreeMp3?0:5000)});
 });
 
 // ── MP3/TL3 분류: 서버 단일 기준 (프론트는 content_kind만 신뢰) ──
@@ -763,9 +821,8 @@ function shareKind(r:any):'mp3'|'tl3'{
   const su=String(r?.stream_url||'').toLowerCase();
   if(rm.startsWith('free_mp3')||ck==='mp3'||ft==='audio/mp3') return 'mp3';
   if(rm==='tl3'||ck==='tl3'||ft==='audio/tl3'||/\.(tl3|tl4|tlg|tlf)(\?|$)/.test(su)) return 'tl3';
-  // 영상/이미지/문서는 TL 콘텐츠, 표시 없는 오디오(옛 곡)는 무료 MP3
-  if(ft.startsWith('video/')||ft.startsWith('image/')||ft.includes('pdf')||ft.includes('document')) return 'tl3';
-  return 'mp3';
+  // 표시 없는 옛 곡: TL 가격(file_tl)이 붙어 있으면 TL 콘텐츠, 없으면 무료
+  return Number(r?.file_tl||0)>0 ? 'tl3' : 'mp3';
 }
 
 async function ensureShareTLBalances(db: D1Database){
@@ -797,7 +854,7 @@ app.get('/api/shares/:id/my-tl', async (c) => {
   const shareId=c.req.param('id');
   try{
     await ensureShareTLBalances(c.env.DB);
-    const share=await c.env.DB.prepare('SELECT id,file_tl,file_type,release_mode FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
     if(!share) return c.json({error:'파일 없음'},404);
     let row=await c.env.DB.prepare('SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?')
       .bind(userId,shareId).first<any>();
