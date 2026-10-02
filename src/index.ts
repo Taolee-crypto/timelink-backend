@@ -1313,7 +1313,18 @@ if(share.storage_object_id){
     return new Response(r.body,{status:r.status,headers:h});
   }catch(e:any){return new Response(JSON.stringify({error:e.message}),{status:502,headers:cors});}
 }
-const su=String(share.stream_url||'');let key='';if(su.includes('/api/storage/'))key=decodeURIComponent(su.split('/api/storage/')[1].split('?')[0]);else if(su.startsWith('tracks/')||su.startsWith('tl/'))key=su;else if(su.startsWith('http')){const fn=su.split('/').pop()?.split('?')[0]||'';key=fn.endsWith('.tl')?'tl/'+fn:'tracks/'+fn;}else key=su;if(!key)return new Response(JSON.stringify({error:'스트림 없음'}),{status:404,headers:cors});const meta=await getD1ObjectMeta(c.env.DB,key);if(!meta)return new Response(JSON.stringify({error:'D1 파일 없음'}),{status:404,headers:cors});const rh=c.req.header('Range')||'';let start=0,end=meta.size-1,status=200;if(rh){const m=rh.match(/bytes=(\\d+)-(\\d*)/);if(!m)return new Response('Invalid Range',{status:416,headers:cors});start=Number(m[1]);end=m[2]!==''?Math.min(Number(m[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;}const bytes=await readD1Range(c.env.DB,key,start,end-start+1),h:any={...cors,'Content-Type':meta.content_type||'audio/mpeg','Content-Length':String(bytes.byteLength),'Cache-Control':'no-store'};if(status===206)h['Content-Range']=`bytes ${start}-${end}/${meta.size}`;return new Response(bytes,{status,headers:h});}catch(e:any){return new Response(JSON.stringify({error:e.message}),{status:500,headers:cors});}});
+const su=String(share.stream_url||'');
+// creator_pc 파일은 공개 Cloudflare Tunnel URL을 통해 창작자 PC에서 직접 스트리밍한다.
+if(/^https?:\\/\\//i.test(su) && !su.includes('/api/storage/')){
+  try{
+    const headers:any={};
+    const range=c.req.header('Range'); if(range) headers.Range=range;
+    const upstream=await fetch(su,{headers,redirect:'follow'});
+    const h=new Headers(upstream.headers); h.set('Access-Control-Allow-Origin','*'); h.set('Access-Control-Allow-Methods','GET, HEAD, OPTIONS'); h.set('Access-Control-Allow-Headers','Range, Content-Type, Authorization'); h.set('Access-Control-Expose-Headers','Content-Range, Accept-Ranges, Content-Length, X-TL-Balance'); h.set('Accept-Ranges','bytes');
+    return new Response(upstream.body,{status:upstream.status,headers:h});
+  }catch(e:any){ return new Response(JSON.stringify({error:'창작자 PC 스트림에 연결할 수 없습니다.'}),{status:502,headers:cors}); }
+}
+let key='';if(su.includes('/api/storage/'))key=decodeURIComponent(su.split('/api/storage/')[1].split('?')[0]);else if(su.startsWith('tracks/')||su.startsWith('tl/'))key=su;else key=su;if(!key)return new Response(JSON.stringify({error:'스트림 없음'}),{status:404,headers:cors});const meta=await getD1ObjectMeta(c.env.DB,key);if(!meta)return new Response(JSON.stringify({error:'D1 파일 없음'}),{status:404,headers:cors});const rh=c.req.header('Range')||'';let start=0,end=meta.size-1,status=200;if(rh){const m=rh.match(/bytes=(\\d+)-(\\d*)/);if(!m)return new Response('Invalid Range',{status:416,headers:cors});start=Number(m[1]);end=m[2]!==''?Math.min(Number(m[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;}const bytes=await readD1Range(c.env.DB,key,start,end-start+1),h:any={...cors,'Content-Type':meta.content_type||'audio/mpeg','Content-Length':String(bytes.byteLength),'Cache-Control':'no-store'};if(status===206)h['Content-Range']=`bytes ${start}-${end}/${meta.size}`;return new Response(bytes,{status,headers:h});}catch(e:any){return new Response(JSON.stringify({error:e.message}),{status:500,headers:cors});}});
 // TL 차감 tick
 app.post('/api/stream/:shareId/tick', async (c) => {
   const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
