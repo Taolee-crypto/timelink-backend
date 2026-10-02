@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
-import { verifyToken, makeAccessToken, verifyPassword } from './auth';
+import { verifyToken, makeAccessToken } from './auth';
 
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
@@ -1188,17 +1188,13 @@ app.post('/api/auth/login', async (c) => {
   try {
     const { email, password } = await c.req.json();
     if (!email || !password) return c.json({ error: '이메일/비밀번호 필요' }, 400);
-    const user = await c.env.DB.prepare(
-      'SELECT id,email,username,password_hash,COALESCE(tl_balance,0) as tl,COALESCE(tlc_balance,0) as tlc FROM users WHERE email=?'
-    ).bind(email.trim()).first<any>();
-    if (!user) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
-    const valid = await verifyPassword(password, String(user.password_hash || ''));
-    if (!valid) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
-    const token = await makeAccessToken(Number(user.id), c.env.JWT_SECRET);
-    return c.json({ ok: true, access_token: token, token, token_type: 'bearer', user_id: Number(user.id),
-      user: { id:Number(user.id), email:user.email, username:user.username, tl:Number(user.tl||0), tlc:Number(user.tlc||0) } });
+    const check = await c.env.DB.prepare('SELECT id FROM users WHERE email=? AND password_hash=?').bind(email, password).first();
+    if (!check) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
+    const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
+    const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
+    return c.json({ ok: true, token, user });
   } catch (e: any) {
-    return c.json({ error: e.message || '로그인 처리 실패' }, 500);
+    return c.json({ error: e.message }, 500);
   }
 });
 
@@ -1211,7 +1207,7 @@ app.get('/api/auth/me', async (c) => {
     const userId=Number(payload?.sub||0);
     if(!userId) return c.json({ok:false,error:'인증 사용자 확인 불가'},401);
     const user=await c.env.DB.prepare(
-      'SELECT id,email,username,COALESCE(tl_balance,0) as tl,COALESCE(tlc_balance,0) as tlc FROM users WHERE id=?'
+      'SELECT id,email,username,COALESCE(tl,0) as tl,COALESCE(tlc,0) as tlc FROM users WHERE id=?'
     ).bind(userId).first<any>();
     if(!user) return c.json({ok:false,error:'유저 없음'},404);
     return c.json({ok:true,user});
@@ -1220,7 +1216,7 @@ app.get('/api/auth/me', async (c) => {
   }
 });
 
-// 이메일 중복 확인
+// // 이메일 중복 확인
 app.post('/api/auth/check-email', async (c) => {
   try {
     const { email } = await c.req.json();
