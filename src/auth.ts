@@ -69,10 +69,11 @@ export async function verifyToken(token: string, secret: string): Promise<JWTPay
     const payload: JWTPayload & { user_id?: string | number } = JSON.parse(base64urlDecode(body));
     if (!payload) return null;
 
-    // 서명 검증이 통과한 기존 토큰의 user_id 클레임도 호환한다.
-    if ((typeof payload.sub !== 'string' || !/^[0-9]+$/.test(payload.sub))
-        && payload.user_id != null
-        && /^[0-9]+$/.test(String(payload.user_id))) {
+    // 서명 검증이 통과한 기존 토큰의 숫자형 sub / user_id 클레임도 호환한다.
+    // 로그인 세션 자체를 우회하지 않고, 유효한 HMAC 서명을 가진 토큰만 정규화한다.
+    if (payload.sub != null && /^[0-9]+$/.test(String(payload.sub))) {
+      payload.sub = String(payload.sub);
+    } else if (payload.user_id != null && /^[0-9]+$/.test(String(payload.user_id))) {
       payload.sub = String(payload.user_id);
     }
     if (typeof payload.sub !== 'string' || !/^[0-9]+$/.test(payload.sub)) return null;
