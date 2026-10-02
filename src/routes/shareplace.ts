@@ -57,7 +57,24 @@ router.get('/', async (c) => {
   params.push(limit, offset);
 
   const rows = await c.env.DB.prepare(query).bind(...params).all();
-  return c.json(rows.results);
+  const legacy = (rows.results||[]) as any[];
+  let modern:any[]=[];
+  try {
+    const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE 1=1 ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
+    modern=(modernRows.results||[]).map((s:any)=>({
+      ...s,
+      id:s.id,
+      user_id:Number(s.user_id),
+      creator:s.username,
+      file_type:s.file_type||'audio/mp3',
+      stream_url:s.stream_url||'',
+      shared:1,
+      auth_status:'verified',
+      revenue_held:0,
+      content_kind:s.content_kind||'mp3'
+    }));
+  } catch(e) { console.error('tl_shares list error:',e); }
+  return c.json([...modern,...legacy]);
 });
 
 // GET /contributor-ranking
