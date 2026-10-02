@@ -66,6 +66,72 @@ async function ensureTossOrderTable(db: any) {
   `).run();
 }
 
+/* ══════════════════════════════════════════════════
+   TimeLink 내부 가상 충전
+   - 실제 금융기관/PG를 호출하지 않는다.
+   - 개발/테스트용으로 선택한 패키지를 즉시 TL로 지급한다.
+   POST /api/payment/virtual/charge
+   body: { amount }
+══════════════════════════════════════════════════ */
+payment.post('/virtual/charge', async (c) => {
+  const userId = await authUserId(c);
+  if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
+
+  try {
+    const { amount } = await c.req.json() as any;
+    const paidAmount = Number(amount);
+    const bonusMap: Record<number, number> = {
+      5000: 0,
+      10000: 500,
+      30000: 2000,
+      50000: 5000,
+      100000: 15000
+    };
+
+    if (!Number.isInteger(paidAmount) || !Object.prototype.hasOwnProperty.call(bonusMap, paidAmount)) {
+      return c.json({ error: '지원하지 않는 충전 금액입니다.' }, 400);
+    }
+
+    const bonus_tl = bonusMap[paidAmount];
+    const total_tl = paidAmount + bonus_tl;
+    const pgId = 'VIRTUAL_' + String(userId) + '_' + Date.now() + '_' +
+      crypto.randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase();
+
+    await ensurePaymentTable(c.env.DB);
+
+    const batch = await c.env.DB.batch([
+      c.env.DB.prepare(
+        'UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+?, tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?'
+      ).bind(total_tl, total_tl, total_tl, userId),
+      c.env.DB.prepare(
+        `INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
+         VALUES (?,?,?,?,?,?,?)`
+      ).bind(userId, 'virtual', pgId, pgId, paidAmount, total_tl, 'success')
+    ]);
+
+    if (Number(batch[0]?.meta?.changes || 0) !== 1) {
+      return c.json({ error: '사용자 TL 잔액 갱신에 실패했습니다.' }, 500);
+    }
+
+    const user = await c.env.DB.prepare(
+      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p FROM users WHERE id=?'
+    ).bind(userId).first() as any;
+
+    return c.json({
+      success: true,
+      mode: 'virtual',
+      paid_amount: paidAmount,
+      bonus_tl,
+      total_tl,
+      tl_granted: total_tl,
+      tl_balance: Number(user?.tl || 0),
+      tl_p: Number(user?.tl_p || 0)
+    });
+  } catch (e: any) {
+    return c.json({ error: e?.message || '가상 충전 처리 실패' }, 500);
+  }
+});
+
 payment.post('/toss/order', async (c) => {
   const userId = await authUserId(c);
   if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
