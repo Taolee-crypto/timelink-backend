@@ -1207,7 +1207,7 @@ app.get('/api/auth/me', async (c) => {
     const userId=Number(payload?.sub||0);
     if(!userId) return c.json({ok:false,error:'인증 사용자 확인 불가'},401);
     const user=await c.env.DB.prepare(
-      'SELECT id,email,username,COALESCE(tl,0) as tl,COALESCE(tlc,0) as tlc FROM users WHERE id=?'
+      'SELECT id,email,username,COALESCE(tl_balance,0) as tl,COALESCE(tlc_balance,0) as tlc FROM users WHERE id=?'
     ).bind(userId).first<any>();
     if(!user) return c.json({ok:false,error:'유저 없음'},404);
     return c.json({ok:true,user});
