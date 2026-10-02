@@ -101,8 +101,8 @@ payment.post('/virtual/charge', async (c) => {
 
     const batch = await c.env.DB.batch([
       c.env.DB.prepare(
-        'UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+?, tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?'
-      ).bind(total_tl, total_tl, total_tl, userId),
+        'UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+? WHERE id=?'
+      ).bind(total_tl, total_tl, userId),
       c.env.DB.prepare(
         `INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
          VALUES (?,?,?,?,?,?,?)`
