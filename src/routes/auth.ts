@@ -54,13 +54,13 @@ router.post('/login', async (c) => {
 
 // GET /me - 현재 로그인 토큰의 사용자 확인
 router.get('/me', async (c) => {
-  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
   if(!token) return c.json({ok:false,error:'인증 필요'},401);
   const { verifyToken } = await import('../auth');
   const payload=await verifyToken(token,c.env.JWT_SECRET);
   const userId=Number(payload?.sub||0);
   if(!userId) return c.json({ok:false,error:'인증 사용자 확인 불가'},401);
-  const user=await c.env.DB.prepare('SELECT id,email,username,COALESCE(tl,0) as tl,COALESCE(tl_p,tl,0) as tl_p,COALESCE(tl_a,0) as tl_a,COALESCE(tl_b,0) as tl_b,COALESCE(tlc_balance,tlc,0) as tlc FROM users WHERE id=?').bind(userId).first<any>();
+  const user=await c.env.DB.prepare('SELECT id,email,username,COALESCE(tl_balance,0) as tl,COALESCE(tlc_balance,0) as tlc FROM users WHERE id=?').bind(userId).first<any>();
   if(!user) return c.json({ok:false,error:'유저 없음'},404);
   return c.json({ok:true,user});
 });
