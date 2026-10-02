@@ -1188,33 +1188,21 @@ app.post('/api/auth/login', async (c) => {
   try {
     const { email, password } = await c.req.json();
     if (!email || !password) return c.json({ error: '이메일/비밀번호 필요' }, 400);
-    const check = await c.env.DB.prepare('SELECT id FROM users WHERE email=? AND password_hash=?').bind(email, password).first();
-    if (!check) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
-    const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
-    const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
-    return c.json({ ok: true, token, user });
+    const user = await c.env.DB.prepare(
+      'SELECT id,email,username,password_hash,COALESCE(tl_balance,0) as tl,COALESCE(tlc_balance,0) as tlc FROM users WHERE email=?'
+    ).bind(email.trim()).first<any>();
+    if (!user) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
+    const valid = await (await import('./auth')).verifyPassword(password, String(user.password_hash || ''));
+    if (!valid) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
+    const token = await makeAccessToken(Number(user.id), c.env.JWT_SECRET);
+    return c.json({ ok: true, access_token: token, token, token_type: 'bearer', user_id: Number(user.id),
+      user: { id:Number(user.id), email:user.email, username:user.username, tl:Number(user.tl||0), tlc:Number(user.tlc||0) } });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: e.message || '로그인 처리 실패' }, 500);
   }
 });
 
-// 현재 로그인 사용자 확인
-app.get('/api/auth/me', async (c) => {
-  try {
-    const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
-    if(!token) return c.json({ok:false,error:'인증 필요'},401);
-    const payload=await verifyToken(token,c.env.JWT_SECRET);
-    const userId=Number(payload?.sub||0);
-    if(!userId) return c.json({ok:false,error:'인증 사용자 확인 불가'},401);
-    const user=await c.env.DB.prepare(USER_SELECT + ' WHERE id=?').bind(userId).first<any>();
-    if(!user) return c.json({ok:false,error:'유저 없음'},404);
-    return c.json({ok:true,user});
-  } catch(e:any) {
-    return c.json({ok:false,error:e.message||'인증 확인 실패'},500);
-  }
-});
-
-// // 이메일 중복 확인
+// 이메일 중복 확인
 app.post('/api/auth/check-email', async (c) => {
   try {
     const { email } = await c.req.json();
@@ -1329,18 +1317,7 @@ if(share.storage_object_id){
     return new Response(r.body,{status:r.status,headers:h});
   }catch(e:any){return new Response(JSON.stringify({error:e.message}),{status:502,headers:cors});}
 }
-const su=String(share.stream_url||'');
-// creator_pc 파일은 공개 Cloudflare Tunnel URL을 통해 창작자 PC에서 직접 스트리밍한다.
-if(/^https?:\\/\\//i.test(su) && !su.includes('/api/storage/')){
-  try{
-    const headers:any={};
-    const range=c.req.header('Range'); if(range) headers.Range=range;
-    const upstream=await fetch(su,{headers,redirect:'follow'});
-    const h=new Headers(upstream.headers); h.set('Access-Control-Allow-Origin','*'); h.set('Access-Control-Allow-Methods','GET, HEAD, OPTIONS'); h.set('Access-Control-Allow-Headers','Range, Content-Type, Authorization'); h.set('Access-Control-Expose-Headers','Content-Range, Accept-Ranges, Content-Length, X-TL-Balance'); h.set('Accept-Ranges','bytes');
-    return new Response(upstream.body,{status:upstream.status,headers:h});
-  }catch(e:any){ return new Response(JSON.stringify({error:'창작자 PC 스트림에 연결할 수 없습니다.'}),{status:502,headers:cors}); }
-}
-let key='';if(su.includes('/api/storage/'))key=decodeURIComponent(su.split('/api/storage/')[1].split('?')[0]);else if(su.startsWith('tracks/')||su.startsWith('tl/'))key=su;else key=su;if(!key)return new Response(JSON.stringify({error:'스트림 없음'}),{status:404,headers:cors});const meta=await getD1ObjectMeta(c.env.DB,key);if(!meta)return new Response(JSON.stringify({error:'D1 파일 없음'}),{status:404,headers:cors});const rh=c.req.header('Range')||'';let start=0,end=meta.size-1,status=200;if(rh){const m=rh.match(/bytes=(\\d+)-(\\d*)/);if(!m)return new Response('Invalid Range',{status:416,headers:cors});start=Number(m[1]);end=m[2]!==''?Math.min(Number(m[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;}const bytes=await readD1Range(c.env.DB,key,start,end-start+1),h:any={...cors,'Content-Type':meta.content_type||'audio/mpeg','Content-Length':String(bytes.byteLength),'Cache-Control':'no-store'};if(status===206)h['Content-Range']=`bytes ${start}-${end}/${meta.size}`;return new Response(bytes,{status,headers:h});}catch(e:any){return new Response(JSON.stringify({error:e.message}),{status:500,headers:cors});}});
+const su=String(share.stream_url||'');let key='';if(su.includes('/api/storage/'))key=decodeURIComponent(su.split('/api/storage/')[1].split('?')[0]);else if(su.startsWith('tracks/')||su.startsWith('tl/'))key=su;else if(su.startsWith('http')){const fn=su.split('/').pop()?.split('?')[0]||'';key=fn.endsWith('.tl')?'tl/'+fn:'tracks/'+fn;}else key=su;if(!key)return new Response(JSON.stringify({error:'스트림 없음'}),{status:404,headers:cors});const meta=await getD1ObjectMeta(c.env.DB,key);if(!meta)return new Response(JSON.stringify({error:'D1 파일 없음'}),{status:404,headers:cors});const rh=c.req.header('Range')||'';let start=0,end=meta.size-1,status=200;if(rh){const m=rh.match(/bytes=(\\d+)-(\\d*)/);if(!m)return new Response('Invalid Range',{status:416,headers:cors});start=Number(m[1]);end=m[2]!==''?Math.min(Number(m[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;}const bytes=await readD1Range(c.env.DB,key,start,end-start+1),h:any={...cors,'Content-Type':meta.content_type||'audio/mpeg','Content-Length':String(bytes.byteLength),'Cache-Control':'no-store'};if(status===206)h['Content-Range']=`bytes ${start}-${end}/${meta.size}`;return new Response(bytes,{status,headers:h});}catch(e:any){return new Response(JSON.stringify({error:e.message}),{status:500,headers:cors});}});
 // TL 차감 tick
 app.post('/api/stream/:shareId/tick', async (c) => {
   const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
