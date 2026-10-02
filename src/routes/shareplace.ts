@@ -7,7 +7,7 @@ const router = new Hono<{ Bindings: Env }>();
 
 router.post('/', async (c) => {
   try {
-    const auth=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
+    const auth=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
     if(!auth) return c.json({ok:false,error:'인증 필요'},401);
     const payload=await verifyToken(auth,c.env.JWT_SECRET);
     const userId=Number(payload?.sub||0);
