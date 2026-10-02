@@ -1206,9 +1206,7 @@ app.get('/api/auth/me', async (c) => {
     const payload=await verifyToken(token,c.env.JWT_SECRET);
     const userId=Number(payload?.sub||0);
     if(!userId) return c.json({ok:false,error:'인증 사용자 확인 불가'},401);
-    const user=await c.env.DB.prepare(
-      'SELECT id,email,username,COALESCE(tl_balance,0) as tl,COALESCE(tlc_balance,0) as tlc FROM users WHERE id=?'
-    ).bind(userId).first<any>();
+    const user=await c.env.DB.prepare(USER_SELECT + ' WHERE id=?').bind(userId).first<any>();
     if(!user) return c.json({ok:false,error:'유저 없음'},404);
     return c.json({ok:true,user});
   } catch(e:any) {
