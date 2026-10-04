@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
-import { verifyToken, makeAccessToken } from './auth';
+import { verifyToken, makeAccessToken, hashPassword, verifyPassword } from './auth';
 
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
@@ -1296,9 +1296,10 @@ app.post('/api/auth/register', async (c) => {
     const nameExists = await c.env.DB.prepare('SELECT id FROM users WHERE username=?').bind(username).first();
     if (nameExists) return c.json({ error: '이미 사용 중인 닉네임(상호명)입니다' }, 409);
     const now = new Date().toISOString().replace('T',' ').substring(0,19);
+    const hashedPw = await hashPassword(password);
     await c.env.DB.prepare(
       'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,10000,10000,0,?,?,?,?)'
-    ).bind(email, username, password, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
+    ).bind(email, username, hashedPw, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
     const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
     const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
     return c.json({ ok: true, token, user });
@@ -1398,14 +1399,15 @@ app.post('/api/auth/login', async (c) => {
     const { email, password } = await c.req.json();
     if (!email || !password) return c.json({ error: '이메일/비밀번호 필요' }, 400);
     const user = await c.env.DB.prepare(
-      'SELECT id,email,username,password_hash,COALESCE(tl_balance,0) as tl,COALESCE(tlc_balance,0) as tlc FROM users WHERE email=?'
+      `SELECT id,email,username,password_hash,COALESCE(tl_balance,0) as tl,COALESCE(tlc_balance,0) as tlc,COALESCE(is_advertiser,0) as is_advertiser,COALESCE(biz_reg_num,'') as biz_reg_num,COALESCE(business_name,'') as business_name FROM users WHERE email=?`
     ).bind(email.trim()).first<any>();
     if (!user) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
-    const valid = await (await import('./auth')).verifyPassword(password, String(user.password_hash || ''));
+    const storedPw = String(user.password_hash || '');
+    const valid = storedPw.includes(':') ? await verifyPassword(password, storedPw) : (password === storedPw);
     if (!valid) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
     const token = await makeAccessToken(Number(user.id), c.env.JWT_SECRET);
     return c.json({ ok: true, access_token: token, token, token_type: 'bearer', user_id: Number(user.id),
-      user: { id:Number(user.id), email:user.email, username:user.username, tl:Number(user.tl||0), tlc:Number(user.tlc||0) } });
+      user: { id:Number(user.id), email:user.email, username:user.username, tl:Number(user.tl||0), tlc:Number(user.tlc||0), is_advertiser:Number(user.is_advertiser||0), biz_reg_num:user.biz_reg_num||'', business_name:user.business_name||'' } });
   } catch (e: any) {
     return c.json({ error: e.message || '로그인 처리 실패' }, 500);
   }
@@ -1445,9 +1447,10 @@ app.post('/api/auth/signup', async (c) => {
       if (new Date(row.expires_at) < new Date()) return c.json({ error: '인증 코드가 만료되었습니다' }, 400);
       await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
       const now = new Date().toISOString().replace('T',' ').substring(0,19);
+      const hashedPw2 = await hashPassword(password||'');
       await c.env.DB.prepare(
         'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,10000,10000,0,?,?,?,?)'
-      ).bind(email, username, password||'', now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
+      ).bind(email, username, hashedPw2, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
       const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
       const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
       return c.json({ ok: true, token, user });
