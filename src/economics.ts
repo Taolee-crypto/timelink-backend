@@ -443,18 +443,24 @@ eco.post('/activity', async (c) => {
       WHERE user_id=? AND mode='listen' AND created_at >= ?
     `).bind(userId, monthStart).first() as any;
 
+    // MP3와 TL3 업로드 수 분리 집계 (MP3 = 1, TL3 = 3 가중치)
     const uploadStats = await c.env.DB.prepare(`
-      SELECT COUNT(*) as upload_count
+      SELECT 
+        COALESCE(SUM(CASE WHEN content_kind='mp3' OR release_mode LIKE 'free_mp3%' THEN 1 ELSE 0 END), 0) as mp3_count,
+        COALESCE(SUM(CASE WHEN content_kind='tl3' OR release_mode='tl3' THEN 1 ELSE 0 END), 0) as tl3_count
       FROM tl_shares
       WHERE user_id=? AND created_at >= ?
-    `).bind(userId, monthStart + ' 00:00:00').first().catch(() => ({ upload_count: 0 })) as any;
+    `).bind(userId, monthStart + ' 00:00:00').first().catch(() => ({ mp3_count: 0, tl3_count: 0 })) as any;
 
     // ── POC 신 알고리즘 ──
     // 요소별 정규화 (각 최대값 기준)
     const monthlyTlP   = Number(monthlyStats?.monthly_tl_p || 0) + tl_p_spent;
     const monthlyPlays = Number(shareStats?.play_count || 0);
     const monthlyHours = (Number(monthlyStats?.total_seconds || 0) + seconds) / 3600;
-    const uploads      = Number(uploadStats?.upload_count || 0) + new_uploads;
+    // MP3 = 1점, TL3 = 3점 (가중치)
+    const mp3Count = Number(uploadStats?.mp3_count || 0);
+    const tl3Count = Number(uploadStats?.tl3_count || 0);
+    const uploads  = mp3Count * 1 + tl3Count * 3 + new_uploads;
 
     // 각 요소 점수 (0 ~ 최대값)
     const contentScore = Math.min(2.0, monthlyPlays / 500);        // 500회 = 만점

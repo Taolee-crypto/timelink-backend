@@ -3,3 +3,12 @@ dist/
 .wrangler/
 .dev.vars
 *.local
+
+# Backups
+*.backup_*
+*.backup
+
+# Local SQL/JSON backups
+reset-password.sql
+tl_*_backup.json
+tl_user_files_backup.json

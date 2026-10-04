@@ -11,6 +11,7 @@
   "description": "```bash npm install ```",
   "main": "index.js",
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "blake3-wasm": "^2.1.5",
     "cookie": "^1.1.1",
     "detect-libc": "^2.1.2",

@@ -44,7 +44,11 @@ router.post('/login', async (c) => {
     .bind(body.email).first<User>();
   if (!user) return c.json({ detail: 'Invalid credentials' }, 401);
 
-  const valid = await verifyPassword(body.password, user.password_hash);
+  const stored = String(user.password_hash || '');
+  const isHashed = stored.includes(':');
+  const valid = isHashed 
+    ? await verifyPassword(body.password, stored)
+    : (stored === body.password);
   if (!valid) return c.json({ detail: 'Invalid credentials' }, 401);
 
   const token = await makeAccessToken(user.id, c.env.JWT_SECRET);
@@ -64,5 +68,45 @@ router.get('/me', async (c) => {
   if(!user) return c.json({ok:false,error:'유저 없음'},404);
   return c.json({ok:true,user});
 });
+
+// ── POST /change-password ── 비밀번호 변경
+router.post('/change-password', async (c) => {
+  try {
+    const auth = (c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
+    if (!auth) return c.json({ error: '인증 필요' }, 401);
+    const payload = await verifyToken(auth, c.env.JWT_SECRET);
+    const userId = Number((payload as any)?.sub || 0);
+    if (!userId) return c.json({ error: '유효하지 않은 토큰' }, 401);
+
+    const body = await c.req.json<any>().catch(() => ({}));
+    const current = String(body.current_password || '').trim();
+    const next = String(body.new_password || '').trim();
+
+    if (!current || !next) return c.json({ error: '현재/새 비밀번호 필수' }, 400);
+    if (next.length < 8) return c.json({ error: '새 비밀번호는 8자 이상' }, 400);
+    if (current === next) return c.json({ error: '이전과 다른 비밀번호를 입력하세요' }, 400);
+
+    const user = await c.env.DB.prepare('SELECT id, password_hash FROM users WHERE id=?').bind(userId).first<any>();
+    if (!user) return c.json({ error: '유저 없음' }, 404);
+
+    const stored = String(user.password_hash || '');
+    const isHashed = stored.includes(':');
+    let ok = false;
+    if (isHashed) {
+      ok = await verifyPassword(current, stored);
+    } else {
+      ok = (stored === current);
+    }
+    if (!ok) return c.json({ error: '현재 비밀번호가 틀렸습니다' }, 400);
+
+    const newHash = await hashPassword(next);
+    await c.env.DB.prepare('UPDATE users SET password_hash=? WHERE id=?').bind(newHash, userId).run();
+
+    return c.json({ ok: true, message: '비밀번호가 변경되었습니다' });
+  } catch (e: any) {
+    return c.json({ error: e?.message || '비밀번호 변경 실패' }, 500);
+  }
+});
+
 
 export default router;
