@@ -8,6 +8,7 @@ import usersRouter from './routes/users';
 import filesRouter from './routes/files';
 import playbackRouter from './routes/playback';
 import shareplaceRouter from './routes/shareplace';
+import adminRouter from './routes/admin';
 import disputesRouter from './routes/disputes';
 import chartsRouter from './routes/charts';
 import paymentRouter from './payment';
@@ -17,6 +18,11 @@ import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
 import { ensureD1Storage, initD1Upload, writeD1UploadPart, completeD1Upload, putD1Object, getD1ObjectMeta, readD1Range, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE } from './d1-storage';
 import sunoVerifyRouter from './routes/suno-verify';
+import cafeRouter from './routes/cafe';
+import searchRouter from './routes/search';
+import djRouter from './routes/dj';
+import contactRouter from './routes/contact';
+import uploadPdfRouter from './routes/upload-pdf';
 import { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, finalizeUpload, registerObject, externalStream, disconnectStorage } from './storage';
 
 
@@ -163,6 +169,124 @@ app.route('/api/v1/playback', playbackRouter);
 app.route('/api/v1/shareplace', shareplaceRouter);
 // SharePlace legacy endpoint: 기존 프론트엔드가 사용하는 /api/shares 경로를 유지한다.
 app.route('/api/shares', shareplaceRouter);
+app.route('/api/admin', adminRouter);
+app.route('/api/cafe', cafeRouter);
+app.route('/api/search', searchRouter);
+app.route('/api/dj', djRouter);
+app.route('/api/contact', contactRouter);
+app.route('/api/upload-pdf', uploadPdfRouter);
+
+// ── Social / Playlist 스텁 (track.html 호환, 실제 기능은 추후 구현) ──
+app.get('/api/social/stats/:id', (c) => c.json({ likes: 0, comments: 0, views: 0, my_like: false }));
+app.post('/api/social/like/:id', (c) => c.json({ ok: true, liked: false }));
+app.delete('/api/social/like/:id', (c) => c.json({ ok: true, liked: false }));
+app.get('/api/social/follow-status/:id', (c) => c.json({ following: false }));
+app.post('/api/social/follow/:id', (c) => c.json({ ok: true, following: false }));
+app.delete('/api/social/follow/:id', (c) => c.json({ ok: true, following: false }));
+app.get('/api/social/comments/:id', async (c) => {
+  const shareId = c.req.param('id');
+  try {
+    const rows = await c.env.DB.prepare(
+      'SELECT id, user_id, username, content, created_at FROM social_comments WHERE share_id=? ORDER BY created_at DESC LIMIT 100'
+    ).bind(shareId).all();
+    return c.json({ comments: rows.results || [] });
+  } catch (e: any) {
+    return c.json({ comments: [], error: e?.message }, 500);
+  }
+});
+app.post('/api/social/comment/:id', async (c) => {
+  const userId = await shareAuthUser(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  const shareId = c.req.param('id');
+  const body = await c.req.json<any>().catch(() => ({}));
+  const content = String(body.content || '').trim().slice(0, 1000);
+  if (!content) return c.json({ error: '내용 필요' }, 400);
+  if (content.length < 10) return c.json({ error: '10자 이상 입력해주세요' }, 400);
+
+  const user = await c.env.DB.prepare('SELECT username FROM users WHERE id=?').bind(userId).first<any>();
+  const username = user?.username || ('User' + userId);
+
+  const r = await c.env.DB.prepare(
+    'INSERT INTO social_comments (share_id, user_id, username, content) VALUES (?, ?, ?, ?)'
+  ).bind(shareId, userId, username, content).run();
+
+  const fresh = await c.env.DB.prepare(
+    'SELECT id, user_id, username, content, created_at FROM social_comments WHERE id=?'
+  ).bind(r.meta?.last_row_id).first<any>();
+
+  return c.json({ ok: true, comment: fresh });
+});
+app.post('/api/social/report/comment/:id', (c) => c.json({ ok: true }));
+app.get('/api/playlist/my', (c) => c.json({ playlists: [] }));
+app.post('/api/playlist/:id/add', (c) => c.json({ ok: true }));
+app.post('/api/playlist', (c) => c.json({ ok: true, playlist: null }));
+
+// ── Unsplash 이미지 검색 (곡 커버 자동 매칭용) ──
+app.get('/api/unsplash/search', async (c) => {
+  const q = String(c.req.query('q') || '').trim();
+  if (!q) return c.json({ error: 'q 필요' }, 400);
+  const key = c.env.UNSPLASH_ACCESS_KEY;
+  if (!key) return c.json({ error: 'Unsplash 키 없음' }, 503);
+  try {
+    const r = await fetch(
+      'https://api.unsplash.com/search/photos?query=' + encodeURIComponent(q) + '&per_page=5&orientation=squarish',
+      { headers: { 'Authorization': 'Client-ID ' + key } }
+    );
+    if (!r.ok) return c.json({ error: 'Unsplash API 오류', status: r.status }, 502);
+    const d = await r.json();
+    const photos = (d.results || []).map(p => ({
+      id: p.id,
+      url: p.urls?.regular || p.urls?.small,
+      thumb: p.urls?.thumb,
+      alt: p.alt_description || '',
+      author: p.user?.name || '',
+      author_url: p.user?.links?.html || ''
+    }));
+    return c.json({ ok: true, photos });
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Unsplash 검색 실패' }, 500);
+  }
+});
+
+// ── Admin: 전체 유저 목록 (관리자만) ──
+app.get('/api/users', async (c) => {
+  const auth = (c.req.header('Authorization') || '').replace(/^Bearer\s+/, '').trim();
+  if (!auth) return c.json({ error: '인증 필요' }, 401);
+  const payload = await verifyToken(auth, c.env.JWT_SECRET).catch(() => null);
+  if (!payload) return c.json({ error: 'Invalid token' }, 401);
+  const meId = Number(payload.sub || 0);
+  if (!meId) return c.json({ error: '인증 사용자 확인 불가' }, 401);
+  const me = await c.env.DB.prepare('SELECT role FROM users WHERE id=?').bind(meId).first<any>();
+  if (!me || String(me.role || '').toLowerCase() !== 'admin') {
+    return c.json({ error: '관리자 권한 필요' }, 403);
+  }
+
+  const limit = Math.min(Number(c.req.query('limit') || 500), 2000);
+  const offset = Number(c.req.query('offset') || 0);
+  const rows = await c.env.DB.prepare(
+    'SELECT id, email, username, role, tl, tl_p, tl_a, tl_b, tl_balance, tlc, tlc_balance, poc_index, total_tl_spent, total_tl_earned, created_at FROM users ORDER BY id DESC LIMIT ? OFFSET ?'
+  ).bind(limit, offset).all();
+
+  return c.json({ ok: true, users: rows.results || [] });
+});
+
+// ── Admin: 특정 유저 조회 ──
+app.get('/api/users/:id', async (c) => {
+  const auth = (c.req.header('Authorization') || '').replace(/^Bearer\s+/, '').trim();
+  if (!auth) return c.json({ error: '인증 필요' }, 401);
+  const payload = await verifyToken(auth, c.env.JWT_SECRET).catch(() => null);
+  if (!payload) return c.json({ error: 'Invalid token' }, 401);
+  const meId = Number(payload.sub || 0);
+  const me = await c.env.DB.prepare('SELECT role FROM users WHERE id=?').bind(meId).first<any>();
+  if (!me || String(me.role || '').toLowerCase() !== 'admin') {
+    return c.json({ error: '관리자 권한 필요' }, 403);
+  }
+  const id = Number(c.req.param('id') || 0);
+  const row = await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(id).first<any>();
+  if (!row) return c.json({ error: '유저 없음' }, 404);
+  delete row.password_hash;
+  return c.json({ ok: true, user: row });
+});
 app.route('/api/v1/disputes', disputesRouter);
 app.route('/api/v1/charts', chartsRouter);
 app.route('/api/payment', paymentRouter);
@@ -181,6 +305,9 @@ const USER_SELECT = `
     COALESCE(poc_index, 1.0) as poc_index,
     COALESCE(total_tl_spent, 0) as total_tl_spent,
     COALESCE(total_tl_exchanged, 0) as total_tl_exchanged,
+    COALESCE(is_advertiser, 0) as is_advertiser,
+    COALESCE(biz_reg_num, '') as biz_reg_num,
+    COALESCE(business_name, '') as business_name,
     created_at
   FROM users
 `;
@@ -998,8 +1125,38 @@ app.post('/api/shares/:id/consume', async (c) => {
 
     const row=await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?')
       .bind(userId,shareId).first<any>();
-    const before=Number(row?.tl_balance||0);
-    if(before<seconds) return c.json({ok:false,error:'TL이 부족합니다.',required:seconds,user_tl:before,tl_balance:before},402);
+    let before=Number(row?.tl_balance||0);
+
+    // ⭐ 지갑 잔액 확인
+    const u=await c.env.DB.prepare('SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?').bind(userId).first<any>();
+    let walletP=Number(u?.tl_p||0);
+    const walletA=Number(u?.tl_a||0);
+    const walletB=Number(u?.tl_b||0);
+    let walletTotal=walletP+walletA+walletB;
+
+    // ⭐ 지갑도 부족하면 402
+    if(walletTotal<seconds) return c.json({ok:false,error:'TL이 부족합니다. 충전해주세요.',need_charge:true,required:seconds,current:before,wallet:walletTotal,user_tl:before,tl_balance:before},402);
+
+    // ⭐ 파일 tl_balance도 부족하면 지갑에서 자동 충전
+    if(before<seconds){
+      const need=seconds-before;
+      // 지갑에서 차감 (A→B→P 순)
+      let rem=need;
+      const takeA=Math.min(rem,walletA); rem-=takeA;
+      const takeB=Math.min(rem,walletB); rem-=takeB;
+      const takeP=rem;
+      const newA=walletA-takeA;
+      const newB=walletB-takeB;
+      const newP=walletP-takeP;
+      const newTotal=newP+newA+newB;
+      await c.env.DB.batch([
+        c.env.DB.prepare('UPDATE users SET tl=?, tl_p=?, tl_a=?, tl_b=? WHERE id=?').bind(newTotal,newP,newA,newB,userId),
+        c.env.DB.prepare("INSERT INTO tl_user_files (user_id,share_id,tl_balance,total_charged) VALUES (?,?,?,?) ON CONFLICT(user_id,share_id) DO UPDATE SET tl_balance=tl_user_files.tl_balance+excluded.tl_balance, total_charged=tl_user_files.total_charged+excluded.total_charged, updated_at=datetime('now')").bind(userId,shareId,need,need)
+      ]);
+      before += need;
+      walletP = newP;
+      walletTotal = newTotal;
+    }
 
     const revenue=seconds*0.7;
     const creatorId=Number(share.user_id||0);
@@ -1007,7 +1164,11 @@ app.post('/api/shares/:id/consume', async (c) => {
     const creatorCol='tl_balance';
 
     const statements=[
+      // 1) 파일 tl_balance 차감
       c.env.DB.prepare('UPDATE tl_user_files SET tl_balance=tl_balance-?,updated_at=datetime("now") WHERE user_id=? AND share_id=? AND tl_balance>=?').bind(seconds,userId,shareId,seconds),
+      // 2) ⭐ 지갑에서도 동시 차감 (tl_p → tl_a → tl_b 순으로 우선)
+      c.env.DB.prepare('UPDATE users SET tl=COALESCE(tl,0)-?, tl_p=COALESCE(tl_p,0)-?, total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND COALESCE(tl_p,0)>=?').bind(seconds,seconds,seconds,userId,seconds),
+      // 3) pulse 증가
       c.env.DB.prepare('UPDATE tl_shares SET pulse=COALESCE(pulse,0)+? WHERE id=?').bind(seconds,shareId)
     ];
     if(creator) statements.push(
@@ -1017,7 +1178,7 @@ app.post('/api/shares/:id/consume', async (c) => {
     if(Number(batch[0]?.meta?.changes||0)!==1) return c.json({ok:false,error:'TL 소비 처리에 실패했습니다.'},409);
 
     const fresh=await c.env.DB.prepare('SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?').bind(userId,shareId).first<any>();
-    return c.json({ok:true,consumed:seconds,revenue_credited:revenue,user_tl:Number(fresh?.tl_balance||0),tl_balance:Number(fresh?.tl_balance||0),total_charged:Number(fresh?.total_charged||0)});
+    const freshWallet=await c.env.DB.prepare('SELECT COALESCE(tl_p,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?').bind(userId).first<any>(); const walletNow=Number(freshWallet?.tl_p||0)+Number(freshWallet?.tl_a||0)+Number(freshWallet?.tl_b||0); return c.json({ok:true,consumed:seconds,revenue_credited:revenue,user_tl:Number(fresh?.tl_balance||0),tl_balance:Number(fresh?.tl_balance||0),total_charged:Number(fresh?.total_charged||0),wallet_tl:walletNow,tl_p:Number(freshWallet?.tl_p||0)});
   }catch(e:any){
     return c.json({ok:false,error:e?.message||'TL 소비 실패'},500);
   }
@@ -1083,6 +1244,7 @@ app.patch('/api/shares/:id', async (c) => {
     production_note:'production_note', musical_key:'musical_key',
     credits:'credits', mood_tags:'mood_tags', social_links:'social_links',
     gallery_images:'gallery_images',
+    release_mode:'release_mode', content_kind:'content_kind', stream_url:'stream_url', file_type:'file_type', file_tl:'file_tl', storage_mode:'storage_mode', origin_hash:'origin_hash',
   };
 
   const updates: string[] = [];
@@ -1131,10 +1293,12 @@ app.post('/api/auth/register', async (c) => {
     if (!email || !password || !username) return c.json({ error: '필수 항목 누락' }, 400);
     const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
     if (exists) return c.json({ error: '이미 가입된 이메일입니다' }, 409);
+    const nameExists = await c.env.DB.prepare('SELECT id FROM users WHERE username=?').bind(username).first();
+    if (nameExists) return c.json({ error: '이미 사용 중인 닉네임(상호명)입니다' }, 409);
     const now = new Date().toISOString().replace('T',' ').substring(0,19);
     await c.env.DB.prepare(
-      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at) VALUES (?,?,?,10000,10000,0,?)'
-    ).bind(email, username, password, now).run();
+      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,10000,10000,0,?,?,?,?)'
+    ).bind(email, username, password, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
     const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
     const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
     return c.json({ ok: true, token, user });
@@ -1168,6 +1332,51 @@ app.post('/api/auth/send-code', async (c) => {
 });
 
 // 이메일 인증 코드 확인
+// ── 프론트 호환 alias ──
+app.post('/api/auth/verify', async (c) => {
+  try {
+    const { email, code, password, username } = await c.req.json() as any;
+    if (!email || !code) return c.json({ error: 'email/code 필요' }, 400);
+    const row = await c.env.DB.prepare(
+      'SELECT * FROM email_verifications WHERE email=? AND code=?'
+    ).bind(email, code).first() as any;
+    if (!row) return c.json({ error: '인증 코드가 올바르지 않습니다' }, 400);
+    if (new Date(row.expires_at) < new Date()) return c.json({ error: '인증 코드가 만료되었습니다' }, 400);
+    await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
+    // 사용자 생성 (아직 없으면)
+    let user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
+    if (!user) {
+      const now = new Date().toISOString().replace('T',' ').substring(0,19);
+      await c.env.DB.prepare(
+        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at) VALUES (?,?,?,42500,42500,0,?)'
+      ).bind(email, username||email, password||'', now).run();
+      user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
+    }
+    const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
+    return c.json({ ok: true, token, user });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+app.post('/api/auth/resend', async (c) => {
+  try {
+    const { email, username } = await c.req.json() as any;
+    if (!email) return c.json({ error: 'email 필요' }, 400);
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
+    await c.env.DB.prepare(
+      'INSERT INTO email_verifications (email, code, expires_at) VALUES (?,?,?)'
+    ).bind(email, code, expiresAt).run();
+    await sendVerificationEmail(c.env, email, username||'', code);
+    return c.json({ ok: true, message: '인증 코드를 재발송했습니다' });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+
 app.post('/api/auth/verify-code', async (c) => {
   try {
     const { email, code } = await c.req.json() as any;
