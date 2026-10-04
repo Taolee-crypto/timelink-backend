@@ -282,10 +282,10 @@ ads.post('/create', async (c) => {
 
     // 사업자 확인
     const user = await c.env.DB.prepare(
-      'SELECT id, is_business, business_name, tl FROM users WHERE id=?'
+      'SELECT id, is_advertiser, business_name, tl FROM users WHERE id=?'
     ).bind(userId).first<any>();
     if (!user) return c.json({ error: '유저 없음' }, 404);
-    if (!user.is_business) return c.json({ error: '사업자 계정만 광고 등록 가능합니다' }, 403);
+    if (!user.is_advertiser) return c.json({ error: '사업자 계정만 광고 등록 가능합니다' }, 403);
 
     const body = await c.req.json<any>();
     const { title, description, ad_type, media_url, thumbnail_url,

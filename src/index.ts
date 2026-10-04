@@ -1298,8 +1298,8 @@ app.post('/api/auth/register', async (c) => {
     const now = new Date().toISOString().replace('T',' ').substring(0,19);
     const hashedPw = await hashPassword(password);
     await c.env.DB.prepare(
-      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,10000,10000,0,?,?,?,?)'
-    ).bind(email, username, hashedPw, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
+      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,?,?,0,?,?,?,?)'
+    ).bind(email, username, hashedPw, isAdvertiser?300000:42500, isAdvertiser?300000:42500, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
     const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
     const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
     return c.json({ ok: true, token, user });
@@ -1449,8 +1449,8 @@ app.post('/api/auth/signup', async (c) => {
       const now = new Date().toISOString().replace('T',' ').substring(0,19);
       const hashedPw2 = await hashPassword(password||'');
       await c.env.DB.prepare(
-        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,10000,10000,0,?,?,?,?)'
-      ).bind(email, username, hashedPw2, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
+        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,?,?,0,?,?,?,?)'
+      ).bind(email, username, hashedPw2, isAdvertiser?300000:42500, isAdvertiser?300000:42500, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
       const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
       const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
       return c.json({ ok: true, token, user });
