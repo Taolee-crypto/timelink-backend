@@ -53,4 +53,40 @@ router.post('/sql', async (c) => {
   }
 });
 
+// ── POST /api/admin/settings/:key ── 설정 저장
+router.post('/settings/:key', async (c) => {
+  const userId = await requireAdmin(c);
+  if (!userId) return c.json({ error: '관리자 권한 필요' }, 401);
+  
+  const key = c.req.param('key');
+  const body = await c.req.json<any>().catch(() => ({}));
+  const value = String(body.value || '');
+  
+  await c.env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS tl_settings (
+      key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime('now'))
+    )`
+  ).run().catch(()=>{});
+  
+  await c.env.DB.prepare(
+    `INSERT INTO tl_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`
+  ).bind(key, value).run();
+  
+  return c.json({ ok: true });
+});
+
+// ── GET /api/admin/settings/:key ── 설정 조회
+router.get('/settings/:key', async (c) => {
+  const userId = await requireAdmin(c);
+  if (!userId) return c.json({ error: '관리자 권한 필요' }, 401);
+  
+  const key = c.req.param('key');
+  const row = await c.env.DB.prepare(
+    'SELECT value FROM tl_settings WHERE key=?'
+  ).bind(key).first<any>();
+  
+  return c.json({ value: row?.value || null });
+});
+
 export default router;
