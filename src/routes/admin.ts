@@ -89,4 +89,168 @@ router.get('/settings/:key', async (c) => {
   return c.json({ value: row?.value || null });
 });
 
+// ══════════════════════════════════════════
+// DJ 관리 (Admin)
+// ══════════════════════════════════════════
+
+// ── DJ 테이블 보장 ──
+async function ensureDJTables(db: any) {
+  await db.prepare(`CREATE TABLE IF NOT EXISTS dj_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER UNIQUE NOT NULL,
+    dj_name TEXT NOT NULL,
+    bio TEXT DEFAULT '',
+    genres TEXT DEFAULT '[]',
+    mood TEXT DEFAULT '[]',
+    avatar_url TEXT DEFAULT '',
+    cover_url TEXT DEFAULT '',
+    instagram TEXT DEFAULT '',
+    youtube TEXT DEFAULT '',
+    status TEXT DEFAULT 'active',
+    total_broadcasts INTEGER DEFAULT 0,
+    total_listeners INTEGER DEFAULT 0,
+    rating REAL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`).run().catch(()=>{});
+  await db.prepare(`CREATE TABLE IF NOT EXISTS dj_cafe_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dj_id INTEGER NOT NULL,
+    cafe_channel_id TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    schedule TEXT DEFAULT '[]',
+    message TEXT DEFAULT '',
+    cafe_message TEXT DEFAULT '',
+    dj_rate REAL DEFAULT 0.3,
+    cafe_rate REAL DEFAULT 0.5,
+    revenue_share_dj REAL DEFAULT 0.5,
+    revenue_share_cafe REAL DEFAULT 0.3,
+    revenue_share_platform REAL DEFAULT 0.2,
+    started_at INTEGER,
+    ended_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`).run().catch(()=>{});
+  await db.prepare(`CREATE TABLE IF NOT EXISTS dj_broadcast_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dj_id INTEGER NOT NULL,
+    cafe_channel_id TEXT,
+    share_id TEXT,
+    listeners INTEGER DEFAULT 0,
+    seconds INTEGER DEFAULT 0,
+    tl_charged REAL DEFAULT 0,
+    revenue_dj REAL DEFAULT 0,
+    revenue_cafe REAL DEFAULT 0,
+    revenue_platform REAL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  )`).run().catch(()=>{});
+}
+
+// ── GET /api/admin/dj/list — 전체 DJ 목록 ──
+router.get('/dj/list', async (c) => {
+  const userId = await requireAdmin(c);
+  if (!userId) return c.json({ error: '관리자 권한 필요' }, 401);
+  try {
+    await ensureDJTables(c.env.DB);
+    const { results } = await c.env.DB.prepare(
+      `SELECT d.*, u.email, u.username,
+              (SELECT COUNT(*) FROM dj_cafe_links WHERE dj_id=d.id AND status='active') as active_contracts,
+              (SELECT COUNT(*) FROM dj_cafe_links WHERE dj_id=d.id AND status='pending') as pending_apps
+       FROM dj_profiles d
+       LEFT JOIN users u ON d.user_id = u.id
+       ORDER BY d.total_listeners DESC, d.rating DESC`
+    ).all();
+    return c.json({ ok: true, djs: results || [] });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message || 'DJ 목록 실패' }, 500);
+  }
+});
+
+// ── GET /api/admin/dj/stats — DJ 통계 ──
+router.get('/dj/stats', async (c) => {
+  const userId = await requireAdmin(c);
+  if (!userId) return c.json({ error: '관리자 권한 필요' }, 401);
+  try {
+    await ensureDJTables(c.env.DB);
+    const total = await c.env.DB.prepare('SELECT COUNT(*) cnt FROM dj_profiles').first<any>();
+    const active = await c.env.DB.prepare("SELECT COUNT(*) cnt FROM dj_profiles WHERE status='active'").first<any>();
+    const banned = await c.env.DB.prepare("SELECT COUNT(*) cnt FROM dj_profiles WHERE status='banned'").first<any>();
+    const pending = await c.env.DB.prepare("SELECT COUNT(*) cnt FROM dj_cafe_links WHERE status='pending'").first<any>();
+    const activeLinks = await c.env.DB.prepare("SELECT COUNT(*) cnt FROM dj_cafe_links WHERE status='active'").first<any>();
+    return c.json({
+      ok: true,
+      stats: {
+        total_djs: Number(total?.cnt || 0),
+        active_djs: Number(active?.cnt || 0),
+        banned_djs: Number(banned?.cnt || 0),
+        pending_applications: Number(pending?.cnt || 0),
+        active_links: Number(activeLinks?.cnt || 0)
+      }
+    });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message || '통계 실패' }, 500);
+  }
+});
+
+// ── GET /api/admin/dj-links — 전체 매칭 목록 ──
+router.get('/dj-links', async (c) => {
+  const userId = await requireAdmin(c);
+  if (!userId) return c.json({ error: '관리자 권한 필요' }, 401);
+  try {
+    await ensureDJTables(c.env.DB);
+    const { results } = await c.env.DB.prepare(
+      `SELECT l.*, d.dj_name, cc.name as cafe_name
+       FROM dj_cafe_links l
+       LEFT JOIN dj_profiles d ON l.dj_id = d.id
+       LEFT JOIN cafe_channels cc ON l.cafe_channel_id = cc.channel_id
+       ORDER BY l.created_at DESC LIMIT 200`
+    ).all();
+    return c.json({ ok: true, links: results || [] });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message || '매칭 목록 실패' }, 500);
+  }
+});
+
+// ── POST /api/admin/dj/:id/ban — DJ 정지 ──
+router.post('/dj/:id/ban', async (c) => {
+  const userId = await requireAdmin(c);
+  if (!userId) return c.json({ error: '관리자 권한 필요' }, 401);
+  try {
+    const id = Number(c.req.param('id'));
+    await c.env.DB.prepare("UPDATE dj_profiles SET status='banned', updated_at=? WHERE id=?")
+      .bind(Date.now(), id).run();
+    return c.json({ ok: true });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message || '정지 실패' }, 500);
+  }
+});
+
+// ── POST /api/admin/dj/:id/unban — DJ 해제 ──
+router.post('/dj/:id/unban', async (c) => {
+  const userId = await requireAdmin(c);
+  if (!userId) return c.json({ error: '관리자 권한 필요' }, 401);
+  try {
+    const id = Number(c.req.param('id'));
+    await c.env.DB.prepare("UPDATE dj_profiles SET status='active', updated_at=? WHERE id=?")
+      .bind(Date.now(), id).run();
+    return c.json({ ok: true });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message || '해제 실패' }, 500);
+  }
+});
+
+// ── POST /api/admin/dj-links/:id/force-end — 매칭 강제 종료 ──
+router.post('/dj-links/:id/force-end', async (c) => {
+  const userId = await requireAdmin(c);
+  if (!userId) return c.json({ error: '관리자 권한 필요' }, 401);
+  try {
+    const id = Number(c.req.param('id'));
+    await c.env.DB.prepare("UPDATE dj_cafe_links SET status='ended', ended_at=?, updated_at=? WHERE id=?")
+      .bind(Date.now(), Date.now(), id).run();
+    return c.json({ ok: true });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message || '종료 실패' }, 500);
+  }
+});
+
 export default router;
