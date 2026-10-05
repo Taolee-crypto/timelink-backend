@@ -194,6 +194,9 @@ router.post('/channels', async (c) => {
   const images = JSON.stringify(body.images || []);
   const playlist = JSON.stringify(body.playlist || []);
   const schedules = JSON.stringify(body.schedules || []);
+  const trial = !!body.trial;
+  const trialDays = Math.max(1, Math.min(180, Number(body.trial_days) || 90));
+  const discountCode = String(body.discount_code || '').trim().toUpperCase();
 
   if (!name) return c.json({ ok: false, error: '카페 이름은 필수입니다.' }, 400);
   if (!/^[a-z0-9_]{3,20}$/.test(channelId)) return c.json({ ok: false, error: '채널 ID는 영문 소문자/숫자/언더스코어 3~20자입니다.' }, 400);
@@ -214,17 +217,42 @@ router.post('/channels', async (c) => {
     if (feeRow?.value) channelFee = Number(feeRow.value) || 50000;
   } catch(_) {}
 
+  // ⭐ 할인 코드 검증
+  let finalFee = channelFee;
+  let appliedDiscount: any = null;
+  if (discountCode) {
+    const disc = await c.env.DB.prepare(
+      'SELECT * FROM discounts WHERE code=? AND applies_to=? AND is_active=1'
+    ).bind(discountCode, 'cafe_channel').first<any>();
+    if (disc) {
+      const nowT = Date.now();
+      const valid = (!disc.starts_at || disc.starts_at <= nowT) &&
+                    (!disc.expires_at || disc.expires_at >= nowT) &&
+                    (!disc.max_uses || disc.uses < disc.max_uses);
+      if (valid) {
+        const amt = disc.type === 'percent' ? channelFee * (disc.value / 100) : disc.value;
+        finalFee = Math.max(0, channelFee - Math.min(channelFee, amt));
+        appliedDiscount = disc;
+      }
+    }
+  }
+
+  // ⭐ trial=true → 무료 체험 (finalFee = 0)
+  if (trial) finalFee = 0;
+
   const user = await c.env.DB.prepare('SELECT tl, tl_balance FROM users WHERE id=?').bind(auth.id).first<any>();
   const bal = Number(user?.tl_balance ?? user?.tl ?? 0);
-  if (bal < channelFee) return c.json({ ok: false, error: `TL 잔액이 부족합니다. (필요: ${channelFee.toLocaleString()} TL, 보유: ${bal.toLocaleString()} TL)` }, 402);
+  if (finalFee > 0 && bal < finalFee) return c.json({ ok: false, error: `TL 잔액이 부족합니다. (필요: ${finalFee.toLocaleString()} TL, 보유: ${bal.toLocaleString()} TL)` }, 402);
 
   const now = Date.now();
-  const expiresAt = now + 30 * 24 * 60 * 60 * 1000;
+  const expiresAt = trial ? (now + trialDays * 24 * 60 * 60 * 1000) : (now + 30 * 24 * 60 * 60 * 1000);
 
   try {
-    await c.env.DB.prepare(
-      'UPDATE users SET tl = tl - ?, tl_balance = tl_balance - ? WHERE id = ?'
-    ).bind(channelFee, channelFee, auth.id).run();
+    if (finalFee > 0) {
+      await c.env.DB.prepare(
+        'UPDATE users SET tl = tl - ?, tl_balance = tl_balance - ? WHERE id = ?'
+      ).bind(finalFee, finalFee, auth.id).run();
+    }
 
     await c.env.DB.prepare(
       `INSERT INTO cafe_channels
@@ -235,12 +263,32 @@ router.post('/channels', async (c) => {
     ).bind(
       channelId, name, auth.id, country, bizNo, bizType, bizCheck.verified ? 1 : 0, bizCheck.verified ? now : 0,
       addr, addrDetail, description, images, playlist, schedules,
-      'free', 'active', expiresAt, now, now
+      trial ? 'trial' : 'free', 'active', expiresAt, now, now
     ).run();
 
-    await c.env.DB.prepare(
-      'INSERT INTO poc_logs (user_id, mode, seconds, tl_spent, poc_gained) VALUES (?, ?, 0, ?, 0)'
-    ).bind(auth.id, 'consume', channelFee).run().catch(()=>{});
+    // ⭐ 체험 구독 생성
+    if (trial) {
+      const ins = await c.env.DB.prepare(
+        "INSERT INTO cafe_subscriptions (cafe_channel_id, owner_id, plan, status, trial_started_at, trial_ends_at, amount_tl, auto_renew, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)"
+      ).bind(channelId, auth.id, 'basic', 'trialing', now, expiresAt, 0, 1, now, now).run();
+      await c.env.DB.prepare(
+        "INSERT INTO subscription_events (subscription_id, event_type, amount_tl, metadata, created_at) VALUES (?,?,?,?,?)"
+      ).bind(ins.meta?.last_row_id || 0, 'trial_started', 0, JSON.stringify({ trial_days: trialDays, source: 'channel_create' }), now).run();
+    }
+
+    // ⭐ 할인 사용 기록
+    if (appliedDiscount) {
+      await c.env.DB.prepare("UPDATE discounts SET uses = uses + 1 WHERE id=?").bind(appliedDiscount.id).run();
+      await c.env.DB.prepare(
+        "INSERT INTO discount_uses (discount_id, user_id, target_type, target_id, amount_saved, created_at) VALUES (?,?,?,?,?,?)"
+      ).bind(appliedDiscount.id, auth.id, 'cafe_channel', channelId, channelFee - finalFee, now).run();
+    }
+
+    if (finalFee > 0) {
+      await c.env.DB.prepare(
+        'INSERT INTO poc_logs (user_id, mode, seconds, tl_spent, poc_gained) VALUES (?, ?, 0, ?, 0)'
+      ).bind(auth.id, 'consume', finalFee).run().catch(()=>{});
+    }
 
     return c.json({
       ok: true,
@@ -248,7 +296,12 @@ router.post('/channels', async (c) => {
       name,
       country,
       expires_at: expiresAt,
-      fee: channelFee,
+      fee: finalFee,
+      original_fee: channelFee,
+      trial: trial,
+      trial_days: trial ? trialDays : 0,
+      discount_code: appliedDiscount ? appliedDiscount.code : null,
+      discount_saved: appliedDiscount ? (channelFee - finalFee) : 0,
       biz_verified: bizCheck.verified
     });
   } catch (e: any) {
