@@ -23,6 +23,7 @@ import searchRouter from './routes/search';
 import djRouter from './routes/dj';
 import djCafeRouter from './routes/dj-cafe';
 import cafeSubscriptionsRouter from './routes/cafe-subscriptions';
+import settingsRouter from './routes/settings';
 import contactRouter from './routes/contact';
 import uploadPdfRouter from './routes/upload-pdf';
 import { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, finalizeUpload, registerObject, externalStream, disconnectStorage } from './storage';
@@ -177,6 +178,7 @@ app.route('/api/search', searchRouter);
 app.route('/api/dj', djRouter);
 app.route('/api/dj-cafe', djCafeRouter);
 app.route('/api/cafe-subscriptions', cafeSubscriptionsRouter);
+app.route('/api/settings', settingsRouter);
 app.route('/api/contact', contactRouter);
 app.route('/api/upload-pdf', uploadPdfRouter);
 
