@@ -377,4 +377,57 @@ router.delete('/channels/:id', async (c) => {
   }
 });
 
+// ── GET /api/cafe/channels/:channelId/broadcast — 카페 방송 정보 ──
+router.get('/channels/:channelId/broadcast', async (c) => {
+  try {
+    await ensureCafeTables(c.env.DB);
+    const channelId = c.req.param('channelId');
+    const cafe = await c.env.DB.prepare(
+      'SELECT channel_id, name, owner_id, playlist, schedules, plan, status, expires_at FROM cafe_channels WHERE channel_id=?'
+    ).bind(channelId).first<any>();
+    if (!cafe) return c.json({ ok: false, error: '카페 없음' }, 404);
+
+    const { results: contracts } = await c.env.DB.prepare(
+      "SELECT l.id, l.dj_id, l.status, l.revenue_share_dj, l.revenue_share_cafe, l.revenue_share_platform, p.dj_name, p.is_live, p.live_current_track_id FROM dj_cafe_links l LEFT JOIN dj_profiles p ON p.id = l.dj_id WHERE l.cafe_channel_id=? AND l.status='active'"
+    ).bind(channelId).all();
+
+    let activeDj = null;
+    let currentTrack = null;
+    for (const ct of (contracts || [])) {
+      if (ct.is_live === 1) {
+        activeDj = { dj_id: ct.dj_id, dj_name: ct.dj_name };
+        if (ct.live_current_track_id) {
+          currentTrack = await c.env.DB.prepare(
+            'SELECT id, title, artist, album, category, duration, cover_url, stream_url, preview_url, file_tl, content_kind, release_mode FROM tl_shares WHERE id=?'
+          ).bind(ct.live_current_track_id).first<any>();
+        }
+        break;
+      }
+    }
+
+    return c.json({
+      ok: true,
+      channel: {
+        channel_id: cafe.channel_id,
+        name: cafe.name,
+        playlist: cafe.playlist ? JSON.parse(cafe.playlist) : [],
+        schedules: cafe.schedules ? JSON.parse(cafe.schedules) : [],
+        plan: cafe.plan,
+        status: cafe.status,
+        expires_at: cafe.expires_at
+      },
+      contracts: contracts || [],
+      active_dj: activeDj,
+      current_track: currentTrack ? {
+        id: currentTrack.id, title: currentTrack.title, artist: currentTrack.artist,
+        album: currentTrack.album, category: currentTrack.category, duration: currentTrack.duration,
+        cover_url: currentTrack.cover_url, stream_url: currentTrack.stream_url || currentTrack.preview_url,
+        file_tl: currentTrack.file_tl, content_kind: currentTrack.content_kind, release_mode: currentTrack.release_mode
+      } : null
+    });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message || 'broadcast 조회 실패' }, 500);
+  }
+});
+
 export default router;
