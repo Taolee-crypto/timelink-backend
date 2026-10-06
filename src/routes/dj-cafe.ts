@@ -595,8 +595,9 @@ router.get('/my-files', async (c) => {
        FROM tl_shares
        WHERE user_id = ?
          AND (
-           lower(COALESCE(content_kind,'')) = 'tl3'
+           lower(COALESCE(content_kind,'')) IN ('tl3', 'mp3')
            OR lower(COALESCE(release_mode,'')) LIKE 'tl3%'
+           OR lower(COALESCE(release_mode,'')) LIKE 'free_mp3%'
          )
        ORDER BY created_at DESC
        LIMIT 200`
