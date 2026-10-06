@@ -606,28 +606,27 @@ router.get('/my-files', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
   try {
-    // selected_file_ids 기준 (대시보드에서 선택한 tl3만)
-    const dj = await c.env.DB.prepare(
-      'SELECT selected_file_ids FROM dj_profiles WHERE user_id=?'
-    ).bind(auth.id).first<any>();
-
-    let selectedIds: string[] = [];
-    try { selectedIds = JSON.parse(dj?.selected_file_ids || '[]'); } catch(e) {}
-    if (!Array.isArray(selectedIds)) selectedIds = [];
-
-    if (selectedIds.length === 0) {
-      return c.json({ ok: true, files: [] });
-    }
-
-    const placeholders = selectedIds.map(() => '?').join(',');
-    const sql = 'SELECT id, title, artist, album, category, ' +
-      'COALESCE(duration,0) as duration, COALESCE(file_tl,0) as file_tl, ' +
-      'COALESCE(pulse,0) as pulse, COALESCE(cover_url,'''') as cover_url, ' +
-      'COALESCE(content_kind,'''') as content_kind, COALESCE(release_mode,'''') as release_mode, ' +
-      'COALESCE(stream_url,'''') as stream_url, 0 as play_count, 0 as total_revenue, created_at ' +
-      'FROM tl_shares WHERE user_id = ? AND id IN (' + placeholders + ') ' +
-      'AND lower(COALESCE(content_kind,'''')) = ''tl3'' ORDER BY created_at DESC';
-    const { results } = await c.env.DB.prepare(sql).bind(auth.id, ...selectedIds).all();
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, title, artist, album, category,
+              COALESCE(duration, 0) as duration,
+              COALESCE(file_tl, 0) as file_tl,
+              COALESCE(pulse, 0) as pulse,
+              COALESCE(cover_url, '') as cover_url,
+              COALESCE(content_kind, '') as content_kind,
+              COALESCE(release_mode, '') as release_mode,
+              COALESCE(stream_url, '') as stream_url,
+              0 as play_count,
+              0 as total_revenue,
+              created_at
+       FROM tl_shares
+       WHERE user_id = ?
+         AND (
+           lower(COALESCE(content_kind,'')) = 'tl3'
+           OR lower(COALESCE(release_mode,'')) LIKE 'tl3%'
+         )
+       ORDER BY created_at DESC
+       LIMIT 200`
+    ).bind(auth.id).all();
 
     return c.json({ ok: true, files: results || [] });
   } catch (e: any) {
