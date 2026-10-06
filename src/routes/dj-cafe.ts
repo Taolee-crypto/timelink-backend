@@ -595,9 +595,8 @@ router.get('/my-files', async (c) => {
        FROM tl_shares
        WHERE user_id = ?
          AND (
-           lower(COALESCE(content_kind,'')) IN ('tl3', 'mp3')
+           lower(COALESCE(content_kind,'')) = 'tl3'
            OR lower(COALESCE(release_mode,'')) LIKE 'tl3%'
-           OR lower(COALESCE(release_mode,'')) LIKE 'free_mp3%'
          )
        ORDER BY created_at DESC
        LIMIT 200`
@@ -638,10 +637,23 @@ router.post('/broadcast-set', async (c) => {
   const dj = await c.env.DB.prepare('SELECT id FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
   if (!dj) return c.json({ ok: false, error: 'DJ 프로필 먼저 등록' }, 400);
 
+  // tl3만 필터 (방송 원칙)
+  const inputTracks = Array.isArray(body.tracks) ? body.tracks : [];
+  const filteredTracks: string[] = [];
+  for (const tid of inputTracks) {
+    const row = await c.env.DB.prepare(
+      "SELECT id FROM tl_shares WHERE id=? AND lower(COALESCE(content_kind,''))='tl3'"
+    ).bind(String(tid)).first<any>();
+    if (row) filteredTracks.push(String(tid));
+  }
+  if (filteredTracks.length === 0) {
+    return c.json({ ok: false, error: 'TL3 곡만 방송 세트에 넣을 수 있습니다' }, 400);
+  }
+
   const setData = JSON.stringify({
     name, description,
     mood: JSON.parse(mood),
-    tracks: JSON.parse(tracks),
+    tracks: filteredTracks,
     updated_at: Date.now()
   });
 
@@ -711,12 +723,23 @@ router.post('/broadcast/start', async (c) => {
     return c.json({ ok: false, error: '방송 세트를 먼저 저장하세요' }, 400);
   }
 
+  // 첫 tl3 곡 찾기 (mp3 스킵)
+  let firstIdx = -1;
+  let firstTrack: string | null = null;
+  for (let i = 0; i < set.tracks.length; i++) {
+    const candidate = String(set.tracks[i]);
+    const row = await c.env.DB.prepare(
+      "SELECT id FROM tl_shares WHERE id=? AND lower(COALESCE(content_kind,''))='tl3'"
+    ).bind(candidate).first<any>();
+    if (row) { firstIdx = i; firstTrack = candidate; break; }
+  }
+  if (!firstTrack) return c.json({ ok: false, error: '세트에 TL3 곡이 없습니다' }, 400);
+
   const now = Date.now();
-  const firstTrack = set.tracks[0];
 
   await c.env.DB.prepare(
-    'UPDATE dj_profiles SET is_live=1, live_started_at=?, live_current_track_idx=0, live_current_track_id=?, live_current_started_at=?, updated_at=? WHERE user_id=?'
-  ).bind(now, firstTrack, now, now, auth.id).run();
+    'UPDATE dj_profiles SET is_live=1, live_started_at=?, live_current_track_idx=?, live_current_track_id=?, live_current_started_at=?, updated_at=? WHERE user_id=?'
+  ).bind(now, firstIdx, firstTrack, now, now, auth.id).run();
 
   // 세션 생성
   const result = await c.env.DB.prepare(
@@ -739,8 +762,19 @@ router.post('/broadcast/next', async (c) => {
   try { set = JSON.parse(dj.broadcast_set || 'null'); } catch(e) {}
   if (!set || !set.tracks) return c.json({ ok: false, error: '세트 없음' }, 400);
 
-  const nextIdx = (Number(dj.live_current_track_idx || 0) + 1) % set.tracks.length;
-  const nextTrack = set.tracks[nextIdx];
+  // tl3만 순회 (mp3 스킵)
+  let nextIdx = Number(dj.live_current_track_idx || 0);
+  let nextTrack: string | null = null;
+  const setLen = set.tracks.length;
+  for (let i = 0; i < setLen; i++) {
+    nextIdx = (nextIdx + 1) % setLen;
+    const candidate = String(set.tracks[nextIdx]);
+    const row = await c.env.DB.prepare(
+      "SELECT id FROM tl_shares WHERE id=? AND lower(COALESCE(content_kind,''))='tl3'"
+    ).bind(candidate).first<any>();
+    if (row) { nextTrack = candidate; break; }
+  }
+  if (!nextTrack) return c.json({ ok: false, error: '세트에 TL3 곡이 없습니다' }, 400);
   const now = Date.now();
 
   await c.env.DB.prepare(
