@@ -55,6 +55,7 @@ async function ensureDJCafeTables(db: any) {
 
   // 기존 테이블에 broadcast_set 컬럼 추가 (마이그레이션)
   await db.prepare("ALTER TABLE dj_profiles ADD COLUMN broadcast_set TEXT DEFAULT '[]'").run().catch(()=>{});
+  await db.prepare("ALTER TABLE dj_profiles ADD COLUMN selected_file_ids TEXT DEFAULT '[]'").run().catch(()=>{});
   await db.prepare(`CREATE TABLE IF NOT EXISTS dj_cafe_links (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     dj_id INTEGER NOT NULL,
@@ -574,6 +575,31 @@ router.get('/bonus-config', async (c) => {
 // ══════════════════════════════════════════
 // C-5: DJ 내 파일 (TL3)
 // ══════════════════════════════════════════
+
+// ── POST /api/dj-cafe/select-files — 대시보드에서 선택한 파일 저장 ──
+router.post('/select-files', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
+  const body = await c.req.json<any>().catch(() => ({}));
+  const fileIds = Array.isArray(body.file_ids) ? body.file_ids.map(String) : [];
+  if (fileIds.length === 0) return c.json({ ok: false, error: '파일을 선택하세요' }, 400);
+
+  await ensureDJCafeTables(c.env.DB);
+  const dj = await c.env.DB.prepare('SELECT id, selected_file_ids FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
+  if (!dj) return c.json({ ok: false, error: 'DJ 프로필 먼저 등록' }, 400);
+
+  // 기존 선택 + 새 선택 합침 (중복 제거)
+  let existing: string[] = [];
+  try { existing = JSON.parse(dj.selected_file_ids || '[]'); } catch(e) {}
+  const merged = Array.from(new Set([...existing, ...fileIds]));
+
+  const now = Date.now();
+  await c.env.DB.prepare(
+    'UPDATE dj_profiles SET selected_file_ids=?, updated_at=? WHERE user_id=?'
+  ).bind(JSON.stringify(merged), now, auth.id).run();
+
+  return c.json({ ok: true, selected_count: merged.length, message: merged.length + '곡이 선택되었습니다' });
+});
 
 // ── GET /api/dj-cafe/my-files — 내가 업로드한 TL3 파일 ──
 router.get('/my-files', async (c) => {
