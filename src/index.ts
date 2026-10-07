@@ -28,6 +28,8 @@ import cafeBroadcastRouter from './routes/cafe-broadcast';
 import contactRouter from './routes/contact';
 import uploadPdfRouter from './routes/upload-pdf';
 import { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, finalizeUpload, registerObject, externalStream, disconnectStorage } from './storage';
+import { importMasterSecret, deriveSegmentKey, encryptSegment, decryptSegment, buildAAD, packSegment } from './tl3_crypto';
+import { recordEvent } from './ledger';
 
 
 const app = new Hono<{ Bindings: Env }>();
@@ -554,19 +556,62 @@ function buildTL3V2(meta: Record<string,any>, raw: Uint8Array): {data:Uint8Array
   return {data:out,payloadOffset:7+metaBytes.length};
 }
 
+
+
+// buildTL3V3 - AES-256-GCM per segment (patent spec 3.5)
+async function buildTL3V3(
+  meta: Record<string, any>,
+  raw: Uint8Array,
+  segments: Array<{offset:number,length:number,durationMs:number}>,
+  masterSecret: string,
+  contentId: number
+): Promise<{
+  data: Uint8Array,
+  payloadOffset: number,
+  segmentRecords: Array<{offset:number,length:number,durationMs:number}>
+}> {
+  const master = await importMasterSecret(masterSecret);
+  const metaBytes = new TextEncoder().encode(JSON.stringify(meta));
+  if (metaBytes.length > 65535) throw new Error('TL3 metadata too large');
+  const headerLen = 7 + metaBytes.length;
+  const encSegs: Uint8Array[] = [];
+  const segRecords: Array<{offset:number,length:number,durationMs:number}> = [];
+  let curOffset = headerLen;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const plain = raw.subarray(seg.offset, seg.offset + seg.length);
+    const key = await deriveSegmentKey(master, contentId, '', i);
+    const aad = buildAAD(contentId, '', i, '');
+    const enc = await encryptSegment(plain, key, aad);
+    const wire = packSegment(enc);
+    encSegs.push(wire);
+    segRecords.push({ offset: curOffset, length: wire.length, durationMs: seg.durationMs });
+    curOffset += wire.length;
+  }
+  const total = headerLen + encSegs.reduce((n, b) => n + b.length, 0);
+  const out = new Uint8Array(total);
+  out[0] = 0x54; out[1] = 0x4c; out[2] = 0x4e; out[3] = 0x4b;
+  out[4] = 0x03;
+  out[5] = (metaBytes.length >> 8) & 0xff;
+  out[6] = metaBytes.length & 0xff;
+  out.set(metaBytes, 7);
+  let o = headerLen;
+  for (const b of encSegs) { out.set(b, o); o += b.length; }
+  return { data: out, payloadOffset: headerLen, segmentRecords: segRecords };
+}
 // TL3 정식 출시: 크리에이터가 가격을 직접 설정한다.
 app.post('/api/v1/tl3/releases', async (c) => {
   try {
     const body = await c.req.json<any>();
-    const fileId = Number(body.file_id || 0);
+    const shareId = String(body.share_id || body.file_id || '').trim();
     const price = Math.max(0, Math.floor(Number(body.price_tl || 0)));
-    if (!fileId || !body.title || !body.artist) return c.json({ok:false,error:'file_id, title, artist가 필요합니다.'},400);
+    if (!shareId || !body.title || !body.artist) return c.json({ok:false,error:'share_id, title, artist가 필요합니다.'},400);
     const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
     if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
     const user = await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(payload.sub).first<any>();
     if (!user) return c.json({ok:false,error:'사용자를 확인할 수 없습니다.'},401);
-    const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_files WHERE id=?').bind(fileId).first<any>();
+    const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_shares WHERE id=?').bind(shareId).first<any>();
     if (!file || Number(file.user_id)!==Number(user.id)) return c.json({ok:false,error:'본인의 음원만 TL3로 출시할 수 있습니다.'},403);
     const sourceUrl = String(file.stream_url || '');
     if (!sourceUrl) return c.json({ok:false,error:'TL3 출시용 원본 주소가 없습니다.'},400);
@@ -590,7 +635,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
       PRIMARY KEY(file_id, segment_index)
     )`).run();
 
-    const upstream = await fetch(source.toString());
+    const upstream = await fetch(sourceUrl);
     if (!upstream.ok) return c.json({ok:false,error:'원본 MP3를 가져오지 못했습니다.'},502);
     const raw = new Uint8Array(await upstream.arrayBuffer());
     if (raw.length > 100*1024*1024) return c.json({ok:false,error:'TL3 출시용 음원은 100MB 이하만 지원합니다.'},413);
@@ -598,26 +643,28 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const durationMs = segments.reduce((n,x)=>n+x.durationMs,0);
     const hashBuf = await crypto.subtle.digest('SHA-256', raw);
     const hash = Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-    const meta = {version:2,format:'TL3',file_id:fileId,title:file.title,artist:file.artist,duration_ms:durationMs,segment_count:segments.length,contentHash:hash,platform:'timelink.digital'};
-    const container = buildTL3V2(meta,raw);
-    const tl3Key = `tl3/releases/${fileId}.tl3`;
+    const meta = {version:2,format:'TL3',share_id:shareId,title:file.title,artist:file.artist,duration_ms:durationMs,segment_count:segments.length,contentHash:hash,platform:'timelink.digital'};
+    const masterSecret = String((c.env as any).TL3_MASTER_SECRET || '');
+    if (!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET not set'},500);
+    const metaV3 = {version:3,format:'TL3',aead:'AES-256-GCM',kdf:'HKDF-SHA-256',share_id:shareId,title:file.title,artist:file.artist,duration_ms:durationMs,segment_count:segments.length,contentHash:hash,platform:'timelink.digital'};
+    const container = await buildTL3V3(metaV3,raw,segments,masterSecret,shareId);
+    const tl3Key = `tl3/releases/${shareId}.tl3`;
     await putD1Object(c.env.DB,tl3Key,container.data,'application/octet-stream',`${file.title}.tl3`);
 
-    await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(fileId).run();
-    for (let i=0;i<segments.length;i++) {
-      const seg=segments[i];
-      await c.env.DB.prepare('INSERT INTO tl3_segments(file_id,segment_index,offset,length,duration_ms) VALUES(?,?,?,?,?)')
-        .bind(fileId,i,seg.offset,seg.length,seg.durationMs).run();
+    await c.env.DB.prepare('DELETE FROM tl3_segments WHERE share_id=?').bind(shareId).run();
+    for (let i=0;i<container.segmentRecords.length;i++) {
+      const seg=container.segmentRecords[i];
+      await c.env.DB.prepare('INSERT INTO tl3_segments(share_id,file_id,segment_index,offset,length,duration_ms) VALUES(?,?,?,?,?,?)')
+        .bind(shareId,0,i,seg.offset,seg.length,seg.durationMs).run();
     }
     await c.env.DB.prepare(`INSERT INTO tl3_releases
-      (file_id,user_id,title,artist,price_tl,status,tl3_key,payload_offset,duration_ms,segment_count)
-      VALUES (?,?,?,?,?,'released',?,?,?,?)
-      ON CONFLICT(file_id) DO UPDATE SET price_tl=excluded.price_tl,status='released',
+      (file_id,user_id,title,artist,price_tl,status,tl3_key,payload_offset,duration_ms,segment_count,share_id)
+      VALUES (?,?,?,?,?,'released',?,?,?,?,?)
+      ON CONFLICT(share_id) DO UPDATE SET price_tl=excluded.price_tl,status='released',
       tl3_key=excluded.tl3_key,payload_offset=excluded.payload_offset,duration_ms=excluded.duration_ms,
       segment_count=excluded.segment_count,updated_at=datetime('now')
-    `).bind(fileId,user.id,file.title,file.artist,price,tl3Key,container.payloadOffset,durationMs,segments.length).run();
-    await c.env.DB.prepare("UPDATE tl_files SET shared=1, shared_to_shareplace=1, updated_at=datetime('now') WHERE id=?").bind(fileId).run();
-    return c.json({ok:true,file_id:fileId,price_tl:price,status:'released',duration_ms:durationMs,segment_count:segments.length,tl3_key:tl3Key});
+    `).bind(0,user.id,file.title,file.artist,price,tl3Key,container.payloadOffset,durationMs,segments.length,shareId).run();
+    return c.json({ok:true,share_id:shareId,price_tl:price,status:'released',duration_ms:durationMs,segment_count:segments.length,tl3_key:tl3Key});
   } catch(e:any) { return c.json({ok:false,error:e.message||'TL3 release error'},500); }
 });
 
@@ -629,21 +676,21 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
     const u = await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
     if (!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
-    const fileId = Number(c.req.param('id') || 0);
+    const shareId = String(c.req.param('id') || '').trim();
     const segmentIndex = Math.max(0,Number(c.req.query('segment')||0));
     const sessionId = String(c.req.query('session_id')||'').slice(0,80);
-    if (!fileId || !sessionId) return c.json({ok:false,error:'재생 세션이 필요합니다.'},400);
-    const file = await c.env.DB.prepare(`SELECT f.id,f.user_id,f.revenue_held,r.status AS tl3_status,r.tl3_key,r.payload_offset,r.segment_count
-      FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
-    if (!file) return c.json({ok:false,error:'TL3 release not found'},404);
-    if (file.revenue_held) return c.json({ok:false,error:'File under dispute'},400);
+    if (!shareId || !sessionId) { console.error('[SEG400]', 'shareId=', shareId, 'sessionId=', sessionId); return c.json({ok:false,error:'재생 세션이 필요합니다.'},400); }
+    const file = await c.env.DB.prepare(`SELECT s.id AS share_id,CAST(s.user_id AS INTEGER) AS user_id,0 AS revenue_held,r.status AS tl3_status,r.tl3_key,r.payload_offset,r.segment_count
+      FROM tl_shares s JOIN tl3_releases r ON r.share_id=s.id WHERE s.id=? AND r.status='released'`).bind(shareId).first<any>();
+    if (!file) { console.error('[SEG404]', 'shareId=', shareId); return c.json({ok:false,error:'TL3 release not found'},404); }
+    if (file.revenue_held) { console.error('[SEG400 dispute]'); return c.json({ok:false,error:'File under dispute'},400); }
     if (segmentIndex >= Number(file.segment_count||0)) return c.json({ok:false,error:'재생 종료'},416);
-    const seg = await c.env.DB.prepare('SELECT offset,length,duration_ms FROM tl3_segments WHERE file_id=? AND segment_index=?')
-      .bind(fileId,segmentIndex).first<any>();
-    if (!seg) return c.json({ok:false,error:'세그먼트 없음'},404);
+    const seg = await c.env.DB.prepare('SELECT offset,length,duration_ms FROM tl3_segments WHERE share_id=? AND segment_index=?')
+      .bind(shareId,segmentIndex).first<any>();
+    if (!seg) { console.error('[SEG404 seg]', 'shareId=', shareId, 'segmentIndex=', segmentIndex); return c.json({ok:false,error:'세그먼트 없음'},404); }
 
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_stream_sessions (
-      id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,file_id INTEGER NOT NULL,next_segment INTEGER NOT NULL DEFAULT 0,
+      id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,share_id TEXT,next_segment INTEGER NOT NULL DEFAULT 0,
       last_segment_at INTEGER NOT NULL DEFAULT 0,pending_segment INTEGER, pending_cost REAL DEFAULT 0, pending_duration_ms INTEGER DEFAULT 0, pending_delivered_at INTEGER DEFAULT 0,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now'))
     )`).run();
     for (const sql of [
@@ -654,10 +701,10 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
       "ALTER TABLE tl3_stream_sessions ADD COLUMN pending_delivered_at INTEGER DEFAULT 0"
     ]) { try { await c.env.DB.prepare(sql).run(); } catch (_) {} }
     const now=Math.floor(Date.now()/1000);
-    let ss=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
+    let ss=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND share_id=?').bind(sessionId,u.id,shareId).first<any>();
     if (!ss) {
       if (segmentIndex!==0) return c.json({ok:false,error:'첫 세그먼트부터 요청해야 합니다.'},409);
-      await c.env.DB.prepare('INSERT INTO tl3_stream_sessions(id,user_id,file_id,next_segment,last_segment_at) VALUES(?,?,?,?,0)').bind(sessionId,u.id,fileId,0).run();
+      await c.env.DB.prepare('INSERT INTO tl3_stream_sessions(id,user_id,share_id,next_segment,last_segment_at) VALUES(?,?,?,?,0)').bind(sessionId,u.id,shareId,0).run();
       ss={next_segment:0,last_segment_at:0};
     }
     if (Number(ss.next_segment)!==segmentIndex) return c.json({ok:false,error:'순차 재생 세그먼트만 허용됩니다.',expected_segment:Number(ss.next_segment)},409);
@@ -680,12 +727,27 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
       .bind(cost,cost,u.id,cost).run();
     if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:cost,balance:u.tl_balance},402);
 
-    const rangeStart=Number(file.payload_offset)+Number(seg.offset);
-    const rangeEnd=rangeStart+Number(seg.length)-1;
-    const segmentBytes=await readD1Range(c.env.DB,String(file.tl3_key),rangeStart,Number(seg.length));
-    if (!segmentBytes.byteLength) {
+    const rangeStart=Number(seg.offset);  // seg.offset already includes header
+    const encBytes=await readD1Range(c.env.DB,String(file.tl3_key),rangeStart,Number(seg.length));
+    if (!encBytes.byteLength) {
       await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(cost,cost,u.id).run();
       return c.json({ok:false,error:'TL3 세그먼트를 가져올 수 없습니다.'},502);
+    }
+    // ─── v3 복호화: nonce(12) + ciphertext + tag ───
+    const masterSecret = String((c.env as any).TL3_MASTER_SECRET || '');
+    if (!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET not set'},500);
+    const master = await importMasterSecret(masterSecret);
+    // AAD/키는 암호화 시(buildTL3V3)와 동일하게 빈 sessionId 사용
+    const segKey = await deriveSegmentKey(master, shareId, '', segmentIndex);
+    const aad = buildAAD(shareId, '', segmentIndex, '');
+    const nonce = encBytes.slice(0, 12);
+    const ct = encBytes.slice(12);
+    let segmentBytes: Uint8Array;
+    try {
+      segmentBytes = await decryptSegment(ct, nonce, segKey, aad);
+    } catch(de) {
+      await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(cost,cost,u.id).run();
+      return c.json({ok:false,error:'TL3 segment decrypt failed'},400);
     }
 
     await c.env.DB.prepare('UPDATE tl3_stream_sessions SET pending_segment=?,pending_cost=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?')
@@ -699,7 +761,7 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     const fresh=await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
     headers.set('X-TL3-Remaining-TL',String(Number(fresh?.tl_balance||0)));
     return new Response(segmentBytes,{status:206,headers});
-  } catch(e:any) { return c.json({ok:false,error:e.message||'TL3 segment error'},500); }
+  } catch(e:any) { console.error('[SEG500]', e.message, e.stack); return c.json({ok:false,error:e.message||'TL3 segment error'},500); }
 });
 
 
@@ -711,14 +773,14 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     if(!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
     const u=await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
     if(!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
-    const fileId=Number(c.req.param('id')||0);
+    const shareId=String(c.req.param('id')||'').trim();
     const body=await c.req.json<any>().catch(()=>({}));
     const sessionId=String(body.session_id||'').slice(0,80);
     const reported=Number(body.played_seconds||0);
-    if(!fileId||!sessionId) return c.json({ok:false,error:'재생 세션이 필요합니다.'},400);
-    const file=await c.env.DB.prepare(`SELECT f.id,f.user_id,f.revenue_held,r.status,r.segment_count FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
+    if(!shareId||!sessionId) return c.json({ok:false,error:'재생 세션이 필요합니다.'},400);
+    const file=await c.env.DB.prepare(`SELECT s.id AS share_id,CAST(s.user_id AS INTEGER) AS user_id,0 AS revenue_held,r.status,r.segment_count FROM tl_shares s JOIN tl3_releases r ON r.share_id=s.id WHERE s.id=? AND r.status='released'`).bind(shareId).first<any>();
     if(!file||file.revenue_held) return c.json({ok:false,error:'TL3 release not available'},404);
-    const ss=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
+    const ss=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND share_id=?').bind(sessionId,u.id,shareId).first<any>();
     if(!ss||ss.pending_segment===null||ss.pending_segment===undefined) return c.json({ok:false,error:'대기 중인 세그먼트가 없습니다.'},409);
     const now=Math.floor(Date.now()/1000);
     const duration=Number(ss.pending_duration_ms||0)/1000;
@@ -728,18 +790,50 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     const refund=Number(Math.max(0,reserved-played).toFixed(3));
     const revenue=Number((played*0.7).toFixed(3));
     await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(refund,refund,u.id).run();
+
+  // ledger: refund event
+  if (refund > 0) {
+    await recordEvent(c.env.DB, {
+      idempotency: 'refund:' + sessionId + ':' + ss.pending_segment,
+      userId: u.id,
+      counterparty: null,
+      eventType: 'refund',
+      amount: +refund,
+      sessionId: sessionId,
+      segmentIndex: Number(ss.pending_segment),
+      fileId: 0,
+      refTable: 'tl3_stream_sessions',
+      refId: sessionId,
+      meta: { reserved: reserved, played: played, reason: 'partial_refund' }
+    });
+  }
     await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime(\'now\') WHERE id=?').bind(sessionId).run();
     const creator=await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
     if(creator&&revenue>0){
       await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,creator.id).run();
       await c.env.DB.prepare(`INSERT INTO transactions(user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES (?,?,'earn',?,?,?,?)`)
-        .bind(creator.id,fileId,revenue,Number(creator.tl_balance||0)+revenue,u.id,`TL3 실제 ${played.toFixed(3)}초 정산`).run();
+        .bind(creator.id,0,revenue,Number(creator.tl_balance||0)+revenue,u.id,`TL3 실제 ${played.toFixed(3)}초 정산`).run();
+
+    // ledger: revenue event
+    await recordEvent(c.env.DB, {
+      idempotency: 'revenue:' + sessionId + ':' + ss.pending_segment,
+      userId: creator.id,
+      counterparty: u.id,
+      eventType: 'revenue',
+      amount: +revenue,
+      sessionId: sessionId,
+      segmentIndex: Number(ss.pending_segment),
+      fileId: 0,
+      refTable: 'transactions',
+      refId: sessionId + ':' + ss.pending_segment,
+      meta: { played_seconds: played, rate: 0.7 }
+    });
     }
     await c.env.DB.prepare(`INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)`)
-      .bind(fileId,u.id,played,revenue,null,Math.round(played),0).run();
+      .bind(0,u.id,played,revenue,null,Math.round(played),0).run();
     const fresh=await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
     return c.json({ok:true,segment:Number(ss.pending_segment),reserved,played_seconds:played,refund,settled_tl:played,creator_revenue:revenue,remaining_tl:Number(fresh?.tl_balance||0)});
-  } catch(e:any){ return c.json({ok:false,error:e.message||'TL3 confirm error'},500); }
+  } catch(e:any){ console.error('[CONFIRM500]', e.message, e.stack); return c.json({ok:false,error:e.message||'TL3 confirm error'},500); }
 });
 // Spotify 검색
 let _spToken: string | null = null;

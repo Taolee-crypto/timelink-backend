@@ -12,3 +12,15 @@ dist/
 reset-password.sql
 tl_*_backup.json
 tl_user_files_backup.json
+
+# TimeLink backups/patches
+patch-*.ps1
+patch_*.py
+src/*.bak*
+src/*.prepatch-*
+src/*.preswap-*
+src/*.prepatch2-*
+src/*.prepatch3-*
+src/routes/*.bak*
+seg0*.mp3
+*.mp3
