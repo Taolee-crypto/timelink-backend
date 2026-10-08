@@ -19,3 +19,18 @@ tl_user_files_backup.json
 *.backup*
 *.prepatch*
 *.preswap*
+
+# 임시 파일 (2026-10-09)
+*.py
+*.broken-*
+.dryrun/
+seg0.mp3
+seg0_headers.txt
+body.json
+test.wav
+tl_shares_backup.json
+tl_user_files_backup.json
+TON_*_BACKUP.json
+*.bak-*
+src/*.bak-*
+src/*.broken-*
