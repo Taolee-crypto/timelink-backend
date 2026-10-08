@@ -12,3 +12,10 @@ dist/
 reset-password.sql
 tl_*_backup.json
 tl_user_files_backup.json
+
+# 백업 파일
+*.bak-*
+*.bak
+*.backup*
+*.prepatch*
+*.preswap*
