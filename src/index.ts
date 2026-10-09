@@ -804,29 +804,32 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       await c.env.DB.prepare('INSERT INTO tl3_stream_sessions(id,user_id,file_id,share_id,next_segment,last_segment_at) VALUES(?,?,?,?,0,0)').bind(sessionId,u.id,fileId,`tl3_${fileId}`).run();
       ss = {next_segment:0,last_segment_at:0,pending_segment:null};
     }
-    if (Number(ss.next_segment) !== segmentIndex) return c.json({ok:false,error:'순차 재생 위반',expected_segment:Number(ss.next_segment)},409);
+    const ns = Number(ss.next_segment);
+    if (segmentIndex < ns || segmentIndex > ns + 2) return c.json({ok:false,error:'순차 재생 위반',expected_segment:ns},409);
     if (ss.pending_segment !== null && ss.pending_segment !== undefined) {
       const pendingAge = now - Number(ss.pending_delivered_at||now);
       const pendingDuration = Number(ss.pending_duration_ms||0)/1000;
-      if (pendingAge > pendingDuration + 10) {
+      if (Number(ss.pending_segment) === segmentIndex) {
+        // 같은 세그먼트 재요청 → 이미 차감됨, 통과
+      } else if (pendingAge > pendingDuration + 10) {
         const pendingCost = Number(ss.pending_cost||0);
         await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(pendingCost,pendingCost,u.id).run();
         await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime(\'now\') WHERE id=?').bind(sessionId).run();
         ss.next_segment = Number(ss.pending_segment)+1;
         ss.pending_segment = null;
-      } else {
-        return c.json({ok:false,error:'이전 세그먼트 정산이 필요합니다.',pending_segment:Number(ss.pending_segment)},409);
       }
+      // 10초 안 지났고 다른 세그먼트여도 → 프리버퍼 허용
     }
-    if (Number(ss.last_segment_at) && now - Number(ss.last_segment_at) < 4) {
-      return c.json({ok:false,error:'rate limit',retry_after:4-(now-Number(ss.last_segment_at))},429);
+    if (Number(ss.last_segment_at) && now - Number(ss.last_segment_at) < 1) {
+      return c.json({ok:false,error:'rate limit',retry_after:1-(now-Number(ss.last_segment_at))},429);
     }
     const cost = Number((Number(seg.duration_ms)/1000).toFixed(3));
     const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-?,total_tl_spent=total_tl_spent+? WHERE id=? AND tl_balance>=?').bind(cost,cost,u.id,cost).run();
     if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:cost,balance:u.tl_balance},402);
     const shareIdKey = `tl3_${fileId}`;
     const licN = await deriveLicenseBytes(c.env.TL3_MASTER_SECRET, shareIdKey);
-    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET pending_segment=?,pending_cost=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(segmentIndex,cost,Number(seg.duration_ms),now,now,sessionId).run();
+    const nextNs = Math.max(Number(ss.next_segment||0), segmentIndex + 1);
+    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(nextNs,segmentIndex,cost,Number(seg.duration_ms),now,now,sessionId).run();
     const fresh = await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
     return c.json({ok:true, lic_n: hex(licN), segment: segmentIndex, cost: cost, remaining_tl: Number(fresh?.tl_balance||0)});
   } catch(e:any) { return c.json({ok:false,error:e.message||'code error'},500); }
@@ -863,7 +866,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     const refund=Number(Math.max(0,reserved-played).toFixed(3));
     const revenue=Number((played*0.7).toFixed(3));
     await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(refund,refund,u.id).run();
-    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime(\'now\') WHERE id=?').bind(sessionId).run();
+    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=CASE WHEN next_segment > pending_segment+1 THEN next_segment ELSE pending_segment+1 END,pending_segment=NULL,pending_cost=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime(\'now\') WHERE id=?').bind(sessionId).run();
     const creator=await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
     if(creator&&revenue>0){
       await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,creator.id).run();
