@@ -840,7 +840,13 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     if(!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
     const u=await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
     if(!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
-    const fileId=Number(c.req.param('id')||0);
+    let fileId=Number(c.req.param('id')||0);
+    const rawId=String(c.req.param('id')||'');
+    if(!fileId||isNaN(fileId)||String(fileId)!==rawId){
+      const shareRow=await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released'").bind(rawId).first<any>();
+      if(!shareRow) return c.json({ok:false,error:'fileId/shareId 필요'},400);
+      fileId=Number(shareRow.file_id);
+    }
     const body=await c.req.json<any>().catch(()=>({}));
     const sessionId=String(body.session_id||'').slice(0,80);
     const reported=Number(body.played_seconds||0);
@@ -864,11 +870,17 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
       await c.env.DB.prepare(`INSERT INTO transactions(user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES (?,?,'earn',?,?,?,?)`)
         .bind(creator.id,fileId,revenue,Number(creator.tl_balance||0)+revenue,u.id,`TL3 실제 ${played.toFixed(3)}초 정산`).run();
     }
-    await c.env.DB.prepare(`INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)`)
+    await c.env.DB.prepare(`INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,?)`)
       .bind(fileId,u.id,played,revenue,null,Math.round(played),0).run();
     const fresh=await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
     return c.json({ok:true,segment:Number(ss.pending_segment),reserved,played_seconds:played,refund,settled_tl:played,creator_revenue:revenue,remaining_tl:Number(fresh?.tl_balance||0)});
-  } catch(e:any){ return c.json({ok:false,error:e.message||'TL3 confirm error'},500); }
+  } catch(e:any){
+  try {
+    await c.env.DB.prepare('INSERT INTO tl3_debug_logs(route,error,stack,created_at) VALUES(?,?,?,?)')
+      .bind('confirm', String(e.message||''), String(e.stack||'').slice(0,2000), new Date().toISOString()).run();
+  } catch(ee){}
+  return c.json({ok:false,error:e.message||'TL3 confirm error'},500);
+}
 });
 // Spotify 검색
 let _spToken: string | null = null;
