@@ -885,6 +885,115 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
   return c.json({ok:false,error:e.message||'TL3 confirm error'},500);
 }
 });
+// ═══════════════════════════════════════════════════════════════
+// TL3 오프라인 재생 라우트 (2026-10-09)
+// ═══════════════════════════════════════════════════════════════
+
+// POST /api/v1/tl3/offline/start — 오프라인 세션 시작 (선차감)
+app.post('/api/v1/tl3/offline/start', async (c) => {
+  try {
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
+    if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const u = await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
+    if (!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
+
+    const body = await c.req.json<any>().catch(()=>({}));
+    const shareIdRaw = String(body.share_id || '').trim();
+    const totalSegments = Math.max(1, Math.min(7200, Number(body.segments || 0)));
+    if (!shareIdRaw) return c.json({ok:false,error:'share_id 필요'},400);
+
+    let fileId = Number(shareIdRaw);
+    if (!fileId || String(fileId) !== shareIdRaw) {
+      const row = await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released'").bind(shareIdRaw).first<any>();
+      if (!row) return c.json({ok:false,error:'TL3 release not found'},404);
+      fileId = Number(row.file_id);
+    }
+
+    const file = await c.env.DB.prepare("SELECT r.segment_count,r.status FROM tl3_releases r WHERE r.file_id=? AND r.status='released'").bind(fileId).first<any>();
+    if (!file) return c.json({ok:false,error:'TL3 release not found'},404);
+    const segCount = Number(file.segment_count || 0);
+    const n = Math.min(totalSegments, segCount);
+    if (n <= 0) return c.json({ok:false,error:'세그먼트 수 오류'},400);
+
+    const segs = await c.env.DB.prepare('SELECT duration_ms FROM tl3_segments WHERE file_id=? ORDER BY segment_index ASC LIMIT ?').bind(fileId, n).all<any>();
+    const totalMs = (segs.results || []).reduce((s:number, r:any) => s + Number(r.duration_ms || 0), 0);
+    const reserveTl = Number((totalMs / 1000).toFixed(3));
+    if (reserveTl <= 0) return c.json({ok:false,error:'세그먼트 길이 오류'},400);
+
+    const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-?,total_tl_spent=total_tl_spent+? WHERE id=? AND tl_balance>=?').bind(reserveTl,reserveTl,u.id,reserveTl).run();
+    if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:reserveTl,balance:u.tl_balance},402);
+
+    const sid = 'off_' + crypto.randomUUID().replace(/-/g,'');
+    const deviceHint = String(body.device_hint || '').slice(0,32);
+    const expiresAt = new Date(Date.now() + 7*24*3600*1000).toISOString();
+    await c.env.DB.prepare(
+      `INSERT INTO tl3_offline_sessions(id,user_id,file_id,share_id,total_segments,reserved_tl,status,device_hint,expires_at)
+       VALUES(?,?,?,?,?,?,'active',?,?)`
+    ).bind(sid,u.id,fileId,shareIdRaw,n,reserveTl,deviceHint,expiresAt).run();
+
+    return c.json({ok:true, offline_session_id:sid, total_segments:n, reserved_tl:reserveTl, expires_at:expiresAt, remaining_tl:Number(u.tl_balance)-reserveTl});
+  } catch(e:any) { return c.json({ok:false,error:e.message||'offline start error'},500); }
+});
+
+// GET /api/v1/tl3/offline/lic/:session_id — lic 반환 (세션당 1회)
+app.get('/api/v1/tl3/offline/lic/:session_id', async (c) => {
+  try {
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
+    if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const u = await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
+    if (!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
+
+    const sid = String(c.req.param('session_id') || '');
+    const ss = await c.env.DB.prepare('SELECT * FROM tl3_offline_sessions WHERE id=? AND user_id=?').bind(sid,u.id).first<any>();
+    if (!ss) return c.json({ok:false,error:'세션을 찾을 수 없습니다.'},404);
+    if (ss.status !== 'active') return c.json({ok:false,error:'활성 세션이 아닙니다.',status:ss.status},409);
+    if (Number(ss.lic_delivered) === 1) return c.json({ok:false,error:'이미 lic이 전달된 세션입니다.'},409);
+    if (new Date(ss.expires_at).getTime() < Date.now()) return c.json({ok:false,error:'세션이 만료되었습니다.'},410);
+
+    const lic = await deriveLicenseBytes(c.env.TL3_MASTER_SECRET, ss.share_id);
+    await c.env.DB.prepare("UPDATE tl3_offline_sessions SET lic_delivered=1,updated_at=datetime('now') WHERE id=?").bind(sid).run();
+    return c.json({ok:true, lic:hex(lic), share_id:ss.share_id, total_segments:Number(ss.total_segments)});
+  } catch(e:any) { return c.json({ok:false,error:e.message||'offline lic error'},500); }
+});
+
+// POST /api/v1/tl3/offline/settle — 오프라인 재생 로그 정산 (미재생분 환급)
+app.post('/api/v1/tl3/offline/settle', async (c) => {
+  try {
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
+    if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const u = await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
+    if (!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
+
+    const body = await c.req.json<any>().catch(()=>({}));
+    const sid = String(body.offline_session_id || '');
+    const playedLog = Array.isArray(body.played_log) ? body.played_log : [];
+    if (!sid) return c.json({ok:false,error:'offline_session_id 필요'},400);
+
+    const ss = await c.env.DB.prepare('SELECT * FROM tl3_offline_sessions WHERE id=? AND user_id=?').bind(sid,u.id).first<any>();
+    if (!ss) return c.json({ok:false,error:'세션을 찾을 수 없습니다.'},404);
+    if (ss.status === 'settled') return c.json({ok:true, already_settled:true, refund:0, remaining_tl:Number(u.tl_balance)});
+
+    let playedSec = 0;
+    for (const entry of playedLog) {
+      const s = Number(entry && entry.played_seconds || 0);
+      if (s > 0) playedSec += s;
+    }
+    const reserved = Number(ss.reserved_tl || 0);
+    const used = Math.min(reserved, Number(playedSec.toFixed(3)));
+    const refund = Number(Math.max(0, reserved - used).toFixed(3));
+
+    if (refund > 0) {
+      await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(refund,refund,u.id).run();
+    }
+    await c.env.DB.prepare("UPDATE tl3_offline_sessions SET status='settled',settled_tl=?,refunded_tl=?,settled_at=datetime('now'),updated_at=datetime('now') WHERE id=?").bind(used,refund,sid).run();
+
+    const fresh = await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
+    return c.json({ok:true, played_seconds:Number(playedSec.toFixed(3)), used_tl:used, refund, remaining_tl:Number(fresh?.tl_balance||0)});
+  } catch(e:any) { return c.json({ok:false,error:e.message||'offline settle error'},500); }
+});
 // Spotify 검색
 let _spToken: string | null = null;
 let _spExp = 0;
