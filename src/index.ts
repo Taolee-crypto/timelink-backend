@@ -1833,7 +1833,22 @@ app.options('/api/stream/:shareId', async (c) => new Response(null, {
   },
 }));
 
-app.get('/api/stream/:shareId',async(c)=>{const token=(c.req.header('Authorization')||'').replace('Bearer ','')||c.req.query('tk')||'',userId=parseTokenUserId(token),shareId=c.req.param('shareId'),cors:any={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance','Accept-Ranges':'bytes'};try{const share=await c.env.DB.prepare('SELECT id,stream_url,storage_object_id,storage_provider FROM tl_shares WHERE id=?').bind(shareId).first() as any;if(!share)return new Response(JSON.stringify({error:'파일 없음'}),{status:404,headers:cors});
+app.get('/api/stream/:shareId',async(c)=>{const token=(c.req.header('Authorization')||'').replace('Bearer ','')||c.req.query('tk')||'',userId=parseTokenUserId(token),shareId=c.req.param('shareId'),cors:any={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance','Accept-Ranges':'bytes'};try{await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_object_id INTEGER").run().catch(()=>{});
+await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_provider TEXT DEFAULT ''").run().catch(()=>{});
+const share=await c.env.DB.prepare('SELECT id,stream_url,storage_object_id,storage_provider FROM tl_shares WHERE id=?').bind(shareId).first() as any;if(!share)return new Response(JSON.stringify({error:'파일 없음'}),{status:404,headers:cors});
+const _su0=String(share.stream_url||'');
+if(/^https?:\/\//i.test(_su0)&&!_su0.includes('/api/storage/')){
+  try{
+    const _uh:Record<string,string>={}; const _rg=c.req.header('Range')||''; if(_rg)_uh['Range']=_rg;
+    const _up=await fetch(_su0,{headers:_uh});
+    const _h=new Headers(); _h.set('Access-Control-Allow-Origin','*'); _h.set('Access-Control-Expose-Headers','Content-Range, Accept-Ranges, Content-Length');
+    _h.set('Accept-Ranges',_up.headers.get('Accept-Ranges')||'bytes');
+    _h.set('Content-Type',_up.headers.get('Content-Type')||'audio/mpeg');
+    const _cl=_up.headers.get('Content-Length'); if(_cl)_h.set('Content-Length',_cl);
+    const _cr=_up.headers.get('Content-Range'); if(_cr)_h.set('Content-Range',_cr);
+    return new Response(_up.body,{status:_up.status,headers:_h});
+  }catch(e:any){return new Response(JSON.stringify({error:'외부 스트림 실패: '+(e?.message||e)}),{status:502,headers:cors});}
+}
 if(share.storage_object_id){
   try{
     const r=await externalStream(c.env.DB,c.env,Number(share.storage_object_id),c.req.header('Range')||'');
