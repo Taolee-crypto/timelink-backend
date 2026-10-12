@@ -10,6 +10,7 @@ export interface Env {
   ONEDRIVE_CLIENT_SECRET?: string;
   ONEDRIVE_REDIRECT_URI?: string;
   STORAGE_ENCRYPTION_KEY?: string;
+  TLD_SERVER_URL?: string;  // TimeLink TLD server (default: https://score.timelink.digital)
 }
 
 export interface JWTPayload {
