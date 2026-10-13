@@ -515,6 +515,28 @@ eco.post('/activity', async (c) => {
 });
 
 /* ══════════════════════════════════════════════════════
+   GET /api/eco/mining-history
+   로그인 사용자의 TLC 채굴 이력 (대시보드 읽기 전용)
+══════════════════════════════════════════════════════ */
+eco.get('/mining-history', async (c) => {
+  const userId = authId(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  try {
+    await migrateDB(c.env.DB);
+    const result = await c.env.DB.prepare(`
+      SELECT tl_p_base, poc_index, plan, multiplier, tlc_mined, created_at
+      FROM tlc_mining_v2
+      WHERE user_id=?
+      ORDER BY created_at DESC
+      LIMIT 20
+    `).bind(userId).all();
+    return c.json({ ok: true, history: result.results || [] });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+/* ══════════════════════════════════════════════════════
    POST /api/eco/mine-tlc
    TLC 채굴 확정 (하루 1회, 하드캡 적용)
 ══════════════════════════════════════════════════════ */
