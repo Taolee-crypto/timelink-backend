@@ -51,9 +51,18 @@ router.get('/my', async (c) => {
 
 // GET /:id
 router.get('/:id', async (c) => {
+  const u = c.get('user');
   const file = await c.env.DB.prepare('SELECT * FROM tl_files WHERE id = ?')
     .bind(c.req.param('id')).first<TLFile>();
   if (!file) return c.json({ detail: 'Not found' }, 404);
+
+  // Private file details (including source URL and internal fields) are owner/admin only.
+  const role = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?')
+    .bind(u.id).first<{ role: string }>();
+  const isAdmin = String(role?.role || '').toLowerCase() === 'admin';
+  if (Number(file.user_id) !== Number(u.id) && !isAdmin) {
+    return c.json({ detail: 'Not found' }, 404);
+  }
   return c.json(file);
 });
 
@@ -73,6 +82,13 @@ router.patch('/:id/share', async (c) => {
 
 // POST /:id/approve (admin)
 router.post('/:id/approve', async (c) => {
+  const u = c.get('user');
+  const role = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?')
+    .bind(u.id).first<{ role: string }>();
+  if (String(role?.role || '').toLowerCase() !== 'admin') {
+    return c.json({ detail: 'Administrator role required' }, 403);
+  }
+
   const body = await c.req.json<{ approved: boolean; note?: string }>();
   const newStatus = body.approved ? 'verified' : 'rejected';
 
