@@ -115,4 +115,9 @@ Scope: read-only audit of `feature/renewal-private-library-api` source. No produ
 
 ## Validation state
 
-This document is based on source inspection. It is not a penetration test and does not prove exploitability against a deployed environment. No code fix, merge or deployment is represented as complete.
+- GitHub Actions Worker bundle validation: **passed** using `npx wrangler deploy --dry-run`; this is a compile/bundle check only, not a deployment.
+- Existing strict TypeScript workflow: **failed**. The output contains numerous errors across existing modules, including missing Env bindings/types (`R2`, `UNSPLASH_ACCESS_KEY`, `TL3_MASTER_SECRET`, `KAKAO_REST_API_KEY`), Hono request/body typing, auth typings, and nullability. These must be triaged against the base branch to separate pre-existing errors from renewal-branch regressions.
+- `npm ci` reported 10 dependency vulnerabilities (1 low, 3 moderate, 6 high) at the time of this run. Do not run `npm audit fix --force` blindly; review advisories and dependency compatibility first.
+- No D1 integration tests, browser tests, cross-user penetration tests or production deployment were performed.
+
+This document is based on source inspection and CI output. It is not a penetration test and does not prove exploitability against a deployed environment. No merge or deployment is represented as complete.
