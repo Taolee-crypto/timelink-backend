@@ -197,50 +197,210 @@ app.route('/api/cafe-broadcast', cafeBroadcastRouter);
 app.route('/api/contact', contactRouter);
 app.route('/api/upload-pdf', uploadPdfRouter);
 
-// ── Social / Playlist 스텁 (track.html 호환, 실제 기능은 추후 구현) ──
-app.get('/api/social/stats/:id', (c) => c.json({ likes: 0, comments: 0, views: 0, my_like: false }));
-app.post('/api/social/like/:id', (c) => c.json({ ok: true, liked: false }));
-app.delete('/api/social/like/:id', (c) => c.json({ ok: true, liked: false }));
-app.get('/api/social/follow-status/:id', (c) => c.json({ following: false }));
-app.post('/api/social/follow/:id', (c) => c.json({ ok: true, following: false }));
-app.delete('/api/social/follow/:id', (c) => c.json({ ok: true, following: false }));
-app.get('/api/social/comments/:id', async (c) => {
-  const shareId = c.req.param('id');
-  try {
-    const rows = await c.env.DB.prepare(
-      'SELECT id, user_id, username, content, created_at FROM social_comments WHERE share_id=? ORDER BY created_at DESC LIMIT 100'
+// ── Track Page Social / Playlist ─────────────────────────────
+async function ensureTrackSocialTables(db:any){
+  const statements=[
+    `CREATE TABLE IF NOT EXISTS social_likes(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,share_id TEXT NOT NULL,user_id INTEGER NOT NULL,
+      created_at TEXT DEFAULT(datetime('now')),UNIQUE(share_id,user_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS social_follows(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,follower_id INTEGER NOT NULL,followed_id INTEGER NOT NULL,
+      created_at TEXT DEFAULT(datetime('now')),UNIQUE(follower_id,followed_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS social_comments(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,share_id TEXT NOT NULL,user_id INTEGER NOT NULL,
+      username TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT DEFAULT(datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS social_comment_reports(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,comment_id INTEGER NOT NULL,reporter_id INTEGER NOT NULL,
+      created_at TEXT DEFAULT(datetime('now')),UNIQUE(comment_id,reporter_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS tl_playlists(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,title TEXT NOT NULL,
+      is_public INTEGER NOT NULL DEFAULT 0,created_at TEXT DEFAULT(datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS tl_playlist_items(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,playlist_id INTEGER NOT NULL,share_id TEXT NOT NULL,
+      created_at TEXT DEFAULT(datetime('now')),UNIQUE(playlist_id,share_id)
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_social_likes_share ON social_likes(share_id)",
+    "CREATE INDEX IF NOT EXISTS idx_social_comments_share ON social_comments(share_id,created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_social_follows_target ON social_follows(followed_id)"
+  ];
+  for(const sql of statements) await db.prepare(sql).run();
+}
+
+app.get('/api/social/stats/:id',async(c)=>{
+  const shareId=c.req.param('id');
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const share=await c.env.DB.prepare('SELECT id,pulse FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    if(!share)return c.json({error:'곡을 찾을 수 없습니다.'},404);
+    const likes=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM social_likes WHERE share_id=?').bind(shareId).first<any>();
+    const comments=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM social_comments WHERE share_id=?').bind(shareId).first<any>();
+    const userId=await shareAuthUser(c).catch(()=>0);
+    let myLike=false;
+    if(userId){
+      const row=await c.env.DB.prepare('SELECT id FROM social_likes WHERE share_id=? AND user_id=?').bind(shareId,userId).first();
+      myLike=!!row;
+    }
+    return c.json({likes:Number(likes?.n||0),comments:Number(comments?.n||0),views:0,views_tracked:false,my_like:myLike});
+  }catch(e:any){return c.json({error:e?.message||'곡 통계를 불러오지 못했습니다.'},500);}
+});
+
+app.post('/api/social/like/:id',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  const shareId=c.req.param('id');
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const share=await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first();
+    if(!share)return c.json({error:'곡을 찾을 수 없습니다.'},404);
+    await c.env.DB.prepare('INSERT OR IGNORE INTO social_likes(share_id,user_id) VALUES(?,?)').bind(shareId,userId).run();
+    const row=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM social_likes WHERE share_id=?').bind(shareId).first<any>();
+    return c.json({ok:true,liked:true,likes:Number(row?.n||0)});
+  }catch(e:any){return c.json({error:e?.message||'좋아요 처리 실패'},500);}
+});
+
+app.delete('/api/social/like/:id',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  const shareId=c.req.param('id');
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    await c.env.DB.prepare('DELETE FROM social_likes WHERE share_id=? AND user_id=?').bind(shareId,userId).run();
+    const row=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM social_likes WHERE share_id=?').bind(shareId).first<any>();
+    return c.json({ok:true,liked:false,likes:Number(row?.n||0)});
+  }catch(e:any){return c.json({error:e?.message||'좋아요 취소 실패'},500);}
+});
+
+app.get('/api/social/follow-status/:id',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0),target=Number(c.req.param('id')||0);
+  if(!userId||!target)return c.json({following:false});
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const row=await c.env.DB.prepare('SELECT id FROM social_follows WHERE follower_id=? AND followed_id=?').bind(userId,target).first();
+    return c.json({following:!!row});
+  }catch(e:any){return c.json({error:e?.message||'팔로우 상태 조회 실패'},500);}
+});
+
+app.post('/api/social/follow/:id',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0),target=Number(c.req.param('id')||0);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  if(!target)return c.json({error:'대상 사용자를 확인할 수 없습니다.'},400);
+  if(target===userId)return c.json({error:'본인은 팔로우할 수 없습니다.'},400);
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const user=await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(target).first();
+    if(!user)return c.json({error:'사용자를 찾을 수 없습니다.'},404);
+    await c.env.DB.prepare('INSERT OR IGNORE INTO social_follows(follower_id,followed_id) VALUES(?,?)').bind(userId,target).run();
+    return c.json({ok:true,following:true});
+  }catch(e:any){return c.json({error:e?.message||'팔로우 처리 실패'},500);}
+});
+
+app.delete('/api/social/follow/:id',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0),target=Number(c.req.param('id')||0);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    await c.env.DB.prepare('DELETE FROM social_follows WHERE follower_id=? AND followed_id=?').bind(userId,target).run();
+    return c.json({ok:true,following:false});
+  }catch(e:any){return c.json({error:e?.message||'팔로우 취소 실패'},500);}
+});
+
+app.get('/api/social/comments/:id',async(c)=>{
+  const shareId=c.req.param('id');
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const rows=await c.env.DB.prepare(
+      'SELECT id,user_id,username,content,created_at FROM social_comments WHERE share_id=? ORDER BY created_at DESC LIMIT 100'
     ).bind(shareId).all();
-    return c.json({ comments: rows.results || [] });
-  } catch (e: any) {
-    return c.json({ comments: [], error: e?.message }, 500);
-  }
+    return c.json({comments:rows.results||[]});
+  }catch(e:any){return c.json({comments:[],error:e?.message||'댓글 조회 실패'},500);}
 });
-app.post('/api/social/comment/:id', async (c) => {
-  const userId = await shareAuthUser(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-  const shareId = c.req.param('id');
-  const body = await c.req.json<any>().catch(() => ({}));
-  const content = String(body.content || '').trim().slice(0, 1000);
-  if (!content) return c.json({ error: '내용 필요' }, 400);
-  if (content.length < 10) return c.json({ error: '10자 이상 입력해주세요' }, 400);
 
-  const user = await c.env.DB.prepare('SELECT username FROM users WHERE id=?').bind(userId).first<any>();
-  const username = user?.username || ('User' + userId);
-
-  const r = await c.env.DB.prepare(
-    'INSERT INTO social_comments (share_id, user_id, username, content) VALUES (?, ?, ?, ?)'
-  ).bind(shareId, userId, username, content).run();
-
-  const fresh = await c.env.DB.prepare(
-    'SELECT id, user_id, username, content, created_at FROM social_comments WHERE id=?'
-  ).bind(r.meta?.last_row_id).first<any>();
-
-  return c.json({ ok: true, comment: fresh });
+app.post('/api/social/comment/:id',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  const shareId=c.req.param('id');
+  const body=await c.req.json<any>().catch(()=>({}));
+  const content=String(body.content||'').trim().slice(0,1000);
+  if(!content)return c.json({error:'내용을 입력해 주세요.'},400);
+  if(content.length<10)return c.json({error:'10자 이상 입력해 주세요.'},400);
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const share=await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first();
+    if(!share)return c.json({error:'곡을 찾을 수 없습니다.'},404);
+    const user=await c.env.DB.prepare('SELECT username FROM users WHERE id=?').bind(userId).first<any>();
+    const username=user?.username||('User'+userId);
+    const result=await c.env.DB.prepare(
+      'INSERT INTO social_comments(share_id,user_id,username,content) VALUES(?,?,?,?) RETURNING id'
+    ).bind(shareId,userId,username,content).first<any>();
+    const fresh=await c.env.DB.prepare('SELECT id,user_id,username,content,created_at FROM social_comments WHERE id=?').bind(result?.id).first<any>();
+    return c.json({ok:true,comment:fresh});
+  }catch(e:any){return c.json({error:e?.message||'댓글 등록 실패'},500);}
 });
-app.post('/api/social/report/comment/:id', (c) => c.json({ ok: true }));
-app.get('/api/playlist/my', (c) => c.json({ playlists: [] }));
-app.post('/api/playlist/:id/add', (c) => c.json({ ok: true }));
-app.post('/api/playlist', (c) => c.json({ ok: true, playlist: null }));
+
+app.post('/api/social/report/comment/:id',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  const commentId=Number(c.req.param('id')||0);
+  if(!commentId)return c.json({error:'댓글을 확인할 수 없습니다.'},400);
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const comment=await c.env.DB.prepare('SELECT id FROM social_comments WHERE id=?').bind(commentId).first();
+    if(!comment)return c.json({error:'댓글을 찾을 수 없습니다.'},404);
+    await c.env.DB.prepare('INSERT OR IGNORE INTO social_comment_reports(comment_id,reporter_id) VALUES(?,?)').bind(commentId,userId).run();
+    return c.json({ok:true,reported:true});
+  }catch(e:any){return c.json({error:e?.message||'신고 접수 실패'},500);}
+});
+
+app.get('/api/playlist/my',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const rows=await c.env.DB.prepare(
+      "SELECT p.id,p.title,p.is_public,p.created_at,GROUP_CONCAT(i.share_id,'|') AS share_ids_csv FROM tl_playlists p LEFT JOIN tl_playlist_items i ON i.playlist_id=p.id WHERE p.user_id=? GROUP BY p.id ORDER BY p.created_at DESC"
+    ).bind(userId).all<any>();
+    const playlists=(rows.results||[]).map((p:any)=>({...p,share_ids:JSON.stringify(String(p.share_ids_csv||'').split('|').filter(Boolean))}));
+    return c.json({playlists});
+  }catch(e:any){return c.json({error:e?.message||'플레이리스트 조회 실패'},500);}
+});
+
+app.post('/api/playlist',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  const body=await c.req.json<any>().catch(()=>({}));
+  const title=String(body.title||'').trim().slice(0,80);
+  if(!title)return c.json({error:'플레이리스트 이름을 입력해 주세요.'},400);
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const row=await c.env.DB.prepare(
+      'INSERT INTO tl_playlists(user_id,title,is_public) VALUES(?,?,?) RETURNING id'
+    ).bind(userId,title,body.is_public?1:0).first<any>();
+    return c.json({ok:true,playlist_id:Number(row?.id||0),playlist:{id:Number(row?.id||0),title,is_public:!!body.is_public,share_ids:'[]'}});
+  }catch(e:any){return c.json({error:e?.message||'플레이리스트 생성 실패'},500);}
+});
+
+app.post('/api/playlist/:id/add',async(c)=>{
+  const userId=await shareAuthUser(c).catch(()=>0);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  const playlistId=Number(c.req.param('id')||0);
+  const body=await c.req.json<any>().catch(()=>({}));
+  const shareId=String(body.share_id||'').trim();
+  if(!playlistId||!shareId)return c.json({error:'플레이리스트와 곡 정보가 필요합니다.'},400);
+  try{
+    await ensureTrackSocialTables(c.env.DB);
+    const playlist=await c.env.DB.prepare('SELECT id FROM tl_playlists WHERE id=? AND user_id=?').bind(playlistId,userId).first();
+    if(!playlist)return c.json({error:'플레이리스트를 찾을 수 없습니다.'},404);
+    const share=await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first();
+    if(!share)return c.json({error:'곡을 찾을 수 없습니다.'},404);
+    await c.env.DB.prepare('INSERT OR IGNORE INTO tl_playlist_items(playlist_id,share_id) VALUES(?,?)').bind(playlistId,shareId).run();
+    return c.json({ok:true,added:true});
+  }catch(e:any){return c.json({error:e?.message||'곡 추가 실패'},500);}
+});
 
 // ── Unsplash 이미지 검색 (곡 커버 자동 매칭용) ──
 app.get('/api/unsplash/search', async (c) => {
