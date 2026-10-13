@@ -359,7 +359,7 @@ app.get('/api/tracks', async (c) => {
 // POST /api/files/sync
 // 소유권은 요청 본문이 아니라 검증된 Bearer JWT 주체에서만 결정한다.
 app.post('/api/files/sync', async (c) => {
-  const token = (c.req.header('Authorization') || '').replace(/^Bearer\\s+/i, '').trim();
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '').trim();
   const principal = token ? await verifyToken(token, c.env.JWT_SECRET).catch(() => null) : null;
   const userId = Number(principal?.sub || 0);
   if (!userId) return c.json({ ok: false, error: '인증 필요' }, 401);
