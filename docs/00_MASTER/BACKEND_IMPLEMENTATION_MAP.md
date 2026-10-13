@@ -131,7 +131,22 @@
 - 온라인 재생과 오프라인 파일 재생 코드가 존재한다.
 - 실제 세그먼트 시간 단위, 헤더에 포함되는 토큰 수, 서버와 클라이언트의 비밀 정보 경계는 별도 프로토콜 검토가 필요하다.
 
-## 6. 저장소 구현
+## 6. 재생·경제·TLC 처리 흐름
+
+### TL3 재생 및 창작자 정산
+- `src/routes/playback.ts`의 `/tl3/consume`은 재생 세션을 만들고 사용자 `tl_balance`에서 소비 초만큼 차감한다.
+- 해당 경로는 소비액의 70%를 창작자 `tl_balance` 및 `total_tl_earned`에 적립하고 거래·재생 이벤트를 기록한다.
+- 프런트엔드의 SharePlace 구형 경로는 `/api/shares/:id/consume`을 호출하므로, 이 직접 API와 `/api/v1/playback/tl3/consume` 라우터 경로가 동일한 원장·세션을 사용하는지 추가 확인이 필요하다.
+- `src/economics.ts`는 `tl_p`, `tl_a`, `tl_b`, `tl`, `tl_balance` 등 여러 잔액 계열을 함께 사용한다. 단일 잔액이라고 단정하지 않는다.
+
+### POC 및 TLC
+- `src/economics.ts`에는 POC 재계산과 `/api/eco/mine-tlc` 채굴 경로가 구현되어 있다.
+- 코드상 채굴량 계산은 월간 구매 TL 소비 기반값, POC 지수 및 플랜 배율을 사용하고, 결과를 `users.tlc_balance`와 `tlc_mining_v2`에 기록한다.
+- SharePlace 등록 코드에는 MP3 업로드 POC 1점, TL3 업로드 POC 3점 분기가 남아 있다. 이는 무료 MP3 제외라는 최신 운영 방향과 충돌한다.
+- `src/jetton.ts`의 `mintTLC`는 온체인 민팅을 직접 하지 않고 queued 식별자를 반환한다. 별도 `scripts/auto-mint.js`는 testnet TON SDK로 출금 대기건을 처리한다.
+- 대표자 확인: 현재 TLC 채굴 시험 버전은 작동 중이다. 위 내용은 코드 경로를 분해해 기록한 것이며, 시험 결과를 부정하거나 미구현으로 분류하지 않는다.
+
+## 7. 저장소 구현
 
 ### 사용자 소유 외부 저장소
 - `src/storage.ts`에서 Google Drive 및 OneDrive OAuth를 구현한다.
@@ -148,7 +163,7 @@
 - 백엔드는 Local Agent URL을 통해 파일을 중계하는 흐름을 문서화하고 있다.
 - Local Agent의 실제 인증·토큰·Range·터널 동작을 별도 검토해야 한다.
 
-## 7. 우선 정리할 기술 부채
+## 8. 우선 정리할 기술 부채
 
 1. 직접 라우트와 하위 라우터의 중복·별칭 정리.
 2. 레거시 TLNK v1/v2 업로드 경로의 사용 여부 확인.
@@ -158,7 +173,7 @@
 6. 모든 업로드·다운로드 API의 인증과 소유권 검증 표준화.
 7. Worker Secret과 공개 설정값의 분리.
 
-## 8. 다음 검증
+## 9. 다음 검증
 
 - API별 인증 필요 여부 및 실제 프런트엔드 호출 확인
 - 각 API의 request/response 스키마 정리
