@@ -357,27 +357,18 @@ app.get('/api/tracks', async (c) => {
 });
 
 // POST /api/files/sync
+// 소유권은 요청 본문이 아니라 검증된 Bearer JWT 주체에서만 결정한다.
 app.post('/api/files/sync', async (c) => {
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\\s+/i, '').trim();
+  const principal = token ? await verifyToken(token, c.env.JWT_SECRET).catch(() => null) : null;
+  const userId = Number(principal?.sub || 0);
+  if (!userId) return c.json({ ok: false, error: '인증 필요' }, 401);
   try {
+    const owner = await c.env.DB.prepare('SELECT id FROM users WHERE id = ?')
+      .bind(userId).first<{ id: number }>();
+    if (!owner) return c.json({ ok: false, error: '인증 사용자 확인 불가' }, 401);
     const body = await c.req.json<any>();
     if (!body.title) return c.json({ error: 'title required' }, 422);
-    let userId: number = 1;
-    if (body.user_email) {
-      let user = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?')
-        .bind(body.user_email).first<{ id: number }>();
-      if (!user && body.username) {
-        const ins = await c.env.DB.prepare(
-          `INSERT OR IGNORE INTO users (email, username, password_hash, tl_balance)
-           VALUES (?, ?, 'local_sync', 1000) RETURNING id`
-        ).bind(body.user_email, body.username).first<{ id: number }>();
-        user = ins || null;
-        if (!user) {
-          user = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?')
-            .bind(body.user_email).first<{ id: number }>();
-        }
-      }
-      if (user) userId = user.id;
-    }
     const existing = await c.env.DB.prepare(
       'SELECT id FROM tl_files WHERE title = ? AND user_id = ?'
     ).bind(body.title, userId).first<{ id: number }>();
