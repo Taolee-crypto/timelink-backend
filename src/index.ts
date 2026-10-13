@@ -71,6 +71,18 @@ app.get('/api/storage/connections', async (c) => {
   const r=await c.env.DB.prepare("SELECT id,provider,provider_account_id,provider_email,provider_name,root_id,status,created_at,updated_at FROM storage_connections WHERE user_id=? AND status='active' ORDER BY id").bind(Number(u.sub)).all();
   return c.json({connections:r.results||[]});
 });
+// 개인 파일 보관함: 외부 저장소의 소유자 메타데이터만 반환한다.
+app.get('/api/storage/objects', async (c) => {
+  const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
+  await ensureStorageTables(c.env.DB);
+  const limit=Math.max(1,Math.min(Number(c.req.query('limit')||100),200));
+  const offset=Math.max(0,Number(c.req.query('offset')||0));
+  const r=await c.env.DB.prepare(
+    "SELECT id,connection_id,provider,name,mime_type,size,content_hash,status,created_at,updated_at FROM storage_objects WHERE user_id=? AND status='active' ORDER BY created_at DESC LIMIT ? OFFSET ?"
+  ).bind(Number(u.sub),limit,offset).all();
+  return c.json({objects:r.results||[],limit,offset});
+});
+
 app.get('/api/storage/connect/:provider', async (c) => {
   const u=await storageUser(c); if(!u) return c.json({error:'인증 필요'},401);
   const provider=c.req.param('provider') as any;
@@ -1285,6 +1297,28 @@ async function shareAuthUser(c:any){
   if(!payload?.sub) return null;
   return Number(payload.sub);
 }
+
+// 개인 보관함: tl_shares와 구형 tl_files를 읽기 전용으로 함께 조회한다.
+// 원본 파일 주소, 스트림 주소, OAuth 증빙 경로는 반환하지 않는다.
+app.get('/api/shares/my', async (c) => {
+  const userId=await shareAuthUser(c);
+  if(!userId) return c.json({error:'인증 필요'},401);
+  const limit=Math.max(1,Math.min(Number(c.req.query('limit')||100),200));
+  const offset=Math.max(0,Number(c.req.query('offset')||0));
+  try {
+    const [shares,files]=await Promise.all([
+      c.env.DB.prepare(
+        "SELECT id,title,artist,album,duration,file_tl,category,file_type,category_type,description,cover_url,content_kind,release_mode,storage_mode,origin_hash,release_check,pulse,created_at FROM tl_shares WHERE CAST(user_id AS INTEGER)=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+      ).bind(userId,limit,offset).all(),
+      c.env.DB.prepare(
+        "SELECT id,title,artist,genre,file_type,file_size_bytes,duration_seconds,auth_status,shared,play_count,created_at,updated_at FROM tl_files WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+      ).bind(userId,limit,offset).all()
+    ]);
+    return c.json({shares:shares.results||[],files:files.results||[],limit,offset});
+  } catch(e:any) {
+    return c.json({error:e?.message||'개인 파일 목록 조회 실패'},500);
+  }
+});
 
 // ── 유저의 특정 곡 TL 잔액 조회 ──
 app.get('/api/shares/:id/my-tl', async (c) => {
