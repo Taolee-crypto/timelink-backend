@@ -1842,7 +1842,7 @@ if(/^https?:\/\//i.test(_su0)&&!_su0.includes('/api/storage/')){
     const _up=await fetch(_su0,{headers:_uh});
     const _upType=_up.headers.get('Content-Type')||'';
     // Access 로그인 HTML을 음원/파일 바이트로 오인해 전달하지 않는다.
-    if(_up.status===302 || _up.status===401 || _up.status===403 || /text\\/html/i.test(_upType)){
+    if(_up.status===302 || _up.status===401 || _up.status===403 || /text\/html/i.test(_upType)){
       return new Response(JSON.stringify({error:'원본 파일 접근 인증 실패 (Cloudflare Access 확인 필요)'}),{status:502,headers:{...cors,'Content-Type':'application/json'}});
     }
     const _h=new Headers(); _h.set('Access-Control-Allow-Origin','*'); _h.set('Access-Control-Expose-Headers','Content-Range, Accept-Ranges, Content-Length');
