@@ -90,6 +90,9 @@ router.post('/:id/approve', async (c) => {
   }
 
   const body = await c.req.json<{ approved: boolean; note?: string }>();
+  if (typeof body.approved !== 'boolean') {
+    return c.json({ detail: 'approved must be a boolean' }, 400);
+  }
   const newStatus = body.approved ? 'verified' : 'rejected';
 
   const file = await c.env.DB.prepare('SELECT * FROM tl_files WHERE id = ?')
@@ -99,8 +102,8 @@ router.post('/:id/approve', async (c) => {
   await c.env.DB.prepare('UPDATE tl_files SET auth_status = ? WHERE id = ?')
     .bind(newStatus, file.id).run();
 
-  if (body.approved) {
-    // POC +0.3
+  if (body.approved && file.auth_status !== 'verified') {
+    // POC +0.3 is awarded only on the first transition to verified.
     const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?')
       .bind(file.user_id).first<User>();
     if (user) {
