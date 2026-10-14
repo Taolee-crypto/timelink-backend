@@ -15,6 +15,7 @@ export interface Env {
   TL_SECRET?: string;
   UNSPLASH_ACCESS_KEY?: string;
   KAKAO_REST_API_KEY?: string;
+  TON_API_KEY?: string;
 }
 
 export interface JWTPayload {
