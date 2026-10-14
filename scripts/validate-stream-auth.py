@@ -37,6 +37,7 @@ check("owner_id INTEGER NOT NULL" in upload_source and "expires_at INTEGER NOT N
 check("session.expected_size" in upload_source and "expected_parts" in upload_source,"upload sessions bind expected size and part count")
 check("part_number=?" in upload_source and "for(let index=0;index<Number(session.expected_parts);index++)" in upload_source,"completion requires every numbered part in sequence")
 check("actualHash!==String(part.sha256||'')" in upload_source,"completion rechecks per-part SHA-256")
+check("bytes[0]!==0x54" in upload_source and "String(header.cid||'')!==String(ownerId)" in upload_source,"completion validates TL3 v2 header and creator identity")
 check("writeD1UploadSessionPart" in source and "completeD1UploadSession" in source,"HTTP upload routes use session-bound storage functions")
 upload_routes=part("app.post('/api/upload/init'","app.get('/api/storage/:key{.+}'")
 check("uploadId" in upload_routes and "c.req.query('key')" not in upload_routes,"chunk upload endpoints use server-issued session IDs, not caller keys")
