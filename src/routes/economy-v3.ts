@@ -55,4 +55,46 @@ router.get('/mining/history', async (c) => {
   return c.json({ ok: true, records: rows.results || [] });
 });
 
+
+/**
+ * Read-only legacy balance preview.
+ * Legacy buckets are reported independently; nothing is summed or imported.
+ */
+router.get('/reconciliation/preview', async (c) => {
+  const user = c.get('user');
+  const schema = await c.env.DB.prepare('PRAGMA table_info(users)').all<{ name: string }>();
+  const available = new Set((schema.results || []).map((column) => column.name));
+  const candidates = [
+    'tl', 'tl_balance', 'tl_p', 'tl_a', 'tl_b', 'tlc_balance',
+    'tl_p_lifetime', 'tl_p_exchanged', 'total_tl_spent',
+    'total_tl_earned', 'total_tl_exchanged', 'poc_index'
+  ];
+  const selected = candidates.filter((column) => available.has(column));
+  if (!available.has('id') || selected.length === 0) {
+    return c.json({ ok: false, error: 'Legacy users balance schema is unavailable' }, 503);
+  }
+
+  const projection = selected.map((column) => '"' + column + '"').join(', ');
+  const legacy = await c.env.DB.prepare(
+    `SELECT ${projection} FROM users WHERE id=? LIMIT 1`
+  ).bind(user.id).first<Record<string, unknown>>();
+  if (!legacy) return c.json({ ok: false, error: 'User not found' }, 404);
+
+  const ledger = await getLedgerWallet(c.env.DB, user.id);
+  return c.json({
+    ok: true,
+    read_only: true,
+    migration_state: ledger.length ? 'ledger_initialized' : 'legacy_only',
+    legacy_fields: legacy,
+    detected_columns: selected,
+    v3_accounts: ledger,
+    reconciliation: {
+      status: 'not_imported',
+      automatic_import: false,
+      rule: 'Each legacy field is reported independently. No fields are added together, converted, or credited.',
+      review_required: true
+    }
+  });
+});
+
 export default router;
