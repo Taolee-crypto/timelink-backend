@@ -18,15 +18,15 @@ The initial authenticated experience is preceded by a branded login/sign-up scre
 
 ## 2. Non-negotiable product and economic decisions
 
-1. **MP3 source files remain on the creator's computer.** Registering an MP3 does not upload or persist that source file on TimeLink infrastructure. Do not silently transfer it to Workers, D1, R2, Google Drive, OneDrive, or the Local Agent.
+1. **MP3 is a free listening product and may be uploaded to an explicitly selected storage destination.** The creator must deliberately choose the file and storage path; TimeLink must not silently transfer files. R2 is optional, not mandatory. Approved destinations may include the creator's Local Agent, Google Drive, OneDrive, or another reviewed storage adapter. D1 stores metadata and object references, never audio bytes.
 2. MP3 registration extracts and records descriptive metadata. Existing browser-side ID3 extraction in `public/creator.html` is the known baseline. It reads title, artist, album, and embedded cover. It is not evidence of external music-database matching or acoustic fingerprint identification.
 3. Preserve the distinction between `original_filename`, extracted metadata, and creator-confirmed canonical metadata. A filename fallback must never be misrepresented as an ID3 extraction result.
-4. **MP3 is not a playable free-streaming format on TimeLink.** An MP3 registration creates/updates a Track record and metadata only. It does not create a playable MP3 release.
+4. **MP3 and TL3 are distinct products.** MP3 is free-to-listen content and may be published to SharePlace after rights and storage checks. TL3 is the separately prepared, encrypted, time-authorized paid product. A free MP3 registration must not grant TL, bonus TL, or TLC; a qualifying accepted registration may create only a deduplicated POC contribution event under the versioned policy.
 5. **TL3 is the separately prepared, encrypted, time-authorized paid release format.** A creator must explicitly start the release workflow. Source selection, TL3 creation, storage destination, release price, and publication are separate steps.
 6. The original Track identity persists when a TL3 release is added. Track, Asset, and Release are distinct domain concepts.
 7. The creator sets the TL3 price. Listening is charged against actual verified listening time, not button presses, elapsed wall-clock time, or a fixed five-second timer.
 8. **TL is the internal accounting unit. Current policy: 1 second = 1 TL = ₩1.** TL balance, charge, consumption, refunds, creator proceeds, and platform fees are ledgered. Do not revive the obsolete ₩5-per-TL draft.
-9. TL accounting, POC contribution measurement, and TLC issuance/mining are separate accounting domains. A qualifying accepted free-MP3 metadata registration may create one deduplicated POC contribution event under the versioned validation policy, but it never grants TL, TL bonuses, or TLC directly.
+9. TL accounting, POC contribution measurement, and TLC issuance/mining are separate accounting domains. A qualifying accepted free-MP3 registration may create one deduplicated POC contribution event under the versioned validation policy, but it never grants TL, TL bonuses, or TLC directly.
 10. POC rewards only validated contribution events under a versioned scoring policy. TLC is a separate TON Jetton-related reward/issuance system; do not couple token issuance to unverified UI events.
 11. Existing user data and functionality must be preserved. V3 migrations are additive and reversible where practical. No destructive table reset or blanket rewrite.
 12. No production deployment, PR merge, destructive migration, or secret rotation is implied by architecture approval. These remain separately controlled operations.
@@ -51,7 +51,7 @@ The initial authenticated experience is preceded by a branded login/sign-up scre
 - **Backend:** Cloudflare Workers API at `api.timelink.digital`, using Hono and D1.
 - **Database:** Cloudflare D1. Migrations are numbered, additive, checked into the backend repository, and applied only after backup and validation.
 - **File access:** storage-provider abstraction. Do not make Cloudflare R2 a mandatory dependency. Existing creator-controlled storage and Local Agent integrations must be assessed and reused where safe. Store provider/object references and capabilities, not assumptions that every file is in one bucket.
-- **Creator source:** original MP3 stays local on the creator's machine. The browser may read it locally for metadata and for an explicitly initiated TL3 preparation workflow.
+- **Creator source:** the creator selects whether to keep an MP3 local or upload it to an approved storage destination for free streaming. The browser may read it locally for metadata extraction and an explicitly initiated TL3 preparation workflow.
 - **External token system:** TON/TLC integration is isolated from core TL balances and playback authorization.
 
 ### 3.3 Trust boundaries
@@ -89,7 +89,7 @@ The initial authenticated experience is preceded by a branded login/sign-up scre
 - `storage_provider`, `storage_object_id`, `storage_uri_ref`: nullable provider references. Never store provider secrets or public credentials here.
 - `source_location`: local-only transient browser information; do not persist an unusable local filesystem path as a server download URL.
 - `content_hash`, `size_bytes`, `mime_type`, `created_at`, `availability_status`.
-- For an MP3 source registration, persist metadata and an optional non-reversible integrity fingerprint only; do not upload the MP3 bytes. A hash is not a substitute for a retrievable source file.
+- MP3 audio is stored only through an explicitly selected storage adapter. The asset row stores a provider/object reference, content hash, MIME type, size, and availability state; it never stores audio bytes or provider credentials. A local-only registration without an uploaded/available asset is not publicly streamable.
 
 **TrackRelease** represents a distributable product with explicit rights and commercial conditions:
 - `release_type`: initially `TL3`; future values may include `TL4` and `TLD`.
@@ -125,16 +125,16 @@ The initial authenticated experience is preceded by a branded login/sign-up scre
 - `poc_events`: validated contribution event, evidence reference, score-policy version, validation status, and deduplication key.
 - `tlc_mining_records`: token issuance proposal/record, source POC batch, chain transaction, confirmation state, and reconciliation status.
 
-## 5. MP3 registration workflow (metadata only)
+## 5. MP3 registration and free-publication workflow
 
 1. Creator selects an MP3 in the browser.
 2. Browser reads ID3 tags locally using the existing `jsmediatags` integration where available.
-3. Browser computes a local content hash if useful for duplicate detection. The hash is metadata, not an uploaded audio file.
-4. Browser sends only an allowlisted metadata registration payload to the API: original filename, extracted values, fallback suggestion, file size/type, hash, and optional embedded cover image through a separate explicit artwork upload flow.
-5. API validates authentication, MIME/size metadata, payload bounds, and idempotency. It creates a metadata-registration record and a Track only after the creator confirms the canonical metadata, or creates a draft Track with an explicit pending-review state.
-6. The creator can edit and confirm title, artist, album, artwork, credits, and rights.
-7. No MP3 audio bytes are sent to the API or Local Agent as part of registration. Network tests must verify this invariant.
-8. If the browser closes or extraction fails, the original local file remains untouched; manual metadata entry is supported.
+3. Browser computes a content hash for duplicate detection and integrity checks.
+4. Browser sends an allowlisted metadata payload to the API. Audio bytes are transferred only in a separate, explicit upload action to the creator-selected approved storage adapter; never to D1 and never implicitly to Workers storage.
+5. API validates authentication, metadata bounds, MIME/size, ownership, rights attestation, duplicate state, storage object reference, and idempotency. It creates a draft Track and versioned metadata record.
+6. The creator reviews title, artist, album, artwork, credits, and rights, then explicitly publishes the free MP3 to SharePlace when its audio asset is available.
+7. Public MP3 playback is free and does not invoke TL deduction. Playback and access logs may be used for abuse prevention and validated POC evidence, but must not create TL or TLC awards.
+8. If extraction or upload fails, keep the Track draft and expose a retry/manual metadata path; never claim the MP3 is playable until storage availability is verified.
 
 Duplicate detection is advisory, not title-only. Use hash, creator, artist/title/album, and available external identifiers with confidence levels. Do not automatically merge Tracks solely because titles match.
 
