@@ -11,7 +11,6 @@ export interface Env {
   ONEDRIVE_CLIENT_SECRET?: string;
   ONEDRIVE_REDIRECT_URI?: string;
   STORAGE_ENCRYPTION_KEY?: string;
-  feature/renewal-private-library-api
   TL3_MASTER_SECRET?: string;
   TL_SECRET?: string;
   UNSPLASH_ACCESS_KEY?: string;
