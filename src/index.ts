@@ -1480,7 +1480,7 @@ app.get('/api/shares', async (c) => {
         'share' as source_table
       FROM tl_shares s
       LEFT JOIN users u ON CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT)
-      WHERE ((LOWER(COALESCE(s.content_kind,''))='mp3' AND LOWER(COALESCE(s.release_mode,'')) LIKE 'free_mp3%') OR EXISTS (SELECT 1 FROM tl_files f WHERE f.file_url=s.stream_url AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0))
+      WHERE ((LOWER(COALESCE(s.content_kind,''))='mp3' AND LOWER(COALESCE(s.release_mode,'')) LIKE 'free_mp3%') OR EXISTS (SELECT 1 FROM tl_files f WHERE f.file_url=s.stream_url AND LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0))
       UNION ALL
       SELECT
         CAST(f.id AS TEXT) as id, f.user_id, u.username as username,
@@ -1495,14 +1495,14 @@ app.get('/api/shares', async (c) => {
         'tl_file' as source_table
       FROM tl_files f
       LEFT JOIN users u ON f.user_id = u.id
-      WHERE f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+      WHERE LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
       ORDER BY created_at DESC LIMIT 200
     `).all();
     const origin=new URL(c.req.url).origin;
     const shares=(results||[]).map((r:any)=>{
       const isLegacy=r.source_table==='tl_file';
       const id=String(r.id);
-      const contentKind=isLegacy?(Number(r.file_tl||0)>0?'tl3':'mp3'):(r.content_kind||shareKind(r));
+      const contentKind=isLegacy?'tl3':(r.content_kind||shareKind(r));
       return {
         id,user_id:Number(r.user_id||0),username:String(r.username||'User'),
         title:String(r.title||''),artist:String(r.artist||''),album:String(r.album||''),
@@ -2193,7 +2193,7 @@ app.get('/api/legacy-stream/:fileId',async(c)=>{
     if(!file)return c.json({error:'파일 없음'},404);
     const viewerId=await playbackUserId(c);
     const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-    const isPublic=file.auth_status==='verified'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
+    const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&file.auth_status==='verified'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
     if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
     if(!isOwner&&Number(file.file_tl||0)>0){
       if(!viewerId)return c.json({error:'TL3 재생은 로그인이 필요합니다.'},401);
