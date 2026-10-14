@@ -476,27 +476,18 @@ app.get('/api/tracks', async (c) => {
 });
 
 // POST /api/files/sync
+// 소유권은 요청 본문이 아니라 검증된 Bearer JWT 주체에서만 결정한다.
 app.post('/api/files/sync', async (c) => {
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  const principal = token ? await verifyToken(token, c.env.JWT_SECRET).catch(() => null) : null;
+  const userId = Number(principal?.sub || 0);
+  if (!userId) return c.json({ ok: false, error: '인증 필요' }, 401);
   try {
+    const owner = await c.env.DB.prepare('SELECT id FROM users WHERE id = ?')
+      .bind(userId).first<{ id: number }>();
+    if (!owner) return c.json({ ok: false, error: '인증 사용자 확인 불가' }, 401);
     const body = await c.req.json<any>();
     if (!body.title) return c.json({ error: 'title required' }, 422);
-    let userId: number = 1;
-    if (body.user_email) {
-      let user = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?')
-        .bind(body.user_email).first<{ id: number }>();
-      if (!user && body.username) {
-        const ins = await c.env.DB.prepare(
-          `INSERT OR IGNORE INTO users (email, username, password_hash, tl_balance)
-           VALUES (?, ?, 'local_sync', 1000) RETURNING id`
-        ).bind(body.user_email, body.username).first<{ id: number }>();
-        user = ins || null;
-        if (!user) {
-          user = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?')
-            .bind(body.user_email).first<{ id: number }>();
-        }
-      }
-      if (user) userId = user.id;
-    }
     const existing = await c.env.DB.prepare(
       'SELECT id FROM tl_files WHERE title = ? AND user_id = ?'
     ).bind(body.title, userId).first<{ id: number }>();
@@ -3030,7 +3021,39 @@ app.options('/api/stream/:shareId', async (c) => new Response(null, {
   },
 }));
 
+
+app.get('/api/stream/:shareId',async(c)=>{const token=(c.req.header('Authorization')||'').replace('Bearer ','')||c.req.query('tk')||'',userId=parseTokenUserId(token),shareId=c.req.param('shareId'),cors:any={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance','Accept-Ranges':'bytes'};try{await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_object_id INTEGER").run().catch(()=>{});
+await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_provider TEXT DEFAULT ''").run().catch(()=>{});
+const share=await c.env.DB.prepare('SELECT id,stream_url,storage_object_id,storage_provider FROM tl_shares WHERE id=?').bind(shareId).first() as any;if(!share)return new Response(JSON.stringify({error:'파일 없음'}),{status:404,headers:cors});
+const _su0=String(share.stream_url||'');
+if(/^https?:\/\//i.test(_su0)&&!_su0.includes('/api/storage/')){
+  try{
+    const _uh:Record<string,string>={}; const _rg=c.req.header('Range')||''; if(_rg)_uh['Range']=_rg;
+    // Access 보호 도메인은 Worker 서버-서버 요청에만 Service Token을 사용한다.
+    // 사용자 브라우저/프런트엔드에는 Access 비밀값을 절대 전달하지 않는다.
+    let _agentHost=false;
+    try { _agentHost=new URL(_su0).hostname.toLowerCase()==='agent.timelink.digital'; } catch {}
+    if(_agentHost && c.env.CF_ACCESS_CLIENT_ID && c.env.CF_ACCESS_CLIENT_SECRET){
+      _uh['CF-Access-Client-Id']=c.env.CF_ACCESS_CLIENT_ID;
+      _uh['CF-Access-Client-Secret']=c.env.CF_ACCESS_CLIENT_SECRET;
+    }
+    const _up=await fetch(_su0,{headers:_uh});
+    const _upType=_up.headers.get('Content-Type')||'';
+    // Access 로그인 HTML을 음원/파일 바이트로 오인해 전달하지 않는다.
+    if(_up.status===302 || _up.status===401 || _up.status===403 || /text\/html/i.test(_upType)){
+      return new Response(JSON.stringify({error:'원본 파일 접근 인증 실패 (Cloudflare Access 확인 필요)'}),{status:502,headers:{...cors,'Content-Type':'application/json'}});
+    }
+    const _h=new Headers(); _h.set('Access-Control-Allow-Origin','*'); _h.set('Access-Control-Expose-Headers','Content-Range, Accept-Ranges, Content-Length');
+    _h.set('Accept-Ranges',_up.headers.get('Accept-Ranges')||'bytes');
+    _h.set('Content-Type',_upType||'audio/mpeg');
+    const _cl=_up.headers.get('Content-Length'); if(_cl)_h.set('Content-Length',_cl);
+    const _cr=_up.headers.get('Content-Range'); if(_cr)_h.set('Content-Range',_cr);
+    return new Response(_up.body,{status:_up.status,headers:_h});
+  }catch(e:any){return new Response(JSON.stringify({error:'외부 스트림 실패: '+(e?.message||e)}),{status:502,headers:cors});}
+}
+
 app.get('/api/stream/:shareId',async(c)=>{const token=(c.req.header('Authorization')||'').replace('Bearer ','')||c.req.query('tk')||'',userId=parseTokenUserId(token),shareId=c.req.param('shareId'),cors:any={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance','Accept-Ranges':'bytes'};try{const share=await c.env.DB.prepare('SELECT id,stream_url,storage_object_id,storage_provider FROM tl_shares WHERE id=?').bind(shareId).first() as any;if(!share)return new Response(JSON.stringify({error:'파일 없음'}),{status:404,headers:cors});
+
 if(share.storage_object_id){
   try{
     const r=await externalStream(c.env.DB,c.env,Number(share.storage_object_id),c.req.header('Range')||'');
