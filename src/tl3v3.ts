@@ -438,6 +438,7 @@ export async function decryptSegmentV3(
   lic: Uint8Array
 ): Promise<Uint8Array> {
   const section = header[kind];
+  if (!section) throw new Error(`Missing TL3 ${kind} section`);
   // 세그먼트 위치 계산
   const segmentLen = section.seg_bytes + GCM_TAG_BYTES;
   const lastLen = section.last_bytes;

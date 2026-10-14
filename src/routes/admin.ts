@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 
 const router = new Hono<{ Bindings: Env }>();
 
 // ── 관리자 확인 ──
-async function requireAdmin(c: any): Promise<number | null> {
+async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<number | null> {
   const auth = (c.req.header('Authorization') || '').replace(/^Bearer\s+/, '').trim();
   if (!auth) return null;
   const payload = await verifyToken(auth, c.env.JWT_SECRET).catch(() => null);

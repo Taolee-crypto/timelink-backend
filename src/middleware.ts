@@ -1,8 +1,8 @@
-import { Context, Next } from 'hono';
+import type { Context, Next } from 'hono';
 import { verifyToken } from './auth';
 import type { Env, User } from './types';
 
-export async function authMiddleware(c: Context<{ Bindings: Env }>, next: Next) {
+export async function authMiddleware(c: Context<{ Bindings: Env; Variables: { user: User } }>, next: Next) {
   const authHeader = c.req.header('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
     return c.json({ detail: 'Not authenticated' }, 401);

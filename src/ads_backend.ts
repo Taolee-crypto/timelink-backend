@@ -4,6 +4,7 @@
 //   app.route('/api/ads', adsRouter);
 
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import type { Env } from './types';
 
 const ads = new Hono<{ Bindings: Env }>();
@@ -222,6 +223,7 @@ ads.get('/my', async (c) => {
 // ── 광고 소재 업로드 + .tl 변환 ──
 // POST /api/ads/upload-tl
 // FormData: file, adId(임시ID)
+ads.use('/upload-tl', bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ads.post('/upload-tl', async (c) => {
   if (!c.env.R2) return c.json({ ok:false, error:'R2 없음' }, 500);
   const token = (c.req.header('Authorization')||'').replace('Bearer ','');
@@ -229,7 +231,7 @@ ads.post('/upload-tl', async (c) => {
   if (!userId) return c.json({ error:'로그인 필요' }, 401);
 
   try {
-    const formData = await c.req.parseBody({ limit: 100*1024*1024 }); // 광고 100MB
+    const formData = await c.req.parseBody(); // 광고 100MB
     const file  = formData['file'] as File;
     const adId  = formData['adId'] as string || ('ad_' + Date.now() + '_' + Math.random().toString(36).slice(2,6));
     const title = formData['title'] as string || '';
@@ -242,7 +244,8 @@ ads.post('/upload-tl', async (c) => {
     const raw    = new Uint8Array(await file.arrayBuffer());
     const hash   = await sha256HexAd(raw);
     const ext    = (file.name.split('.').pop() || 'bin').toLowerCase();
-    const secret = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
+    const secret = c.env.TL_SECRET || '';
+    if (!secret) return c.json({ ok:false, error:'TL_SECRET is not configured' }, 503);
 
     const header = {
       adId,
@@ -360,10 +363,12 @@ ads.get('/stream/:adId', async (c) => {
 
     // .tl 파일 R2에서 조회
     const tlKey = ad.tl_key || `ads/${adId}.tl`;
+    if (!c.env.R2) return new Response(JSON.stringify({error:'R2 storage is not configured'}),{status:503,headers:cors});
     const obj   = await c.env.R2.get(tlKey);
     if (!obj) return new Response(JSON.stringify({error:'.tl 파일 없음'}),{status:404,headers:cors});
 
-    const secret = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
+    const secret = c.env.TL_SECRET || '';
+    if (!secret) return c.json({ ok:false, error:'TL_SECRET is not configured' }, 503);
 
     // .tl 복호화
     const tlData   = new Uint8Array(await obj.arrayBuffer());
@@ -549,7 +554,7 @@ ads.delete('/:id', async (c) => {
     if (!ad) return c.json({ error: '광고를 찾을 수 없거나 권한 없음' }, 404);
     // R2에서 소재 파일 삭제 (있으면)
     try {
-      await c.env.R2.delete(`ads/${adId}.tl`);
+      if (c.env.R2) await c.env.R2.delete(`ads/${adId}.tl`);
     } catch (e) {}
     await c.env.DB.prepare('DELETE FROM tl_ads WHERE id=? AND advertiser_id=?')
       .bind(adId, userId).run();
