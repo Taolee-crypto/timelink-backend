@@ -194,6 +194,13 @@ BEGIN
       AND NEW.release_type = 'TL3' AND a.asset_type = 'tl3_release_file'
   ) THEN RAISE(ABORT, 'Published release requires a matching available asset') END;
   SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM v3_track_assets source
+    WHERE source.id = NEW.source_asset_id
+      AND source.track_id = NEW.track_id
+      AND source.asset_type = 'mp3_audio'
+      AND source.availability_status IN ('available','local_only')
+  ) THEN RAISE(ABORT, 'TL3 conversion requires a source MP3 asset') END;
+  SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM v3_track_rights r
     WHERE r.track_id = NEW.track_id
       AND r.verification_status = 'verified'
