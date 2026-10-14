@@ -14,7 +14,7 @@ This document defines the normalized V3 relational model. It is a target design,
 - Soft-delete user content where moderation, financial history, or auditability requires it. Ledger and audit records are append-only.
 - Use foreign keys where D1's enforcement and migration strategy permit; also enforce relationships in service transactions.
 - JSON is for bounded snapshots/metadata payloads, not canonical many-to-many relationships or financial state.
-- Store metadata and content hash separately from MP3 audio bytes. A creator may explicitly upload MP3 audio to an approved storage adapter for free streaming; D1 stores only provider/object references, never audio bytes or provider credentials. Local-only registrations are not streamable.
+- Treat MP3 as a creator source Asset, not a free listening product or Release. A creator may retain it locally or explicitly upload it to an approved private storage adapter; D1 stores only provider/object references, never audio bytes or provider credentials. Source Asset availability does not make it publicly streamable.
 - Keep `Track`, `Asset`, and `Release` distinct.
 
 ## 2. Target entity relationship map
