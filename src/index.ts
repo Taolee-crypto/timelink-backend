@@ -17,7 +17,7 @@ import ecoRouter from './economics';
 import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
-import { ensureD1Storage, initD1Upload, writeD1UploadPart, completeD1Upload, putD1Object, getD1ObjectMeta, readD1Range, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE } from './d1-storage';
+import { ensureD1Storage, putD1Object, getD1ObjectMeta, readD1Range, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE, createD1UploadSession, writeD1UploadSessionPart, completeD1UploadSession } from './d1-storage';
 import sunoVerifyRouter from './routes/suno-verify';
 import cafeRouter from './routes/cafe';
 import searchRouter from './routes/search';
@@ -703,9 +703,50 @@ app.post('/api/upload/tl3', async (c) => {
 
 // ── TL3 / 파일 업로드 — R2 없는 D1 Object Storage
 const D1_CHUNK_SIZE=D1_OBJECT_CHUNK_SIZE,D1_MAX_FILE_SIZE=D1_MAX_OBJECT_SIZE;
-app.post('/api/upload/init',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const b=await c.req.json<any>(),id=String(b.trackId||'').trim(),name=String(b.fileName||`${id}.tl3`),size=Number(b.totalSize||0);if(!/^[A-Za-z0-9_-]{1,100}$/.test(id))return c.json({ok:false,error:'유효하지 않은 trackId'},400);if(!Number.isSafeInteger(size)||size<=0||size>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'파일 크기가 올바르지 않습니다.'},413);const key=`tracks/u${uid}/${id}.tl3`;await initD1Upload(c.env.DB,key,name,size,'application/octet-stream');return c.json({ok:true,key,uploadId:id,chunkSize:D1_CHUNK_SIZE,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 초기화 실패'},500);}});
-app.put('/api/upload/part',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const key=String(c.req.query('key')||''),pn=Number(c.req.query('partNumber')||0);if(!key.startsWith(`tracks/u${uid}/`)||!key.endsWith('.tl3'))return c.json({ok:false,error:'업로드 소유권 불일치'},403);if(!Number.isInteger(pn)||pn<1)return c.json({ok:false,error:'partNumber 필수'},400);const data=await c.req.arrayBuffer();if(!data.byteLength)return c.json({ok:false,error:'빈 청크'},400);if(data.byteLength>D1_CHUNK_SIZE)return c.json({ok:false,error:'청크가 너무 큽니다.',max_chunk_size:D1_CHUNK_SIZE},413);await writeD1UploadPart(c.env.DB,key,pn,new Uint8Array(data));return c.json({ok:true,partNumber:pn,etag:`d1-${pn}-${data.byteLength}`,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 청크 업로드 실패'},500);}});
-app.post('/api/upload/complete',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const b=await c.req.json<any>(),key=String(b.key||'');if(!key.startsWith(`tracks/u${uid}/`)||!key.endsWith('.tl3'))return c.json({ok:false,error:'업로드 소유권 불일치'},403);const meta=await completeD1Upload(c.env.DB,key),url=`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`;return c.json({ok:true,url,stream_url:url,key,trackId:key.split('/').pop()?.replace(/\\.tl3$/,''),file_type:'audio/tl3',release_mode:'tl3',size:meta.size,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 완료 실패'},500);}});
+app.post('/api/upload/init',async(c)=>{
+  const session=await storageUser(c),uid=Number(session?.sub||0);
+  if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);
+  try{
+    const body=await c.req.json<any>();
+    const trackId=String(body.trackId||'').trim();
+    const fileName=String(body.fileName||`${trackId}.tl3`);
+    const totalSize=Number(body.totalSize||0);
+    if(!/^[A-Za-z0-9_-]{1,80}$/.test(trackId))return c.json({ok:false,error:'유효하지 않은 trackId'},400);
+    if(!Number.isSafeInteger(totalSize)||totalSize<=0||totalSize>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'파일 크기가 올바르지 않습니다.'},413);
+    const uploadId=crypto.randomUUID().replace(/-/g,'');
+    const key=`tracks/u${uid}/${trackId}_${uploadId}.tl3`;
+    const upload=await createD1UploadSession(c.env.DB,uid,uploadId,key,fileName,totalSize,'application/octet-stream');
+    return c.json({ok:true,...upload,storage_mode:'d1'});
+  }catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 초기화 실패'},400);}
+}});
+app.put('/api/upload/part',async(c)=>{
+  const session=await storageUser(c),uid=Number(session?.sub||0);
+  if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);
+  try{
+    const uploadId=String(c.req.query('uploadId')||'');
+    const partNumber=Number(c.req.query('partNumber')||0);
+    if(!/^[A-Za-z0-9_-]{20,80}$/.test(uploadId))return c.json({ok:false,error:'유효하지 않은 업로드 세션 ID'},400);
+    const declaredLength=Number(c.req.header('Content-Length')||0);
+    if(declaredLength>D1_CHUNK_SIZE)return c.json({ok:false,error:'청크가 너무 큽니다.',max_chunk_size:D1_CHUNK_SIZE},413);
+    const data=new Uint8Array(await c.req.arrayBuffer());
+    const result=await writeD1UploadSessionPart(c.env.DB,uid,uploadId,partNumber,data);
+    return c.json({ok:true,...result,storage_mode:'d1'});
+  }catch(e:any){return c.json({ok:false,error:e?.message||'TL3 청크 업로드 실패'},400);}
+}});
+app.post('/api/upload/complete',async(c)=>{
+  const session=await storageUser(c),uid=Number(session?.sub||0);
+  if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);
+  try{
+    const body=await c.req.json<any>();
+    const uploadId=String(body.uploadId||'');
+    if(!/^[A-Za-z0-9_-]{20,80}$/.test(uploadId))return c.json({ok:false,error:'유효하지 않은 업로드 세션 ID'},400);
+    const meta=await completeD1UploadSession(c.env.DB,uid,uploadId);
+    const url=`https://api.timelink.digital/api/storage/${encodeURIComponent(meta.key)}`;
+    const trackId=meta.file_name.replace(/\.tl3$/i,'').split('_').slice(0,-1).join('_');
+    return c.json({ok:true,url,stream_url:url,key:meta.key,trackId,file_type:'audio/tl3',release_mode:'tl3',size:meta.size,manifest_sha256:meta.manifest_sha256,storage_mode:'d1'});
+  }catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 완료 실패'},400);}
+}});
+
 app.get('/api/storage/:key{.+}', async (c) => {
   try {
     await ensureD1Storage(c.env.DB);
