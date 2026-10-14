@@ -32,6 +32,8 @@ check("Number(object.user_id)!==ownerId" in stream,"external object ownership ma
 check("scoped&&Number(scoped[1])!==ownerId" in stream,"D1 key ownership matches creator")
 shareplace=Path("src/routes/shareplace.ts").read_text(encoding="utf-8")
 check("f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0" in shareplace,"SharePlace modern catalogue filters unpublished releases")
+check("LOWER(f.file_type)='audio/tl3'" in shareplace and "f.stream_url=s.stream_url" in shareplace,"public SharePlace exposes only verified TL3 streams")
+check("free_mp3" not in public_gate,"MP3 source assets are never public playback releases")
 share_create=shareplace[shareplace.index("router.post('/', async"):shareplace.index("// GET / - SharePlace")]
 check("poc_logs" not in share_create and "poc_gained" not in share_create,"registration does not grant POC before verification")
 legacy=part("app.get('/api/shares', async (c) => {","// 🔥 POST /api/shares")
