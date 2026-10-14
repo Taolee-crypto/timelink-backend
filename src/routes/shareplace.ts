@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
+import { getD1ObjectMeta } from '../d1-storage';
 
 const router = new Hono<{ Bindings: Env }>();
 
@@ -21,19 +22,27 @@ router.post('/', async (c) => {
     for(const sql of [
       "ALTER TABLE tl_shares ADD COLUMN price_per_sec REAL DEFAULT 1","ALTER TABLE tl_shares ADD COLUMN composer TEXT DEFAULT ''","ALTER TABLE tl_shares ADD COLUMN lyricist TEXT DEFAULT ''","ALTER TABLE tl_shares ADD COLUMN lyrics TEXT DEFAULT ''","ALTER TABLE tl_shares ADD COLUMN release_mode TEXT DEFAULT ''","ALTER TABLE tl_shares ADD COLUMN storage_mode TEXT DEFAULT ''","ALTER TABLE tl_shares ADD COLUMN origin_hash TEXT DEFAULT ''","ALTER TABLE tl_shares ADD COLUMN release_check TEXT DEFAULT ''","ALTER TABLE tl_shares ADD COLUMN content_kind TEXT DEFAULT ''"
     ]) await c.env.DB.prepare(sql).run().catch(()=>{});
-    const isFree=String(body.release_mode||'').startsWith('free_mp3');
-    if(isFree){
-      if(String(body.file_type||'').toLowerCase()!=='audio/mp3') return c.json({ok:false,error:'무료 공개??MP3�?가?�합?�다.'},400);
-      if(body.rights_confirmed!==true) return c.json({ok:false,error:'창작??권리 ?�인???�요?�니??'},400);
-      if(String(body.release_check||'')==='spotify_match') return c.json({ok:false,error:'기출??곡으�??�인?�어 무료 공개?????�습?�다.'},409);
-      const hash=String(body.origin_hash||'').trim().toLowerCase();
-      if(hash){ const same=await c.env.DB.prepare("SELECT id,title,artist FROM tl_shares WHERE lower(COALESCE(origin_hash,''))=? LIMIT 1").bind(hash).first<any>().catch(()=>null); if(same) return c.json({ok:false,error:'?�일???�본 ?�일???��? ?�록?�어 ?�습?�다.',existing:same},409); }
-    }
+    const releaseMode=String(body.release_mode||'').toLowerCase();
+    const fileType=String(body.file_type||'').toLowerCase();
+    if(releaseMode.startsWith('free_mp3')||fileType==='audio/mp3'||fileType==='audio/mpeg')
+      return c.json({ok:false,error:'MP3 원본은 비공개 소스 자산입니다. TL3로 변환한 뒤 공유해 주세요.'},400);
+    if(releaseMode!=='tl3'||fileType!=='audio/tl3')
+      return c.json({ok:false,error:'정식 TL3 디지털 자산만 공유할 수 있습니다.'},400);
+    if(body.rights_confirmed!==true)return c.json({ok:false,error:'창작자 권리 확인이 필요합니다.'},400);
+    const streamUrl=streamUrl.trim();
+    let storageKey=streamUrl;
+    if(streamUrl.includes('/api/storage/'))storageKey=decodeURIComponent(streamUrl.split('/api/storage/')[1].split('?')[0]);
+    const ownedKey=storageKey.match(/^tracks\\/u(\\d+)\\/[A-Za-z0-9_-]{1,160}\\.tl3$/i);
+    if(!ownedKey||Number(ownedKey[1])!==userId)return c.json({ok:false,error:'TL3 저장 자산의 소유권을 확인할 수 없습니다.'},403);
+    const stored=await getD1ObjectMeta(c.env.DB,storageKey);
+    if(!stored)return c.json({ok:false,error:'완료된 TL3 저장 자산을 찾을 수 없습니다.'},404);
+    const hash=String(body.origin_hash||'').trim().toLowerCase();
+    if(hash){const same=await c.env.DB.prepare("SELECT id,title,artist FROM tl_shares WHERE lower(COALESCE(origin_hash,''))=? LIMIT 1").bind(hash).first<any>().catch(()=>null);if(same)return c.json({ok:false,error:'동일한 원본 자산이 이미 등록되어 있습니다.',existing:same},409);}
     const id='sh_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
-    const fileTl=isFree?0:Number(body.file_tl||5000);
-    await c.env.DB.prepare("INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics,release_mode,storage_mode,origin_hash,release_check,content_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(id,String(userId),String(user.username||'User'),title,String(body.artist||''),String(body.album||''),Number(body.duration||0),fileTl,String(body.category||'Music'),String(body.file_type||''),String(body.category_type||''),String(body.description||''),String(body.plan||'FREE'),body.spotify_id||null,body.spotify_url||null,body.cover_url||null,body.preview_url||null,String(body.stream_url||''),String(body.country||'KR'),String(body.content_lang||'ko'),0,Date.now(),Number(body.price_per_sec||1),String(body.composer||''),String(body.lyricist||''),String(body.lyrics||''),String(body.release_mode||''),String(body.storage_mode||''),String(body.origin_hash||''),String(body.release_check||''),isFree?'mp3':'tl3').run();
+    const fileTl=Number(body.file_tl||5000);
+    await c.env.DB.prepare("INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics,release_mode,storage_mode,origin_hash,release_check,content_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(id,String(userId),String(user.username||'User'),title,String(body.artist||''),String(body.album||''),Number(body.duration||0),fileTl,String(body.category||'Music'),String(body.file_type||''),String(body.category_type||''),String(body.description||''),String(body.plan||'FREE'),body.spotify_id||null,body.spotify_url||null,body.cover_url||null,body.preview_url||null,String(body.stream_url||''),String(body.country||'KR'),String(body.content_lang||'ko'),0,Date.now(),Number(body.price_per_sec||1),String(body.composer||''),String(body.lyricist||''),String(body.lyrics||''),String(body.release_mode||''),String(body.storage_mode||''),String(body.origin_hash||''),String(body.release_check||''),'tl3').run();
     // Registration alone never grants POC. Only verified contribution events may reach the canonical ledger.
-    return c.json({ok:true,id,content_kind:isFree?'mp3':'tl3'});
+    return c.json({ok:true,id,content_kind:'tl3'});
   } catch(e:any) { console.error('SharePlace POST error:',e); return c.json({ok:false,error:e?.message||'?�록 ?�패'},500); }
 });
 
@@ -47,7 +56,7 @@ router.get('/', async (c) => {
 
   let query = `SELECT f.*, u.username FROM tl_files f
     JOIN users u ON f.user_id = u.id
-    WHERE f.auth_status = 'verified' AND f.shared = 1 AND f.revenue_held = 0`;
+    WHERE LOWER(f.file_type) = 'audio/tl3' AND f.auth_status = 'verified' AND f.shared = 1 AND f.revenue_held = 0`;
   const params: (string | number)[] = [];
 
   if (genre) { query += ' AND f.genre = ?'; params.push(genre); }
@@ -65,12 +74,12 @@ router.get('/', async (c) => {
     file_tl:Number(f.file_tl||0),category:String(f.genre||'Music'),file_type:String(f.file_type||''),
     category_type:'',description:'',plan:'A',cover_url:f.cover_image||null,
     pulse:Number(f.pulse||0),play_count:Number(f.play_count||0),created_at:f.created_at,
-    content_kind:Number(f.file_tl||0)>0?'tl3':'mp3',shared:1,auth_status:'verified',revenue_held:0,
+    content_kind:'tl3',shared:1,auth_status:'verified',revenue_held:0,
     stream_url:origin+'/api/legacy-stream/'+encodeURIComponent(String(f.id)),source_table:'tl_file'
   }));
   let modern:any[]=[];
   try {
-    const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE ((LOWER(COALESCE(s.content_kind,''))='mp3' AND LOWER(COALESCE(s.release_mode,'')) LIKE 'free_mp3%') OR EXISTS (SELECT 1 FROM tl_files f WHERE f.file_url=s.stream_url AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0)) ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
+    const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE EXISTS (SELECT 1 FROM tl_files f WHERE f.file_url=s.stream_url AND LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0) ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
     modern=(modernRows.results||[]).map((share:any)=>({
       id:String(share.id),user_id:Number(share.user_id||0),username:String(share.username||'User'),creator:String(share.username||'User'),
       title:String(share.title||''),artist:String(share.artist||''),album:String(share.album||''),duration:Number(share.duration||0),
