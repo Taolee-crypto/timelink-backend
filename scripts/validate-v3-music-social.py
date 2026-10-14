@@ -89,5 +89,11 @@ fails("INSERT INTO v3_track_follows(id,follower_user_id,followed_user_id) VALUES
 fails("INSERT INTO v3_track_follows(id,follower_user_id,followed_user_id) VALUES('follow-self',1,1)")
 assert db.execute("SELECT COUNT(*) FROM v3_track_likes WHERE track_id='track-public'").fetchone()[0] == 1
 assert db.execute("SELECT COUNT(*) FROM v3_track_comments WHERE track_id='track-public' AND moderation_status='visible'").fetchone()[0] == 1
+db.execute("UPDATE v3_track_comments SET moderation_status='hidden' WHERE id='comment-1'")
+db.execute("""INSERT INTO v3_track_comment_moderation_events
+(id,comment_id,moderator_user_id,action,moderation_note)
+VALUES('mod-1','comment-1',1,'hidden','Confirmed policy violation')""")
+assert db.execute("SELECT moderation_status FROM v3_track_comments WHERE id='comment-1'").fetchone()[0] == "hidden"
+assert db.execute("SELECT COUNT(*) FROM v3_track_comment_moderation_events WHERE comment_id='comment-1'").fetchone()[0] == 1
 
-print("V3 SharePlace/social validation passed: only public approved streamable MP3s are discoverable; TL3 remains separate; likes, comments, reports and follows are owner-bound and deduplicated.")
+print("V3 SharePlace/social validation passed: only public approved streamable MP3s are discoverable; TL3 remains separate; likes, comments, reports, follows and audited moderation are enforced.")
