@@ -37,10 +37,13 @@ db.execute("""INSERT INTO v3_track_rights
 VALUES('rights-public','track-public',1,'composer','creator-attestation-v1',datetime('now'),'verified')""")
 db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,content_hash,size_bytes,mime_type,availability_status,created_by)
+VALUES('asset-public-source','track-public','mp3_audio','google_drive','source-mp3-object','sha256:' || printf('%064d',2),2048,'audio/mpeg','available',1)""")
+db.execute("""INSERT INTO v3_track_assets
+(id,track_id,asset_type,storage_provider,storage_object_id,content_hash,size_bytes,mime_type,availability_status,created_by)
 VALUES('asset-public','track-public','tl3_release_file','google_drive','tl3-object','sha256:' || printf('%064d',1),2048,'application/octet-stream','available',1)""")
 db.execute("""INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES('release-public','track-public','TL3',1,'published','asset-public',120)""")
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES('release-public','track-public','TL3',1,'published','asset-public','asset-public-source',120)""")
 db.execute("""INSERT INTO v3_shareplace_entries
 (id,track_id,owner_user_id,category,visibility,published_at)
 VALUES('share-public','track-public',1,'Music','public',datetime('now'))""")
@@ -59,7 +62,7 @@ assert visible and visible["display_title"] == "Public Song" and visible["price_
 # MP3 is a source Asset, never a Release or a public streaming tier.
 fails("""INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES('invalid-mp3-release','track-public','MP3',1,'published','asset-public',0)""")
+VALUES('invalid-mp3-release','track-public','MP3',1,'published','asset-public','asset-public-source',0)""")
 
 # A TL3 asset stored by object reference is eligible; it need not expose a public stream URL.
 db.execute("INSERT INTO v3_tracks(id,owner_user_id,status,visibility) VALUES('track-private',1,'active','private')")
@@ -68,10 +71,13 @@ db.execute("""INSERT INTO v3_track_rights
 VALUES('rights-private','track-private',1,'composer','creator-attestation-v1',datetime('now'),'verified')""")
 db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,availability_status,created_by,mime_type)
+VALUES('asset-private-source','track-private','mp3_audio','onedrive','source-object','available',1,'audio/mpeg')""")
+db.execute("""INSERT INTO v3_track_assets
+(id,track_id,asset_type,storage_provider,storage_object_id,availability_status,created_by,mime_type)
 VALUES('asset-private','track-private','tl3_release_file','onedrive','private-object','available',1,'application/octet-stream')""")
 db.execute("""INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES('release-private','track-private','TL3',1,'published','asset-private',120)""")
+VALUES('release-private','track-private','TL3',1,'published','asset-private','asset-private-source',120)""")
 not_public = db.execute("""
 SELECT t.id FROM v3_tracks t
 JOIN v3_shareplace_entries s ON s.track_id=t.id AND s.visibility='public'
