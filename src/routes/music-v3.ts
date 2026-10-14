@@ -21,7 +21,7 @@ function trustedLocalAgentUrl(value: unknown): URL | null {
     const url = new URL(String(value || ''));
     const host = url.hostname.toLowerCase();
     const trustedHost = host === 'agent.timelink.digital' || host.endsWith('.trycloudflare.com');
-    const trustedPath = /^\\/local\\/[a-f0-9]{36}$/i.test(url.pathname);
+    const trustedPath = url.pathname.startsWith('/local/') && /^[a-f0-9]{36}$/i.test(url.pathname.slice(7));
     if (url.protocol !== 'https:' || !trustedHost || !trustedPath
       || url.username || url.password || url.search || url.hash) return null;
     return url;
