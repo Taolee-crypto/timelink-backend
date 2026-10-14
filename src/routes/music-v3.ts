@@ -192,16 +192,9 @@ router.post('/tracks/:id/assets/local', async (c) => {
   // host or Cloudflare quick tunnels. Arbitrary URLs are rejected to prevent SSRF/open redirects.
   let streamUri:string|null=null;
   if(body.public_url) {
-    try {
-      const u=new URL(String(body.public_url));
-      const host=u.hostname.toLowerCase();
-      const trustedHost=host==='agent.timelink.digital' || host.endsWith('.trycloudflare.com');
-      const tokenPath=/^\/local\/[a-f0-9]{36}$/i.test(u.pathname);
-      if(u.protocol!=='https:' || !trustedHost || !tokenPath || u.username || u.password || u.search || u.hash) {
-        return c.json({ok:false,error:'public_url must be an HTTPS TimeLink Local Agent file URL'},422);
-      }
-      streamUri=u.toString();
-    } catch { return c.json({ok:false,error:'Invalid public_url'},422); }
+    const trustedUrl=trustedLocalAgentUrl(body.public_url);
+    if(!trustedUrl) return c.json({ok:false,error:'public_url must be an HTTPS TimeLink Local Agent file URL'},422);
+    streamUri=trustedUrl.toString();
   }
   const assetId=ID();
   const availability=streamUri?'available':'local_only';
