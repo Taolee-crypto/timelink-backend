@@ -37,6 +37,9 @@ import { ensureStorageTables, beginStorageConnect, finishStorageConnect, createU
 import { buildTL3V3, buildTL3V3FromMp3, parseTL3V3, decryptSegmentV3, decryptSingleSegment, deriveLicenseBytes, computeNextToken, unhex, initialToken, hex } from './tl3v3';
 
 
+const D1_CHUNK_SIZE = D1_OBJECT_CHUNK_SIZE;
+const D1_MAX_FILE_SIZE = D1_MAX_OBJECT_SIZE;
+
 const app = new Hono<{ Bindings: Env }>();
 
 app.use('*', cors({
@@ -485,7 +488,6 @@ app.post('/api/upload/tl3', async (c) => {
 });
 
 // ── TL3 / 파일 업로드 — R2 없는 D1 Object Storage
-const D1_CHUNK_SIZE=D1_OBJECT_CHUNK_SIZE,D1_MAX_FILE_SIZE=D1_MAX_OBJECT_SIZE;
 app.post('/api/upload/init',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const b=await c.req.json<any>(),id=String(b.trackId||'').trim(),name=String(b.fileName||`${id}.tl3`),size=Number(b.totalSize||0);if(!/^[A-Za-z0-9_-]{1,100}$/.test(id))return c.json({ok:false,error:'유효하지 않은 trackId'},400);if(!Number.isSafeInteger(size)||size<=0||size>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'파일 크기가 올바르지 않습니다.'},413);const key=`tracks/u${uid}/${id}.tl3`;await initD1Upload(c.env.DB,key,name,size,'application/octet-stream');return c.json({ok:true,key,uploadId:id,chunkSize:D1_CHUNK_SIZE,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 초기화 실패'},500);}});
 app.put('/api/upload/part',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const key=String(c.req.query('key')||''),pn=Number(c.req.query('partNumber')||0);if(!key.startsWith(`tracks/u${uid}/`)||!key.endsWith('.tl3'))return c.json({ok:false,error:'업로드 소유권 불일치'},403);if(!Number.isInteger(pn)||pn<1)return c.json({ok:false,error:'partNumber 필수'},400);const data=await c.req.arrayBuffer();if(!data.byteLength)return c.json({ok:false,error:'빈 청크'},400);if(data.byteLength>D1_CHUNK_SIZE)return c.json({ok:false,error:'청크가 너무 큽니다.',max_chunk_size:D1_CHUNK_SIZE},413);await writeD1UploadPart(c.env.DB,key,pn,new Uint8Array(data));return c.json({ok:true,partNumber:pn,etag:`d1-${pn}-${data.byteLength}`,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 청크 업로드 실패'},500);}});
 app.post('/api/upload/complete',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const b=await c.req.json<any>(),key=String(b.key||'');if(!key.startsWith(`tracks/u${uid}/`)||!key.endsWith('.tl3'))return c.json({ok:false,error:'업로드 소유권 불일치'},403);const meta=await completeD1Upload(c.env.DB,key),url=`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`;return c.json({ok:true,url,stream_url:url,key,trackId:key.split('/').pop()?.replace(/\.tl3$/,''),file_type:'audio/tl3',release_mode:'tl3',size:meta.size,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 완료 실패'},500);}});
@@ -826,7 +828,9 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-?,total_tl_spent=total_tl_spent+? WHERE id=? AND tl_balance>=?').bind(cost,cost,u.id,cost).run();
     if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:cost,balance:u.tl_balance},402);
     const shareIdKey = `tl3_${fileId}`;
-    const licN = await deriveLicenseBytes(c.env.TL3_MASTER_SECRET, shareIdKey);
+    const masterSecret = c.env.TL3_MASTER_SECRET;
+    if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
+    const licN = await deriveLicenseBytes(masterSecret, shareIdKey);
     const nextNs = Math.max(Number(ss.next_segment||0), segmentIndex + 1);
     await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(nextNs,segmentIndex,cost,Number(seg.duration_ms),now,now,sessionId).run();
     const fresh = await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
@@ -951,7 +955,9 @@ app.get('/api/v1/tl3/offline/lic/:session_id', async (c) => {
     if (Number(ss.lic_delivered) === 1) return c.json({ok:false,error:'이미 lic이 전달된 세션입니다.'},409);
     if (new Date(ss.expires_at).getTime() < Date.now()) return c.json({ok:false,error:'세션이 만료되었습니다.'},410);
 
-    const lic = await deriveLicenseBytes(c.env.TL3_MASTER_SECRET, ss.share_id);
+    const masterSecret = c.env.TL3_MASTER_SECRET;
+    if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
+    const lic = await deriveLicenseBytes(masterSecret, ss.share_id);
     await c.env.DB.prepare("UPDATE tl3_offline_sessions SET lic_delivered=1,updated_at=datetime('now') WHERE id=?").bind(sid).run();
     return c.json({ok:true, lic:hex(lic), share_id:ss.share_id, total_segments:Number(ss.total_segments)});
   } catch(e:any) { return c.json({ok:false,error:e.message||'offline lic error'},500); }
@@ -1467,7 +1473,7 @@ app.patch('/api/shares/:id', async (c) => {
   let userId: number;
   try {
     const p = parseJWT(auth);
-    userId = p.userId || p.id || p.sub;
+    userId = Number(p.userId ?? p.id ?? p.sub ?? 0);
     if (!userId) throw new Error('no userId');
   } catch {
     return c.json({ error: '토큰 오류' }, 401);
