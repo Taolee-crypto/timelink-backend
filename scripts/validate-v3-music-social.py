@@ -61,7 +61,7 @@ assert visible and visible["display_title"] == "Public Song" and visible["price_
 
 # MP3 is a source Asset, never a Release or a public streaming tier.
 fails("""INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
 VALUES('invalid-mp3-release','track-public','MP3',1,'published','asset-public','asset-public-source',0)""")
 
 # A TL3 asset stored by object reference is eligible; it need not expose a public stream URL.
