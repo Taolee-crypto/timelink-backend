@@ -10,7 +10,13 @@ export interface Env {
   ONEDRIVE_CLIENT_SECRET?: string;
   ONEDRIVE_REDIRECT_URI?: string;
   STORAGE_ENCRYPTION_KEY?: string;
+
+  // Cloudflare Access Service Token for Worker-to-Local-Agent streaming
+  CF_ACCESS_CLIENT_ID?: string;
+  CF_ACCESS_CLIENT_SECRET?: string;
+
   TLD_SERVER_URL?: string;  // TimeLink TLD server (default: https://score.timelink.digital)
+
 }
 
 export interface JWTPayload {
