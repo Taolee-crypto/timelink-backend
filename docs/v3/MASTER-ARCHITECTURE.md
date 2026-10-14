@@ -144,9 +144,9 @@ Duplicate detection is advisory, not title-only. Use hash, creator, artist/title
 
 1. Creator explicitly chooses “Prepare TL3 release” on a registered Track.
 2. Browser verifies the selected local source file and computes/validates its fingerprint against the Track's registered source metadata where available.
-3. TL3 preparation runs in the approved client/Local Agent processing path. The source MP3 is read only because the creator initiated release preparation; this is not MP3 registration.
+3. TL3 conversion runs in the approved client/Local Agent processing path. The source MP3 is read only because the creator explicitly initiated conversion; this is not a separate MP3 registration product.
 4. Encrypted TL3 output is written to a configured creator-controlled or approved storage provider through a storage adapter. The API records object metadata and references, not provider secrets.
-5. Creator sets price, reviews rights/credits, confirms duration and preview/cover, then submits for publication.
+5. On successful conversion, the system records a deduplicated `tl3_conversion_completed` POC candidate event with evidence and policy version. The candidate remains pending until validated; conversion alone does not issue TL or TLC. The creator sets the TL3 price, reviews rights/credits, confirms duration and cover, then submits the Release for publication.
 6. API validates ownership, release asset, storage availability, rights state, price bounds, and format compatibility before publishing.
 
 ### 6.2 Playback authorization
@@ -191,10 +191,6 @@ All V3 routes are under `/api/v3`. Existing endpoints remain operational during 
 - `PATCH /api/v3/me/profile`
 
 ### Track registration and metadata
-- `POST /api/v3/tracks/registrations` — metadata-only registration; must reject/avoid audio-byte upload.
-- `GET /api/v3/tracks/registrations/:registrationId`
-- `PATCH /api/v3/tracks/registrations/:registrationId`
-- `POST /api/v3/tracks/registrations/:registrationId/confirm`
 - `GET /api/v3/tracks`
 - `POST /api/v3/tracks`
 - `GET /api/v3/tracks/:trackId`
@@ -275,12 +271,12 @@ Every route must define request/response schemas, auth requirement, ownership po
 - Acceptance: authenticated identity/profile workflow works end-to-end; legacy login paths remain intact until cutover approval.
 
 ### Stage 2 — Music catalog
-- Implement metadata-only MP3 registration, creator confirmation, stable Track identity, rights, artwork, Creator Studio catalog, and SharePlace discovery.
-- Acceptance: network inspection proves no MP3 bytes leave the creator's browser during registration; metadata provenance survives edits; Track/social interactions work.
+- Implement Track creation from creator-selected source metadata, stable Track identity, private source Asset references, rights, artwork, Creator Studio catalog, and SharePlace Track pages.
+- Acceptance: metadata provenance survives edits; no standalone free MP3 Release exists; MP3 intake and upload produce no POC event; Track/social interactions work.
 
 ### Stage 3 — TL3 release
 - Implement explicit source selection, TL3 preparation, storage adapter, release review/publication, and encrypted asset retrieval.
-- Acceptance: original MP3 is not uploaded during registration; TL3 release can be prepared only through explicit creator action; stored release can be retrieved and verified.
+- Acceptance: MP3 source remains private until explicit conversion; TL3 conversion is creator-initiated; a POC candidate is recorded only after successful conversion; the stored TL3 Release can be retrieved and verified.
 
 ### Stage 4 — Playback and TL settlement
 - Implement session/license, ordered segment delivery, actual-listening validation, pause/resume/recovery, idempotent settlement, and creator revenue.
@@ -288,7 +284,7 @@ Every route must define request/response schemas, auth requirement, ownership po
 
 ### Stage 5 — Social, analytics, and economy
 - Complete playlists, follows, moderation/reporting, analytics, POC validation, and separately gated TLC workflow.
-- Acceptance: analytics only uses validated events; no registration-only POC rewards; TL/TLC accounting remains separated.
+- Acceptance: POC candidates originate only from successful TL3 conversion events; only validated events affect POC; TL/TLC accounting remains separated.
 
 ### Stage 6 — Integration and release
 - Run regression, security, migration, load, and browser compatibility tests.
@@ -307,8 +303,8 @@ Every route must define request/response schemas, auth requirement, ownership po
 
 | ID | Decision | Rationale |
 |---|---|---|
-| ADR-001 | MP3 source remains on creator's computer during registration | Creator source privacy and no unnecessary platform storage |
-| ADR-002 | MP3 registration is metadata-only and not playable | Distinguishes catalog registration from a paid TL3 product |
+| ADR-001 | MP3 source is a creator-owned Asset, not a public free product | Creator source privacy and explicit storage control |
+| ADR-002 | MP3 metadata intake creates a Track draft but no Release or POC event | Prevents a free MP3 product tier and premature contribution scoring |
 | ADR-003 | Track, Asset, and Release are separate entities | Stable work identity across source and release formats |
 | ADR-004 | TL3 is the separately prepared encrypted paid release | Explicit release and rights lifecycle |
 | ADR-005 | TL is 1 TL per second at ₩1 per TL | Current product accounting policy |
