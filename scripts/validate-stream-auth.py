@@ -68,7 +68,7 @@ check("bodyLimit({ maxSize: D1_OBJECT_CHUNK_SIZE })" in source,"chunk request bo
 social=part("app.get('/api/social/stats/:id'","// ── Unsplash 이미지 검색")
 check("!await isPublicPlaybackShare(c.env.DB,share)" in social,"private tracks are blocked from public social reads and actions")
 check("target===userId" in social,"self-follow is rejected")
-check("UNIQUE(share_id,user_id)" in social and "INSERT OR IGNORE INTO social_likes" in social,"likes are unique and retry-safe")
+check("UNIQUE(share_id,user_id)" in source and "INSERT OR IGNORE INTO social_likes" in social,"likes are unique and retry-safe")
 check("WHERE id=? AND user_id=?" in social,"playlist mutations are owner-scoped")
 check("UNIQUE(comment_id,reporter_id)" in social and "INSERT OR IGNORE INTO social_comment_reports" in social,"duplicate comment reports are idempotent")
 wrangler=Path("wrangler.toml").read_text(encoding="utf-8")
