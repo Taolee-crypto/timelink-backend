@@ -67,9 +67,20 @@ router.get('/', async (c) => {
   const limit = Number(c.req.query('limit') || 20);
   const offset = Number(c.req.query('offset') || 0);
 
-  let query = `SELECT f.*, u.username FROM tl_files f
+  let query = `SELECT f.*, u.username,
+    (SELECT c.cert_no FROM tl_asset_certs c
+     JOIN tl_assets a ON a.asset_id = c.asset_id
+     WHERE a.file_id = f.id AND c.status = 'active'
+     LIMIT 1) AS cert_no
+    FROM tl_files f
     JOIN users u ON f.user_id = u.id
+
     WHERE LOWER(f.file_type) = 'audio/tl3' AND f.auth_status = 'verified' AND f.shared = 1 AND f.revenue_held = 0`;
+
+    WHERE f.auth_status = 'verified' AND f.shared = 1 AND f.revenue_held = 0`;
+
+  // CERT_MARK_V2: tl_files에 cert_no 서브쿼리 포함
+
   const params: (string | number)[] = [];
 
   if (genre) { query += ' AND f.genre = ?'; params.push(genre); }
@@ -92,6 +103,7 @@ router.get('/', async (c) => {
   }));
   let modern:any[]=[];
   try {
+
     const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE EXISTS (SELECT 1 FROM tl_files f WHERE (f.stream_url=s.stream_url OR f.file_url=s.stream_url) AND LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0) ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
     modern=(modernRows.results||[]).map((share:any)=>({
       id:String(share.id),user_id:Number(share.user_id||0),username:String(share.username||'User'),creator:String(share.username||'User'),
@@ -101,7 +113,41 @@ router.get('/', async (c) => {
       spotify_id:share.spotify_id||null,spotify_url:share.spotify_url||null,cover_url:share.cover_url||null,
       country:String(share.country||'KR'),content_lang:String(share.content_lang||'ko'),pulse:Number(share.pulse||0),
       created_at:share.created_at,content_kind:share.content_kind||'tl3',shared:1,auth_status:'verified',revenue_held:0,
-      stream_url:origin+'/api/stream/'+encodeURIComponent(String(share.id)),source_table:'share'
+      stream_url:o=rigin+'/api/stream/'+encodeURIComponent(String(share.id)),source_table:'share'
+
+    // CERT_MARK_V3: tl_shares.id → tl3_releases.share_id → tl_assets.file_id → tl_asset_certs.cert_no
+    const modernRows=await c.env.DB.prepare(`
+      SELECT s.*, u.username,
+        (SELECT c.cert_no FROM tl_asset_certs c
+         JOIN tl_assets a ON a.asset_id = c.asset_id
+         JOIN tl3_releases r ON r.file_id = a.file_id
+         WHERE r.share_id = s.id AND c.status = 'active'
+         LIMIT 1) AS cert_no,
+        (SELECT a.asset_id FROM tl_assets a
+         JOIN tl3_releases r ON r.file_id = a.file_id
+         WHERE r.share_id = s.id
+         LIMIT 1) AS asset_id
+      FROM tl_shares s
+      JOIN users u ON CAST(s.user_id AS INTEGER)=u.id
+      WHERE 1=1
+      ORDER BY s.pulse DESC, s.created_at DESC
+      LIMIT ? OFFSET ?
+    `).bind(limit,offset).all();
+
+    modern=(modernRows.results||[]).map((s:any)=>({
+      ...s,
+      id:s.id,
+      user_id:Number(s.user_id),
+      creator:s.username,
+      file_type:s.file_type||'audio/mp3',
+      stream_url:s.stream_url||'',
+      shared:1,
+      auth_status:'verified',
+      revenue_held:0,
+      content_kind:s.content_kind||'mp3',
+      cert_no: s.cert_no || null,
+      asset_id: s.asset_id || null
+
     }));
   } catch(e) { console.error('tl_shares list error:',e); }
   return c.json([...modern,...legacy]);

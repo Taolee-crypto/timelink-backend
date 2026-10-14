@@ -59,7 +59,11 @@ export interface TL3Header {
   salt: string;
   lic_id: string;
   token_latest: string;
+  lic: string;           // 오프라인 재생용
+  share_id?: string;      // 오프라인 정산용 (POC)
+  track_id?: number;     // file_id (지갑 정산용)
   mp3_tokens?: string[];   // 스파인 코드: T_0 ~ T_N 전체
+  mp3_seg_lens?: number[];  // 세그먼트별 ciphertext 길이 (오프라인 재생용)
   ts: string;
   rights: { creator_id: number; license: string; ownership: string };
 }
@@ -179,6 +183,7 @@ export async function deriveLicenseBytes(masterSecret: string, shareId: string):
 // - 세그먼트별 AES-256-GCM + 타임토큰 체인
 // ─────────────────────────────────────────
 export interface BuildFromMp3Input {
+  fileId?: number;        // 지갑 정산용 (tl_files.id)
   title: string;
   artist: string;
   cid: string;
@@ -259,23 +264,26 @@ export async function buildTL3V3FromMp3(input: BuildFromMp3Input): Promise<Build
     salt: hex(salt),
     lic_id: input.licId || 'k_2026_01',
     token_latest: hex(T_mp3),
+    lic: hex(lic),           // 오프라인 재생용
+    share_id: input.shareId,   // 오프라인 정산용
+    track_id: input.fileId,   // 지갑 정산용
     mp3_tokens: mp3Tokens,   // 스파인 코드 전체
+    mp3_seg_lens: mp3Enc.map(function(b){return b.length;}),
     ts: new Date().toISOString(),
     rights: { creator_id: input.creator_id, license: 'TL3-v3', ownership: 'creator' },
   };
 
-  // 2-pass offset 계산
-  const headerJson1 = enc(JSON.stringify(header));
-  const headerTotal1 = 4 + 1 + 4 + headerJson1.length;
+  // 안정화 루프: first_offset이 변하지 않을 때까지 반복 (3-pass 이상 안전)
   const mp3TotalBytes = mp3Enc.reduce((a, b) => a + b.length, 0);
 
-  header.mp3.first_offset = headerTotal1;
-
-  const headerJson2 = enc(JSON.stringify(header));
-  const headerTotal2 = 4 + 1 + 4 + headerJson2.length;
-  if (headerTotal2 !== headerTotal1) {
-    const shift = headerTotal2 - headerTotal1;
-    header.mp3.first_offset += shift;
+  let prevTotal = -1;
+  let safety = 0;
+  while (safety++ < 10) {
+    const json = enc(JSON.stringify(header));
+    const total = 4 + 1 + 4 + json.length;
+    if (total === prevTotal) break;
+    header.mp3.first_offset = total;
+    prevTotal = total;
   }
 
   const headerJsonFinal = enc(JSON.stringify(header));
@@ -365,22 +373,26 @@ export async function buildTL3V3(input: BuildInput): Promise<BuildResult> {
     salt: hex(salt),
     lic_id: input.licId || 'k_2026_01',
     token_latest: hex(T_mp3),  // mp3 기준 (또는 별도 필드)
+    mp3_tokens: mp3Tokens,   // 스파인 코드 전체 (PCM 함수)
+    mp3_seg_lens: mp3Enc.map(function(b){return b.length;}),
+    lic: hex(lic),           // 오프라인 재생용
+    share_id: input.shareId,   // 오프라인 정산용
+    track_id: input.fileId,   // 지갑 정산용
     ts: new Date().toISOString(),
     rights: { creator_id: input.creator_id, license: 'TL3-v3', ownership: 'creator' },
   };
 
-  // 2-pass offset 계산
-  const headerJson1 = enc(JSON.stringify(header));
-  const headerTotal1 = 4 + 1 + 4 + headerJson1.length;
+  // 안정화 루프: first_offset이 변하지 않을 때까지 반복 (3-pass 이상 안전)
   const mp3TotalBytes = mp3Enc.reduce((a, b) => a + b.length, 0);
 
-  header.mp3.first_offset = headerTotal1;
-
-  const headerJson2 = enc(JSON.stringify(header));
-  const headerTotal2 = 4 + 1 + 4 + headerJson2.length;
-  if (headerTotal2 !== headerTotal1) {
-    const shift = headerTotal2 - headerTotal1;
-    header.mp3.first_offset += shift;
+  let prevTotal = -1;
+  let safety = 0;
+  while (safety++ < 10) {
+    const json = enc(JSON.stringify(header));
+    const total = 4 + 1 + 4 + json.length;
+    if (total === prevTotal) break;
+    header.mp3.first_offset = total;
+    prevTotal = total;
   }
 
   const headerJsonFinal = enc(JSON.stringify(header));

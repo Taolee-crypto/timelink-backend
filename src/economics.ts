@@ -452,6 +452,16 @@ eco.post('/activity', async (c) => {
       WHERE user_id=? AND created_at >= ?
     `).bind(userId, monthStart + ' 00:00:00').first().catch(() => ({ mp3_count: 0, tl3_count: 0 })) as any;
 
+
+    // ★ 악보 통계 (신규) — 악보 공유/사용/보기
+    const scoreStats = await c.env.DB.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN mode='upload_score' THEN 1 ELSE 0 END), 0) as shares,
+        COALESCE(SUM(CASE WHEN mode='score_use' THEN 1 ELSE 0 END), 0) as uses,
+        COALESCE(SUM(CASE WHEN mode='score_view' THEN 1 ELSE 0 END), 0) as views
+      FROM poc_logs
+      WHERE user_id=? AND created_at >= ?
+    `).bind(userId, monthStart).first().catch(() => ({ shares: 0, uses: 0, views: 0 })) as any;
     // ── POC 신 알고리즘 ──
     // 요소별 정규화 (각 최대값 기준)
     const monthlyTlP   = Number(monthlyStats?.monthly_tl_p || 0) + tl_p_spent;
@@ -468,9 +478,23 @@ eco.post('/activity', async (c) => {
     const listenScore  = Math.min(1.0, monthlyHours / 30);         // 30시간 = 만점
     const uploadScore  = Math.min(0.5, uploads / 5);               // 5개 = 만점
 
-    // 가중합 (총 최대 5.0)
-    const rawPoc = contentScore * 0.4 + spendScore * 0.3 +
-                   listenScore  * 0.2 + uploadScore * 0.1;
+    // ★ 악보 기여 점수 (신규)
+    const scoreShares = Number(scoreStats?.shares || 0);
+    const scoreUses   = Number(scoreStats?.uses || 0);
+    const scoreViews  = Number(scoreStats?.views || 0);
+    const scoreScore  = Math.min(0.6,
+      scoreShares * 0.3 +        // 악보 공유 1개 = 0.3
+      scoreUses   * 0.05 +       // 악보 사용 1회 = 0.05
+      scoreViews  * 0.005        // 악보 보기 1회 = 0.005
+    );
+
+    // 가중합 (5요소, 총 100%)
+    const rawPoc =
+      contentScore * 0.35 +      // 40% → 35%
+      spendScore   * 0.25 +      // 30% → 25%
+      listenScore  * 0.18 +      // 20% → 18%
+      uploadScore  * 0.10 +      // 그대로
+      scoreScore   * 0.12;       // ★ 신규 12%
 
     // 하드캡 5.0, 최솟값 0.1
     const pocIndex = Math.min(5.0, Math.max(0.1, rawPoc * 10));
@@ -502,6 +526,7 @@ eco.post('/activity', async (c) => {
         spend:   Number(spendScore.toFixed(3)),
         listen:  Number(listenScore.toFixed(3)),
         upload:  Number(uploadScore.toFixed(3)),
+        score:   Number(scoreScore.toFixed(3)),
       },
       tlc_mining: {
         daily_max: Number(dailyTLC.toFixed(2)),
@@ -511,6 +536,28 @@ eco.post('/activity', async (c) => {
     });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
+  }
+});
+
+/* ══════════════════════════════════════════════════════
+   GET /api/eco/mining-history
+   로그인 사용자의 TLC 채굴 이력 (대시보드 읽기 전용)
+══════════════════════════════════════════════════════ */
+eco.get('/mining-history', async (c) => {
+  const userId = authId(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  try {
+    await migrateDB(c.env.DB);
+    const result = await c.env.DB.prepare(`
+      SELECT tl_p_base, poc_index, plan, multiplier, tlc_mined, created_at
+      FROM tlc_mining_v2
+      WHERE user_id=?
+      ORDER BY created_at DESC
+      LIMIT 20
+    `).bind(userId).all();
+    return c.json({ ok: true, history: result.results || [] });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
   }
 });
 
