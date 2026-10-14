@@ -1370,7 +1370,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       "SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'"
     ).bind(fileId).first<any>();
     const shareIdKey = releaseRow?.share_id || `tl3_${fileId}`;
-    const licN = await deriveLicenseBytes(c.env.TL3_MASTER_SECRET, shareIdKey);
+    const licN = await deriveLicenseBytes(masterSecret, shareIdKey);
 
     const nextNs = Math.max(Number(ss.next_segment||0), segmentIndex + 1);
     await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(nextNs,segmentIndex,cost,Number(seg.duration_ms),now,now,sessionId).run();
