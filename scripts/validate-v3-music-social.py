@@ -27,7 +27,7 @@ def fails(statement, params=()):
         return
     raise AssertionError("Expected integrity failure: " + statement)
 
-# A public free MP3 requires an available, explicitly streamable asset.
+# A public Track page requires an approved TL3 release; its source MP3 stays private.
 db.execute("INSERT INTO v3_tracks(id,owner_user_id,status,visibility) VALUES('track-public',1,'active','public')")
 db.execute("""INSERT INTO v3_track_metadata_versions
 (id,track_id,version,original_filename,display_title,metadata_source)
@@ -40,8 +40,11 @@ db.execute("""INSERT INTO v3_track_assets
 VALUES('asset-public','track-public','mp3_audio','local_agent',
 'https://agent.timelink.digital/local/0123456789abcdef0123456789abcdef0123',
 'available',1,'audio/mpeg')""")
+db.execute("""INSERT INTO v3_track_assets
+(id,track_id,asset_type,storage_provider,storage_object_id,availability_status,created_by,mime_type)
+VALUES('asset-tl3','track-public','tl3_release_file','google_drive','private-tl3-object','available',1,'application/octet-stream')""")
 db.execute("""INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
 VALUES('release-public','track-public','TL3',1,'published','asset-tl3','asset-public',120)""")
 db.execute("""INSERT INTO v3_shareplace_entries
 (id,track_id,owner_user_id,category,visibility,published_at)
@@ -68,16 +71,16 @@ db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,availability_status,created_by)
 VALUES('asset-private','track-private','mp3_audio','google_drive','gdrive-object','available',1)""")
 fails("""INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES('release-private','track-private','MP3',1,'published','asset-private',0)""")
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES('release-private','track-private','MP3',1,'published','asset-private','asset-private',0)""")
 
 # TL3 remains a separate protected product and may reference a private object.
 db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,availability_status,created_by)
 VALUES('asset-tl3','track-private','tl3_release_file','google_drive','tl3-object','available',1)""")
 db.execute("""INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES('release-tl3','track-private','TL3',1,'published','asset-tl3',120)""")
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES('release-tl3','track-private','TL3',1,'published','asset-tl3','asset-private',120)""")
 
 # Likes, comments, reports and follows are deduplicated and foreign-key bound.
 db.execute("INSERT INTO v3_track_likes(id,track_id,user_id) VALUES('like-1','track-public',2)")
