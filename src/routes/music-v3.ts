@@ -342,41 +342,104 @@ router.post('/tracks/:id/conversions/tl3/complete', async (c) => {
   let body:any; try {body=await c.req.json();} catch {return c.json({ok:false,error:'Invalid JSON body'},400);}
   const sourceAssetId=String(body.source_asset_id||'');
   const outputAssetId=String(body.output_asset_id||'');
-  if(!sourceAssetId||!outputAssetId||sourceAssetId===outputAssetId) return c.json({ok:false,error:'Distinct source_asset_id and output_asset_id are required'},422);
-  const [source,output]=await Promise.all([
-    c.env.DB.prepare("SELECT id,asset_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?").bind(sourceAssetId,trackId).first<any>(),
-    c.env.DB.prepare("SELECT id,asset_type,storage_provider,content_hash,size_bytes,mime_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?").bind(outputAssetId,trackId).first<any>()
+  const jobId=String(body.conversion_job_id||'');
+  const licenseReference=String(body.license_reference||'');
+  if(!sourceAssetId||!outputAssetId||!jobId||!licenseReference||sourceAssetId===outputAssetId) {
+    return c.json({ok:false,error:'source_asset_id, output_asset_id, conversion_job_id and license_reference are required'},422);
+  }
+
+  const [source,output,job]=await Promise.all([
+    c.env.DB.prepare("SELECT id,asset_type,storage_provider,storage_uri_ref,content_hash,availability_status FROM v3_track_assets WHERE id=? AND track_id=?").bind(sourceAssetId,trackId).first<any>(),
+    c.env.DB.prepare("SELECT id,asset_type,storage_provider,storage_uri_ref,content_hash,size_bytes,mime_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?").bind(outputAssetId,trackId).first<any>(),
+    c.env.DB.prepare("SELECT id,source_asset_id,owner_user_id,license_reference,source_content_hash,output_asset_id,output_content_hash,output_size_bytes,duration_seconds,segment_count,status FROM v3_tl3_conversion_jobs WHERE id=? AND track_id=?").bind(jobId,trackId).first<any>()
   ]);
-  if(!source||source.asset_type!=='mp3_audio') return c.json({ok:false,error:'The source must be an MP3 source Asset belonging to this Track'},422);
-  if(!output||output.asset_type!=='tl3_release_file'||output.availability_status!=='available') return c.json({ok:false,error:'The completed TL3 output must be an available TL3 Asset belonging to this Track'},422);
-  const hash=String(output.content_hash||'');
+  if(!source||source.asset_type!=='mp3_audio'||source.availability_status!=='available') {
+    return c.json({ok:false,error:'The source must be an available MP3 source Asset belonging to this Track'},422);
+  }
+  if(!output||output.asset_type!=='tl3_release_file'||output.availability_status!=='available') {
+    return c.json({ok:false,error:'The completed TL3 output must be an available TL3 Asset belonging to this Track'},422);
+  }
+  if(!job||Number(job.owner_user_id)!==Number(user.id)||job.source_asset_id!==sourceAssetId) {
+    return c.json({ok:false,error:'A matching server-created TL3 conversion job is required'},404);
+  }
+  if(job.license_reference!==licenseReference) return c.json({ok:false,error:'The TL3 license reference does not match the conversion job'},422);
+  if(job.status==='completed') {
+    if(job.output_asset_id!==outputAssetId) return c.json({ok:false,error:'This conversion job was already completed with a different output Asset'},409);
+    const existing=await c.env.DB.prepare("SELECT id,verification_status,contribution_value FROM v3_poc_events WHERE event_key=?").bind('tl3-conversion:'+jobId).first<any>();
+    return c.json({ok:true,conversion_recorded:true,duplicate:true,poc_candidate:{id:existing?.id||null,status:existing?.verification_status||'pending',contribution_value:Number(existing?.contribution_value||0)}},200);
+  }
+  if(job.status!=='built') return c.json({ok:false,error:'The server-side TL3 build has not completed successfully'},409);
+  if(source.storage_provider!=='local_agent'||output.storage_provider!=='local_agent') {
+    return c.json({ok:false,code:'STORAGE_PROVIDER_NOT_READY',error:'Conversion verification currently requires both Assets to be stored through the TimeLink Local Agent'},409);
+  }
+  const outputUrl=trustedLocalAgentUrl(output.storage_uri_ref);
+  if(!outputUrl) return c.json({ok:false,error:'The TL3 output must have a valid TimeLink Local Agent URL'},422);
+  const hash=normalizedHash(output.content_hash);
   const size=Number(output.size_bytes||0);
-  if(!/^(sha256:)?[a-f0-9]{64}$/i.test(hash)||!Number.isSafeInteger(size)||size<=0||!String(output.mime_type||'').toLowerCase().includes('octet-stream')) {
+  if(!/^[a-f0-9]{64}$/.test(hash)||!Number.isSafeInteger(size)||size<=0
+    ||!String(output.mime_type||'').toLowerCase().includes('octet-stream')) {
     return c.json({ok:false,error:'The TL3 output requires a SHA-256 hash, positive size, and application/octet-stream MIME type'},422);
   }
+  if(hash!==normalizedHash(job.output_content_hash)||size!==Number(job.output_size_bytes)) {
+    return c.json({ok:false,error:'The registered TL3 Asset does not match the output produced by the conversion job'},422);
+  }
   if(!await hasPocSchema(c.env.DB)) return c.json({ok:false,code:'V3_POC_NOT_INITIALIZED',error:'V3 POC migration must be applied before recording conversion evidence'},503);
+
+  let outputBytes:Uint8Array;
+  let header:any;
+  try {
+    const response=await fetch(outputUrl.toString(),{redirect:'manual'});
+    if(!response.ok||response.status>=300&&response.status<400) return c.json({ok:false,error:'The Local Agent could not provide the completed TL3 container'},502);
+    outputBytes=new Uint8Array(await response.arrayBuffer());
+    if(outputBytes.byteLength!==size) return c.json({ok:false,error:'The stored TL3 container size does not match its registered Asset'},422);
+    const actualHash=await sha256Hex(outputBytes);
+    if(actualHash!==hash) return c.json({ok:false,error:'The stored TL3 container hash does not match its registered Asset'},422);
+    header=parseTL3V3(outputBytes).header;
+  } catch(error:any) {
+    return c.json({ok:false,error:String(error?.message||'The stored TL3 container could not be verified').slice(0,250)},422);
+  }
+
+  if(header.v!==3||header.aead!=='AES-256-GCM'||header.kdf!=='HKDF-SHA-256'
+    ||header.share_id!==job.license_reference
+    ||normalizedHash(header.hash_mp3)!==normalizedHash(job.source_content_hash)
+    ||Number(header.rights?.creator_id)!==Number(user.id)
+    ||Number(header.dur_sec)!==Number(job.duration_seconds)
+    ||Number(header.mp3?.N)!==Number(job.segment_count)) {
+    return c.json({ok:false,error:'The TL3 header does not match the source, creator, license reference, or conversion job'},422);
+  }
+
   const evidence=JSON.stringify({
+    conversion_job_id:jobId,
     track_id:trackId,
     source_asset_id:sourceAssetId,
     output_asset_id:outputAssetId,
+    license_reference:licenseReference,
+    source_content_hash:normalizedHash(job.source_content_hash),
     output_content_hash:hash,
     output_size_bytes:size,
+    duration_seconds:Number(job.duration_seconds),
+    segment_count:Number(job.segment_count),
     storage_provider:output.storage_provider,
+    verified_container_header:true,
     confirmed_by_user_id:user.id
   });
-  const eventKey='tl3-conversion:'+outputAssetId;
-  const result=await c.env.DB.prepare(`
-    INSERT OR IGNORE INTO v3_poc_events
-      (id,user_id,event_key,event_type,source,source_reference,base_value,contribution_value,verification_status,formula_version,metadata_json)
-    VALUES(?,?,?,?,?,?,0,0,'pending','poc-v1',?)
-  `).bind(ID(),String(user.id),eventKey,'tl3_conversion_completed','music_v3',outputAssetId,evidence).run();
+  const eventKey='tl3-conversion:'+jobId;
+  const results=await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE v3_tl3_conversion_jobs SET status='completed',output_asset_id=?,completed_at=datetime('now') WHERE id=? AND status='built'").bind(outputAssetId,jobId),
+    c.env.DB.prepare(`
+      INSERT OR IGNORE INTO v3_poc_events
+        (id,user_id,event_key,event_type,source,source_reference,base_value,contribution_value,verification_status,formula_version,metadata_json)
+      VALUES(?,?,?,?,?,?,0,0,'pending','poc-v1',?)
+    `).bind(ID(),String(user.id),eventKey,'tl3_conversion_completed','music_v3',outputAssetId,evidence)
+  ]);
+  if(!Number(results[0]?.meta?.changes||0)) return c.json({ok:false,error:'Conversion job state changed; reload and try again'},409);
   const event=await c.env.DB.prepare("SELECT id,verification_status,contribution_value FROM v3_poc_events WHERE event_key=?").bind(eventKey).first<any>();
   return c.json({
     ok:true,
     conversion_recorded:true,
-    duplicate:!Number(result.meta?.changes||0),
+    duplicate:false,
     poc_candidate:{id:event?.id||null,status:event?.verification_status||'pending',contribution_value:Number(event?.contribution_value||0)},
-    message:'Conversion evidence is pending validation. No POC score, TL, or TLC is issued by this request.'
+    message:'The encrypted TL3 container was verified. POC evidence is pending validation; no POC score, TL, or TLC is issued by this request.'
   },201);
 });
 
