@@ -51,7 +51,7 @@ The initial authenticated experience is preceded by a branded login/sign-up scre
 - **Backend:** Cloudflare Workers API at `api.timelink.digital`, using Hono and D1.
 - **Database:** Cloudflare D1. Migrations are numbered, additive, checked into the backend repository, and applied only after backup and validation.
 - **File access:** storage-provider abstraction. Do not make Cloudflare R2 a mandatory dependency. Existing creator-controlled storage and Local Agent integrations must be assessed and reused where safe. Store provider/object references and capabilities, not assumptions that every file is in one bucket.
-- **Creator source:** the creator selects whether to keep an MP3 local or upload it to an approved storage destination for free streaming. The browser may read it locally for metadata extraction and an explicitly initiated TL3 preparation workflow.
+- **Creator source:** the creator selects whether to keep an MP3 local or upload it to an approved storage destination as a private source Asset. The browser may read it locally for metadata extraction and an explicitly initiated TL3 conversion workflow. Source storage does not create a free public release.
 - **External token system:** TON/TLC integration is isolated from core TL balances and playback authorization.
 
 ### 3.3 Trust boundaries
@@ -89,7 +89,7 @@ The initial authenticated experience is preceded by a branded login/sign-up scre
 - `storage_provider`, `storage_object_id`, `storage_uri_ref`: nullable provider references. Never store provider secrets or public credentials here.
 - `source_location`: local-only transient browser information; do not persist an unusable local filesystem path as a server download URL.
 - `content_hash`, `size_bytes`, `mime_type`, `created_at`, `availability_status`.
-- MP3 audio is stored only through an explicitly selected storage adapter. The asset row stores a provider/object reference, content hash, MIME type, size, and availability state; it never stores audio bytes or provider credentials. A local-only registration without an uploaded/available asset is not publicly streamable.
+- An MP3 source is represented as a private Track Asset, stored only through an explicitly selected storage adapter or retained locally. The asset row stores a provider/object reference, content hash, MIME type, size, and availability state; it never stores audio bytes or provider credentials. Source Asset availability does not make the Track a public audio release.
 
 **TrackRelease** represents a distributable product with explicit rights and commercial conditions:
 - `release_type`: initially `TL3`; future values may include `TL4` and `TLD`.
@@ -125,16 +125,16 @@ The initial authenticated experience is preceded by a branded login/sign-up scre
 - `poc_events`: validated contribution event, evidence reference, score-policy version, validation status, and deduplication key.
 - `tlc_mining_records`: token issuance proposal/record, source POC batch, chain transaction, confirmation state, and reconciliation status.
 
-## 5. MP3 registration and free-publication workflow
+## 5. MP3 source intake and Track creation
 
-1. Creator selects an MP3 in the browser.
+1. Creator selects an MP3 source file in the browser.
 2. Browser reads ID3 tags locally using the existing `jsmediatags` integration where available.
 3. Browser computes a content hash for duplicate detection and integrity checks.
-4. Browser sends an allowlisted metadata payload to the API. Audio bytes are transferred only in a separate, explicit upload action to the creator-selected approved storage adapter; never to D1 and never implicitly to Workers storage.
-5. API validates authentication, metadata bounds, MIME/size, ownership, rights attestation, duplicate state, storage object reference, and idempotency. It creates a draft Track and versioned metadata record.
-6. The creator reviews title, artist, album, artwork, credits, and rights, then explicitly publishes the free MP3 to SharePlace when its audio asset is available.
-7. Public MP3 playback is free and does not invoke TL deduction. Playback and access logs may be used for abuse prevention and validated POC evidence, but must not create TL or TLC awards.
-8. If extraction or upload fails, keep the Track draft and expose a retry/manual metadata path; never claim the MP3 is playable until storage availability is verified.
+4. Browser sends an allowlisted metadata payload to create or update a draft Track. Audio bytes are transferred only through a separate, explicit upload action to the creator-selected storage adapter; never to D1 and never implicitly to Workers storage.
+5. API validates authentication, metadata bounds, MIME/size, ownership, source Asset reference, and idempotency. It creates a draft Track and versioned metadata record.
+6. The creator reviews title, artist, album, artwork, credits, and rights. The Track remains private or unlisted until the creator deliberately publishes its Track page; this does not publish an MP3 Release or make the source file freely streamable.
+7. MP3 metadata intake and source Asset upload create no POC contribution, TL, bonus TL, or TLC.
+8. If extraction or upload fails, keep the Track draft and expose a retry/manual metadata path. The Track remains valid without a stored source Asset.
 
 Duplicate detection is advisory, not title-only. Use hash, creator, artist/title/album, and available external identifiers with confidence levels. Do not automatically merge Tracks solely because titles match.
 
@@ -173,7 +173,7 @@ The existing five-second polling/advance timer is legacy behavior, not the V3 bi
 
 ### POC and TLC
 - POC is a contribution measurement and validation mechanism, not a currency balance.
-- A qualifying accepted free-MP3 metadata registration may contribute to POC only under a versioned validation policy; it never grants TL, TL bonuses, or TLC directly. Duplicate, unverified, or rejected registrations do not count.
+- Only a successfully completed MP3-to-TL3 conversion may create a POC candidate event. MP3 metadata intake and source Asset upload are not contribution events. The conversion event is deduplicated, evidence-backed, policy-versioned, and must pass validation before it affects the POC score. It never directly grants TL, bonus TL, or TLC.
 - POC policy is versioned; source events are deduplicated and auditable.
 - TLC issuance is a separate process, gated by validated POC batches and token policy.
 - TON transaction submission, confirmation, failure, and reconciliation are separate states.
