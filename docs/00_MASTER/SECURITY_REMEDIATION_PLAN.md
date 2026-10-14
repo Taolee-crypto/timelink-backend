@@ -130,17 +130,34 @@ The following code-level remediations have since been applied to the renewal bra
 - **Completed in code:** `POST /api/files/sync` now requires a verified JWT and derives the owner ID from the session. Caller-supplied email/username no longer selects or creates the owner, and the user-ID-1 fallback is removed.
 - **Completed in code:** chunked upload init/part/complete routes require a verified JWT and use/check user-scoped `tracks/u{userId}/...` keys.
 - **Completed in code:** generic multipart upload and legacy TL upload require a verified JWT; new object keys are user-scoped. The legacy TL upload fails closed if `TL_SECRET` is absent.
-- **Completed in code:** raw D1 object reads enforce owner checks for newly user-scoped keys. Explicitly shared legacy audio/cover objects retain compatibility access; old non-user-prefixed object keys remain a migration risk and require inventory before being treated as private.
+- **Completed in code:** raw D1 object reads and the legacy `/api/audio/:filename` route now fail closed unless the authenticated owner or an explicitly eligible public release is established. Unscoped legacy keys are no longer implicitly public.
 - **Already present and retained:** private file details are owner/admin-only; file approval checks the administrator role and only grants the POC bonus on the first transition to verified.
-- **Validation:** strict TypeScript check passed and Cloudflare Worker dry-run passed on the updated branch. No deployment or production D1 write was performed.
+- **Completed in code:** `/api/stream/:shareId` verifies JWT signatures, checks owner or explicit public-release eligibility before returning bytes, verifies external-storage object ownership against the share creator, and requires a funded listener for public TL3 playback. Legacy free-MP3 compatibility is limited to rows explicitly recorded as MP3 releases; TL3 `release_check` values supplied by clients are not trusted.
+- **Completed in code:** `/api/storage/object/:id/stream` no longer treats the mere existence of a linked `tl_shares` row as authorization. It loads the active storage object, checks its owner, and evaluates publication/entitlement before streaming.
+- **Completed in code:** both SharePlace catalogue paths filter modern `tl_shares` to explicit legacy free-MP3 releases or rows backed by a verified, shared, non-held `tl_files` record.
+- **Completed in code:** SharePlace registration no longer creates POC log entries. Registration is not a verified contribution event.
+- **Validation:** on commit `a728565f`, the stream authorization regression script passed, the Cloudflare Worker dry-run passed, and strict TypeScript validation passed. No deployment or production D1 write was performed.
 
 ### Remaining blockers — do not mark this PR ready yet
 
-1. **P0 external stream authorization remains open.** `GET /api/storage/object/:id/stream` still treats any linked `tl_shares` row as sufficient authorization. The legacy `GET /api/stream/:shareId` path also needs a release/visibility and listener-entitlement gate before it returns raw stream bytes. Fixing this requires a playback regression test so authorized playback is preserved.
-2. **P0 upload-session hardening remains incomplete.** User scoping now prevents cross-user key writes through the API, but the storage layer still needs server-issued session IDs, expiry, expected content type/size binding, contiguous-part validation, and completion hash verification.
-3. **P1 public SharePlace response allowlisting remains open.** The public catalogue still needs an explicit DTO that excludes source URLs and private metadata and selects only eligible releases.
-4. **P1 free-MP3 POC policy remains open.** Verify that free MP3 intake does not create POC contribution and route authorized TL3 contribution through the canonical idempotent ledger.
+1. **P0 upload-session hardening remains incomplete.** User-scoped keys prevent cross-user writes through the current API, but the storage layer still needs server-issued session IDs, expiry, expected content type/size binding, contiguous-part validation, and completion hash verification.
+2. **P1 public SharePlace DTO allowlisting remains open.** The catalogue now filters unpublished releases, but it still needs an explicit response DTO that excludes source URLs, provider metadata and private moderation fields.
+3. **P1 TL economics policy remains open.** SharePlace registration no longer grants POC for either MP3 or TL3. Verified TL3 contribution must be connected to the canonical idempotent ledger after moderation.
 5. **P1 committed TON credential remains open.** Rotate the exposed value and remove plaintext configuration before any production deployment.
 6. Cross-user D1 integration tests, upload-abuse tests, playback entitlement tests, and Track Page social isolation tests are still required.
 
 The PR remains a Draft. Do not merge or deploy until the remaining P0 findings are closed and the acceptance tests above pass.
+
+
+## Stream authorization remediation — 2026-10-14
+
+The P0 playback authorization paths have now been closed in code on the renewal branch:
+
+- The share stream, external-object stream, raw D1 object route and legacy audio route require a verified owner identity or an eligible public release; unknown legacy object keys are no longer treated as public by default.
+- A row in `tl_shares` is not sufficient by itself to authorize an external storage stream. The `storage_objects.user_id` must match the share creator.
+- Client-submitted `release_check` strings are not trusted as moderation evidence. A TL3 legacy share is publicly playable only when backed by a matching `tl_files` record whose server-side state is verified, shared and not held.
+- Public TL3 listening requires a verified account and a positive TL balance. Creator-owner preview remains available.
+- The public catalogue filters out modern shares that do not satisfy the publication gate.
+- A static regression validator now runs in the Worker CI workflow and checks these authorization boundaries.
+
+The P0 upload-session hardening and the public response DTO allowlist remain open. These changes are code-level remediations; they have not yet been exercised against a staging D1 database with two real accounts. Do not mark the PR ready or deploy until those tests pass.
