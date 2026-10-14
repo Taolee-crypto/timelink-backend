@@ -14,6 +14,13 @@ check("releaseCheck" not in pub,"client-controlled release_check is never truste
 check("releaseMode!=='tl3'||fileType!=='audio/tl3'" in shareplace,"SharePlace registration rejects MP3 source assets")
 check("ownedKey" in shareplace and "getD1ObjectMeta" in shareplace,"SharePlace publication requires an existing creator-owned TL3 container")
 check("fileType!=='audio/tl3'" in pub,"playback gate rejects raw MP3 regardless of client content_kind")
+sync_route=part("app.post('/api/files/sync'","// POST /api/tracks/:id/play")
+check("auth_status='unverified'" in sync_route and "shared=0" in sync_route and "shared_to_shareplace=0" in sync_route,"file sync always returns assets to pending and ignores caller publication flags")
+check("body.auth_status" not in sync_route and "body.shared_to_shareplace" not in sync_route,"file sync cannot self-verify or self-publish")
+approval=Path("src/routes/files.ts").read_text(encoding="utf-8")
+check("file.file_type||'').toLowerCase()==='audio/tl3'" in approval,"verification POC is awarded only to TL3 assets")
+check("rights_confirmed!==true" in shareplace and "approvedFile" in shareplace,"TL3 publication requires rights declaration and admin-approved shared file")
+
 check("auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0" in pub,"legacy TL file publication gate")
 obj=part("app.get('/api/storage/object/:id/stream'","app.get('/api/v1/health'")
 check("SELECT id,user_id FROM storage_objects WHERE id=? AND status='active'" in obj,"external object owner loaded")
