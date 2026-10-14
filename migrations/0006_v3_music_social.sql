@@ -90,3 +90,14 @@ BEGIN
   SELECT CASE WHEN NEW.release_type = 'MP3' AND NEW.price_tl <> 0
     THEN RAISE(ABORT, 'MP3 must be free') END;
 END;
+
+CREATE TABLE IF NOT EXISTS v3_track_comment_moderation_events (
+  id TEXT PRIMARY KEY,
+  comment_id TEXT NOT NULL REFERENCES v3_track_comments(id),
+  moderator_user_id INTEGER NOT NULL REFERENCES users(id),
+  action TEXT NOT NULL CHECK (action IN ('visible','hidden','removed')),
+  moderation_note TEXT NOT NULL CHECK (length(moderation_note) BETWEEN 1 AND 2000),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_v3_track_comment_moderation_time
+  ON v3_track_comment_moderation_events(comment_id,created_at DESC);
