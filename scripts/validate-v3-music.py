@@ -127,6 +127,18 @@ db.executescript(economy_sql)
 db.executescript(music_sql)
 assert db.execute("SELECT * FROM tl_shares").fetchall() == before
 
+# The API must record conversion evidence only through the explicit completion action.
+route_source = (ROOT / "src" / "routes" / "music-v3.ts").read_text(encoding="utf-8")
+assert "router.post('/tracks/:id/conversions/tl3/complete'" in route_source
+assert "conversionPocCandidate" not in route_source
+assert "if(type==='tl3_release_file') statements.push" not in route_source
+assert "poc_candidate:type==='tl3_release_file'" not in route_source
+assert "The completed TL3 output must be an available TL3 Asset" in route_source
+assert "verification_status,formula_version,metadata_json)" in route_source
+assert "'pending','poc-v1'" in route_source
+assert "type!=='TL3'" in route_source
+assert "release_type IN ('MP3','TL3')" not in music_sql
+
 print(
     "V3 music validation passed: additive/idempotent schema, private MP3 source Assets, "
     "TL3-only Releases, verified-rights publication gates, conversion-only pending POC candidates, "
