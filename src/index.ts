@@ -60,9 +60,9 @@ async function storageUser(c:any){
   if(!token) return null;
   return await verifyToken(token,c.env.JWT_SECRET);
 }
-async function playbackUserId(c:any):Promise<number>{
+async function playbackUserId(c:any,allowQueryToken=true):Promise<number>{
   const header=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
-  const token=header||String(c.req.query('tk')||'').trim();
+  const token=header||(allowQueryToken?String(c.req.query('tk')||'').trim():'');
   if(!token) return 0;
   const payload=await verifyToken(token,c.env.JWT_SECRET);
   const id=Number(payload?.sub||0);
@@ -705,7 +705,7 @@ app.post('/api/upload/tl3', async (c) => {
 // ── TL3 / 파일 업로드 — R2 없는 D1 Object Storage
 const D1_CHUNK_SIZE=D1_OBJECT_CHUNK_SIZE,D1_MAX_FILE_SIZE=D1_MAX_OBJECT_SIZE;
 app.post('/api/upload/init',async(c)=>{
-  const session=await storageUser(c),uid=Number(session?.sub||0);
+  const uid=await playbackUserId(c,false);
   if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);
   try{
     const body=await c.req.json<any>();
@@ -721,7 +721,7 @@ app.post('/api/upload/init',async(c)=>{
   }catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 초기화 실패'},400);}
 }});
 app.put('/api/upload/part',async(c)=>{
-  const session=await storageUser(c),uid=Number(session?.sub||0);
+  const uid=await playbackUserId(c,false);
   if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);
   try{
     const uploadId=String(c.req.query('uploadId')||'');
@@ -735,7 +735,7 @@ app.put('/api/upload/part',async(c)=>{
   }catch(e:any){return c.json({ok:false,error:e?.message||'TL3 청크 업로드 실패'},400);}
 }});
 app.post('/api/upload/complete',async(c)=>{
-  const session=await storageUser(c),uid=Number(session?.sub||0);
+  const uid=await playbackUserId(c,false);
   if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);
   try{
     const body=await c.req.json<any>();
