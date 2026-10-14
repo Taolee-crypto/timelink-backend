@@ -72,7 +72,7 @@ function verifyGB(bizNo: string): VerifyResult {
   return { ok: true, verified: false };
 }
 
-async function verifyBizRegNum(c: any, country: string, bizNo: string): Promise<VerifyResult> {
+async function verifyBizRegNum(c: Context<{ Bindings: Env }>, country: string, bizNo: string): Promise<VerifyResult> {
   const cc = String(country || 'KR').toUpperCase();
   if (!SUPPORTED_COUNTRIES.includes(cc)) {
     return { ok: false, verified: false, error: '지원하지 않는 국가입니다.' };
