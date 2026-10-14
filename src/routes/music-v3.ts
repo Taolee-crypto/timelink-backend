@@ -162,7 +162,7 @@ router.post('/tracks/:id/assets/local', async (c) => {
   await c.env.DB.prepare(`
     INSERT INTO v3_track_assets(id,track_id,asset_type,storage_provider,storage_uri_ref,content_hash,size_bytes,mime_type,availability_status,created_by)
     VALUES(?,?,?,'local_agent',?,?,?,?,?,?)
-  `).bind(assetId,trackId,streamUri,hash||null,size,String(body.mime_type||'').slice(0,120)||null,availability,user.id).run();
+  `).bind(assetId,trackId,type,streamUri,hash||null,size,String(body.mime_type||'').slice(0,120)||null,availability,user.id).run();
   return c.json({ok:true,asset_id:assetId,asset_type:type,availability_status:availability,streamable:!!streamUri},201);
 });
 
