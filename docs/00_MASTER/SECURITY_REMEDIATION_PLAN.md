@@ -137,13 +137,13 @@ The following code-level remediations have since been applied to the renewal bra
 - **Completed in code:** both SharePlace catalogue paths filter modern `tl_shares` to explicit legacy free-MP3 releases or rows backed by a verified, shared, non-held `tl_files` record.
 - **Completed in code:** SharePlace registration no longer creates POC log entries. Registration is not a verified contribution event.
 - **Completed in code:** D1 chunk uploads use server-issued owner-bound sessions with expiry, expected size/type binding, exact chunk sizing, ordered-part completion, per-part SHA-256 revalidation, TL3 v2 header/creator validation, and atomic finalization.
-- **Validation:** on commit `37ee1823`, the stream/upload authorization regression script and Cloudflare Worker dry-run passed; strict TypeScript validation passed. A further POC-regression assertion is included in the current CI run. No deployment or production D1 write was performed.
+- **Completed in code:** public `/api/shares`, single Track Page reads and the SharePlace router now return explicit allowlisted DTOs. Raw provider/source URLs and private moderation fields are omitted; stream URLs point to TimeLink proxy endpoints.
+- **Validation:** on commit `ae6f2c93`, the stream/upload/DTO/POC regression validator, Cloudflare Worker dry-run and strict TypeScript check all passed. No deployment or production D1 write was performed.
 
 ### Remaining blockers — do not mark this PR ready yet
 
 1. **P0 upload-session hardening is implemented in code; staging verification remains.** The API now issues opaque session IDs, binds sessions to the authenticated owner and one-hour expiry, fixes expected size/content type, enforces exact chunk sizes and sequential parts, rejects conflicting retries, re-hashes each part at completion, validates the TL3 v2 header and creator ID, and atomically marks the object/session complete. The returned SHA-256 is a manifest hash over the verified chunk hashes, not a whole-file SHA-256.
-2. **P1 public SharePlace DTO allowlisting remains open.** The catalogue now filters unpublished releases, but it still needs an explicit response DTO that excludes source URLs, provider metadata and private moderation fields.
-3. **P1 TL economics policy remains open.** SharePlace registration no longer grants POC for either MP3 or TL3. Verified TL3 contribution must be connected to the canonical idempotent ledger after moderation.
+2. **P1 TL economics policy remains open.** SharePlace registration no longer grants POC, but verified TL3 contribution still needs to be connected to the canonical idempotent TL Economics ledger. SharePlace registration no longer grants POC for either MP3 or TL3. Verified TL3 contribution must be connected to the canonical idempotent ledger after moderation.
 5. **P1 committed TON credential remains open.** Rotate the exposed value and remove plaintext configuration before any production deployment.
 6. Cross-user D1 integration tests, upload-abuse tests, playback entitlement tests, and Track Page social isolation tests are still required.
 
@@ -161,4 +161,4 @@ The P0 playback authorization paths have now been closed in code on the renewal 
 - The public catalogue filters out modern shares that do not satisfy the publication gate.
 - A static regression validator now runs in the Worker CI workflow and checks these authorization boundaries.
 
-The P0 stream authorization and upload-session controls are now implemented in code. The public response DTO allowlist, TON credential rotation, canonical TL3 contribution ledger integration, and social API integration tests remain open. These changes have not yet been exercised against a staging D1 database with two real accounts. Do not mark the PR ready or deploy until staging tests pass.
+The P0 stream authorization and upload-session controls and the public response DTO allowlist are now implemented in code. Remaining blockers are TON credential rotation, canonical TL3 contribution ledger integration, the free-MP3 migration decision, and social API integration tests. These changes have not yet been exercised against a staging D1 database with two real accounts. Do not mark the PR ready or deploy until staging tests pass.
