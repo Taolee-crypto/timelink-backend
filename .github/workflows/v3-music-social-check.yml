@@ -11,7 +11,7 @@ on:
       - "scripts/validate-v3-music-social.py"
       - ".github/workflows/v3-music-social-check.yml"
   push:
-    branches: [v3/music-shareplace-social]
+    branches: [v3/music-review-admin, v3/music-shareplace-social]
     paths:
       - "src/routes/music-v3-public.ts"
       - "src/routes/music-v3-social.ts"
