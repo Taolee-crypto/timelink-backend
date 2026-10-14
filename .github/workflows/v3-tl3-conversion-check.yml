@@ -1,0 +1,41 @@
+name: V3 TL3 conversion pipeline validation
+
+on:
+  pull_request:
+    branches: [v3/music-shareplace-social]
+    paths:
+      - "src/routes/music-v3.ts"
+      - "src/tl3v3.ts"
+      - "src/mp3-segments.ts"
+      - "src/index.ts"
+      - "src/types.ts"
+      - "migrations/0007_v3_tl3_conversion_jobs.sql"
+      - "scripts/validate-v3-tl3-conversion.py"
+      - ".github/workflows/v3-tl3-conversion-check.yml"
+  push:
+    branches: [v3/tl3-conversion-pipeline]
+    paths:
+      - "src/routes/music-v3.ts"
+      - "src/tl3v3.ts"
+      - "src/mp3-segments.ts"
+      - "src/index.ts"
+      - "src/types.ts"
+      - "migrations/0007_v3_tl3_conversion_jobs.sql"
+      - "scripts/validate-v3-tl3-conversion.py"
+      - ".github/workflows/v3-tl3-conversion-check.yml"
+
+jobs:
+  tl3-conversion-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Compile Worker without deployment
+        run: npx wrangler deploy --dry-run
+      - name: Validate TL3 conversion and POC evidence
+        run: python scripts/validate-v3-tl3-conversion.py
