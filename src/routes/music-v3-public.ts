@@ -2,6 +2,11 @@ import { Hono } from 'hono';
 import type { Env } from '../types';
 
 const router = new Hono<{ Bindings: Env }>();
+router.use('*', async (c,next) => {
+  const ready=await c.env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('v3_tracks','v3_track_metadata_versions','v3_track_assets','v3_track_releases','v3_shareplace_entries','v3_track_likes','v3_track_comments')").first<any>();
+  if(Number(ready?.n||0)<7) return c.json({ok:false,code:'V3_PUBLIC_MUSIC_NOT_INITIALIZED',error:'V3 public music migration has not been applied'},503);
+  await next();
+});
 
 async function publicTrack(db: D1Database, trackId: string) {
   return db.prepare(`
