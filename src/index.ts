@@ -719,7 +719,7 @@ app.post('/api/upload/init',async(c)=>{
     const upload=await createD1UploadSession(c.env.DB,uid,uploadId,key,fileName,totalSize,'application/octet-stream');
     return c.json({ok:true,...upload,storage_mode:'d1'});
   }catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 초기화 실패'},400);}
-}});
+});
 app.put('/api/upload/part',async(c)=>{
   const uid=await playbackUserId(c,false);
   if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);
@@ -733,7 +733,7 @@ app.put('/api/upload/part',async(c)=>{
     const result=await writeD1UploadSessionPart(c.env.DB,uid,uploadId,partNumber,data);
     return c.json({ok:true,...result,storage_mode:'d1'});
   }catch(e:any){return c.json({ok:false,error:e?.message||'TL3 청크 업로드 실패'},400);}
-}});
+});
 app.post('/api/upload/complete',async(c)=>{
   const uid=await playbackUserId(c,false);
   if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);
@@ -746,7 +746,7 @@ app.post('/api/upload/complete',async(c)=>{
     const trackId=meta.key.split('/').pop()?.replace(/_[A-F0-9]{32}\.tl3$/i,'')||'';
     return c.json({ok:true,url,stream_url:url,key:meta.key,trackId,file_type:'audio/tl3',release_mode:'tl3',size:meta.size,manifest_sha256:meta.manifest_sha256,storage_mode:'d1'});
   }catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 완료 실패'},400);}
-}});
+});
 
 app.get('/api/storage/:key{.+}', async (c) => {
   try {
