@@ -10,7 +10,7 @@ export interface Mp3Segment {
  */
 export function parseMp3Segments(data: Uint8Array, targetMs = 5000): Mp3Segment[] {
   const bitrateV1 = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
-  const bitrateV2 = [0,8,16,24,32,40,48,64,80,96,112,128,144,160,0];
+  const bitrateV2 = [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0];
   const sampleBase = [44100,48000,32000,0];
   const frames: Mp3Segment[] = [];
   let position = 0;
