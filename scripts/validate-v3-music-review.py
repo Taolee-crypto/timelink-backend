@@ -85,7 +85,7 @@ db.execute("""INSERT INTO v3_track_rights
 VALUES ('rights-b','track-b',1,'composer','creator-attestation-v1',datetime('now'),'verified')""")
 db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,availability_status,created_by)
-VALUES ('asset-b-source','track-b','mp3_audio','local_agent','available',1)""")
+VALUES ('asset-b-source','track-b','mp3_audio','local_agent','local_only',1)""")
 db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,availability_status,created_by)
 VALUES ('asset-b','track-b','tl3_release_file','local_agent','local_only',1)""")
