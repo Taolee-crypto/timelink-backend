@@ -1,0 +1,37 @@
+name: V3 music moderation validation
+
+on:
+  pull_request:
+    branches: [v3/music-core-api]
+    paths:
+      - "src/routes/music-v3-admin.ts"
+      - "src/index.ts"
+      - "migrations/0005_v3_music_review_audit.sql"
+      - "scripts/validate-v3-music-review.py"
+      - ".github/workflows/v3-music-review-check.yml"
+  push:
+    branches: [v3/music-review-admin]
+    paths:
+      - "src/routes/music-v3-admin.ts"
+      - "src/index.ts"
+      - "migrations/0005_v3_music_review_audit.sql"
+      - "scripts/validate-v3-music-review.py"
+      - ".github/workflows/v3-music-review-check.yml"
+
+jobs:
+  worker-build-and-review-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Compile Worker without deployment
+        run: npx wrangler deploy --dry-run
+      - name: Validate music schema and publication review gates
+        run: |
+          python scripts/validate-v3-music.py
+          python scripts/validate-v3-music-review.py
