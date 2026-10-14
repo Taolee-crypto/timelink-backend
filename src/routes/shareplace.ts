@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
-import { getD1ObjectMeta } from '../d1-storage';
+import { getD1ObjectMeta, readD1Range } from '../d1-storage';
 
 const router = new Hono<{ Bindings: Env }>();
 
@@ -36,6 +36,15 @@ router.post('/', async (c) => {
     if(!ownedKey||Number(ownedKey[1])!==userId)return c.json({ok:false,error:'TL3 저장 자산의 소유권을 확인할 수 없습니다.'},403);
     const stored=await getD1ObjectMeta(c.env.DB,storageKey);
     if(!stored)return c.json({ok:false,error:'완료된 TL3 저장 자산을 찾을 수 없습니다.'},404);
+    const prefix=await readD1Range(c.env.DB,storageKey,0,Math.min(stored.size,7));
+    if(prefix.byteLength<7||prefix[0]!==0x54||prefix[1]!==0x4c||prefix[2]!==0x4e||prefix[3]!==0x4b||prefix[4]!==0x02)
+      return c.json({ok:false,error:'유효한 TL3 v2 컨테이너가 아닙니다.'},400);
+    const headerLength=(prefix[5]<<8)|prefix[6];
+    if(headerLength<=0||7+headerLength>stored.size)return c.json({ok:false,error:'TL3 메타데이터가 손상되었습니다.'},400);
+    const headerBytes=await readD1Range(c.env.DB,storageKey,7,headerLength);
+    let header:any;
+    try{header=JSON.parse(new TextDecoder().decode(headerBytes));}catch{return c.json({ok:false,error:'TL3 메타데이터 JSON이 올바르지 않습니다.'},400);}
+    if(String(header.cid||'')!==String(userId))return c.json({ok:false,error:'TL3 창작자 ID가 로그인 사용자와 일치하지 않습니다.'},403);
     const hash=String(body.origin_hash||'').trim().toLowerCase();
     if(hash){const same=await c.env.DB.prepare("SELECT id,title,artist FROM tl_shares WHERE lower(COALESCE(origin_hash,''))=? LIMIT 1").bind(hash).first<any>().catch(()=>null);if(same)return c.json({ok:false,error:'동일한 원본 자산이 이미 등록되어 있습니다.',existing:same},409);}
     const id='sh_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
