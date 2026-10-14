@@ -653,6 +653,9 @@ function parseMp3Segments(data: Uint8Array, targetMs=5000): Array<{offset:number
 app.post('/api/v1/tl3/releases', async (c) => {
   try {
     const body = await c.req.json<any>();
+    if (body.rights_confirmed !== true) {
+      return c.json({ok:false,error:'저작권 또는 적법한 이용 권한 확인이 필요합니다.'},400);
+    }
     const fileId = Number(body.file_id || 0);
     const price = Math.max(0, Math.floor(Number(body.price_tl || 0)));
     const shareIdParam = String(body.share_id || '');
@@ -742,7 +745,9 @@ app.post('/api/v1/tl3/releases', async (c) => {
       'ALTER TABLE tl3_releases ADD COLUMN hash_lp TEXT',
       'ALTER TABLE tl3_releases ADD COLUMN header_json TEXT',
       'ALTER TABLE tl3_releases ADD COLUMN mp3_token_root TEXT',
-      'ALTER TABLE tl3_releases ADD COLUMN mp3_token_latest TEXT'
+      'ALTER TABLE tl3_releases ADD COLUMN mp3_token_latest TEXT',
+      'ALTER TABLE tl3_releases ADD COLUMN rights_confirmed INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE tl3_releases ADD COLUMN rights_confirmed_at TEXT'
     ]) { try { await c.env.DB.prepare(sql).run(); } catch (_) {} }
 
     // ─ D1: tl3_tokens (v3 신규)
@@ -784,9 +789,11 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const hdr = build.header;
     await c.env.DB.prepare(`INSERT INTO tl3_releases
       (file_id,user_id,title,artist,price_tl,status,tl3_key,payload_offset,duration_ms,segment_count,
-       fid,salt,lic_id,hash_mp3,hash_lp,header_json,mp3_token_root,mp3_token_latest,share_id)
-      VALUES (?,?,?,?,?,'released',?,?,?,?,?,?,?,?,?,?,?,?,?)
+       fid,salt,lic_id,hash_mp3,hash_lp,header_json,mp3_token_root,mp3_token_latest,share_id,
+       rights_confirmed,rights_confirmed_at)
+      VALUES (?,?,?,?,?,'released',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(file_id) DO UPDATE SET price_tl=excluded.price_tl,status='released',
+      rights_confirmed=1,rights_confirmed_at=datetime('now'),
       tl3_key=excluded.tl3_key,payload_offset=excluded.payload_offset,duration_ms=excluded.duration_ms,
       segment_count=excluded.segment_count,fid=excluded.fid,salt=excluded.salt,lic_id=excluded.lic_id,
       hash_mp3=excluded.hash_mp3,hash_lp=excluded.hash_lp,header_json=excluded.header_json,
@@ -797,7 +804,8 @@ app.post('/api/v1/tl3/releases', async (c) => {
       fileId, user.id, file.title, file.artist, price, tl3Key, hdr.mp3.first_offset,
       durationMs, segments.length,
       hdr.fid, hdr.salt, hdr.lic_id, hdr.hash_mp3, null, JSON.stringify(hdr),
-      build.mp3Tokens[0], build.mp3Tokens[build.mp3Tokens.length - 1], shareIdParam
+      build.mp3Tokens[0], build.mp3Tokens[build.mp3Tokens.length - 1], shareIdParam,
+      1, new Date().toISOString()
     ).run();
 
     await c.env.DB.prepare("UPDATE tl_files SET shared=1, shared_to_shareplace=1, updated_at=datetime('now') WHERE id=?").bind(fileId).run();
