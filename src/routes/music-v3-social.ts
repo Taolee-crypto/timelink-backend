@@ -39,6 +39,13 @@ router.get('/:trackId/comments', async (c) => {
   return c.json({ok:true,comments:rows.results||[]});
 });
 
+router.get('/:trackId/like',authMiddleware,async (c) => {
+  const trackId=c.req.param('trackId'),user=c.get('user');
+  if(!await visibleTrack(c.env.DB,trackId)) return c.json({ok:false,error:'Track not found'},404);
+  const row=await c.env.DB.prepare('SELECT id FROM v3_track_likes WHERE track_id=? AND user_id=?').bind(trackId,user.id).first();
+  return c.json({ok:true,liked:!!row});
+});
+
 router.post('/:trackId/like',authMiddleware,async (c) => {
   const trackId=c.req.param('trackId'),user=c.get('user');
   if(!await visibleTrack(c.env.DB,trackId)) return c.json({ok:false,error:'Track not found'},404);
