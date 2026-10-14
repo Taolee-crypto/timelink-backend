@@ -217,7 +217,7 @@ Do not use SharePlace entry ID as the Track ID. Discovery placement can change w
 
 #### `poc_events`
 - `id TEXT PK`, `user_id TEXT FK`, `track_id TEXT NULL`, `event_type TEXT`, `source_event_id TEXT`, `score_policy_version TEXT`, `score_value INTEGER`, `validation_status TEXT`, `evidence_ref TEXT NULL`, `idempotency_key TEXT UNIQUE`, `created_at TEXT`.
-- MP3 registration event must not issue TL or TLC and must not automatically count as rewarded POC contribution.
+- A qualifying accepted free-MP3 metadata registration may create one deduplicated POC-only contribution event under the active scoring policy. It must never issue TL, TL bonuses, or TLC directly; duplicate, unverified, or rejected registrations are excluded.
 
 #### `tlc_mining_records`
 - `id TEXT PK`, `user_id TEXT FK`, `poc_batch_id TEXT`, `amount_atomic TEXT`, `chain_id TEXT`, `wallet_address TEXT`, `transaction_hash TEXT NULL`, `status TEXT`, `policy_version TEXT`, `created_at TEXT`, `confirmed_at TEXT NULL`.
@@ -278,7 +278,7 @@ A route must not directly mutate another service's tables outside an explicitly 
 - Playlist order survives insert, move, and deletion.
 - Playback event replay cannot double-charge.
 - TL ledger reconciliation equals the balance read model.
-- POC validation and TLC issuance cannot be triggered by client-side counters or MP3 registration alone.
+- POC validation and TLC issuance cannot be triggered by client-side counters. A qualifying accepted free-MP3 registration may create a POC-only contribution event; TLC issuance remains a separate policy-controlled process.
 - Legacy rows that cannot be safely mapped remain available in legacy tables and are listed in a migration exception report.
 
 ## 8. Items to settle before executable SQL
