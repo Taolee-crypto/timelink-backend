@@ -62,8 +62,8 @@ export async function verifyToken(token: string, secret: string): Promise<JWTPay
     const [header, body, sig] = parts;
     const key = await getKey(secret);
     const valid = await crypto.subtle.verify('HMAC', key,
-      new Uint8Array(base64urlDecode(sig).split('').map(c => c.charCodeAt(0))),
-      new TextEncoder().encode(`${header}.${body}`)
+      new Uint8Array(base64urlDecode(sig).split('').map(c => c.charCodeAt(0))).buffer as ArrayBuffer,
+      new TextEncoder().encode(`${header}.${body}`).buffer as ArrayBuffer
     );
     if (!valid) return null;
     const payload: JWTPayload & { user_id?: string | number } = JSON.parse(base64urlDecode(body));
