@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS v3_economy_transactions (
   id TEXT PRIMARY KEY,
   idempotency_key TEXT NOT NULL UNIQUE,
   transaction_type TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'posted' CHECK (status IN ('posted','reversed')),
+  status TEXT NOT NULL DEFAULT 'posted' CHECK (status = 'posted'),
   source TEXT NOT NULL,
   reference_type TEXT,
   reference_id TEXT,
