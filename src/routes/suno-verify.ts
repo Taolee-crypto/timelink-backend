@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import type { Env } from '../types';
 
 const router = new Hono<{ Bindings: Env }>();
@@ -11,11 +12,12 @@ function parseTokenUserId(token: string): number {
   catch { return 0; }
 }
 
+router.use('/verify-plan', bodyLimit({ maxSize: 10 * 1024 * 1024 }));
 router.post('/verify-plan', async (c) => {
   const token  = (c.req.header('Authorization') || '').replace('Bearer ', '');
   const userId = parseTokenUserId(token);
   if (!userId) return c.json({ ok: false, reason: '로그인이 필요합니다.' }, 401);
-  const form = await c.req.parseBody({ limit: 10 * 1024 * 1024 });
+  const form = await c.req.parseBody();
   const file = form['screenshot'] as File | null;
   if (!file) return c.json({ ok: false, reason: '이미지 파일이 없습니다.' }, 400);
   const buffer = await file.arrayBuffer();
