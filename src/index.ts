@@ -185,13 +185,79 @@ app.route('/api/cafe-broadcast', cafeBroadcastRouter);
 app.route('/api/contact', contactRouter);
 app.route('/api/upload-pdf', uploadPdfRouter);
 
-// ── Social / Playlist 스텁 (track.html 호환, 실제 기능은 추후 구현) ──
-app.get('/api/social/stats/:id', (c) => c.json({ likes: 0, comments: 0, views: 0, my_like: false }));
-app.post('/api/social/like/:id', (c) => c.json({ ok: true, liked: false }));
-app.delete('/api/social/like/:id', (c) => c.json({ ok: true, liked: false }));
-app.get('/api/social/follow-status/:id', (c) => c.json({ following: false }));
-app.post('/api/social/follow/:id', (c) => c.json({ ok: true, following: false }));
-app.delete('/api/social/follow/:id', (c) => c.json({ ok: true, following: false }));
+// ── Track Social / Playlist: existing D1 tables, real persistence ──
+app.get('/api/social/stats/:id', async (c) => {
+  const shareId = c.req.param('id');
+  const userId = await shareAuthUser(c);
+  try {
+    const [likes, comments, mine] = await Promise.all([
+      c.env.DB.prepare('SELECT COUNT(*) AS total FROM user_likes WHERE share_id=?').bind(shareId).first<any>(),
+      c.env.DB.prepare('SELECT COUNT(*) AS total FROM social_comments WHERE share_id=?').bind(shareId).first<any>(),
+      userId
+        ? c.env.DB.prepare('SELECT 1 AS liked FROM user_likes WHERE user_id=? AND share_id=? LIMIT 1').bind(userId, shareId).first<any>()
+        : Promise.resolve(null)
+    ]);
+    // play_logs/play_events are not currently a verified per-share view counter.
+    return c.json({ likes: Number(likes?.total || 0), comments: Number(comments?.total || 0), views: 0, my_like: !!mine });
+  } catch (e: any) {
+    return c.json({ error: e?.message || '통계 조회 실패' }, 500);
+  }
+});
+app.post('/api/social/like/:id', async (c) => {
+  const userId = await shareAuthUser(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  const shareId = c.req.param('id');
+  const share = await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+  if (!share) return c.json({ error: '곡을 찾을 수 없습니다.' }, 404);
+  try {
+    await c.env.DB.prepare('INSERT OR IGNORE INTO user_likes (user_id, share_id) VALUES (?, ?)').bind(userId, shareId).run();
+    const row = await c.env.DB.prepare('SELECT COUNT(*) AS total FROM user_likes WHERE share_id=?').bind(shareId).first<any>();
+    return c.json({ ok: true, liked: true, likes: Number(row?.total || 0) });
+  } catch (e: any) { return c.json({ error: e?.message || '좋아요 처리 실패' }, 500); }
+});
+app.delete('/api/social/like/:id', async (c) => {
+  const userId = await shareAuthUser(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  const shareId = c.req.param('id');
+  try {
+    await c.env.DB.prepare('DELETE FROM user_likes WHERE user_id=? AND share_id=?').bind(userId, shareId).run();
+    const row = await c.env.DB.prepare('SELECT COUNT(*) AS total FROM user_likes WHERE share_id=?').bind(shareId).first<any>();
+    return c.json({ ok: true, liked: false, likes: Number(row?.total || 0) });
+  } catch (e: any) { return c.json({ error: e?.message || '좋아요 취소 실패' }, 500); }
+});
+app.get('/api/social/follow-status/:id', async (c) => {
+  const targetId = Number(c.req.param('id'));
+  const userId = await shareAuthUser(c);
+  if (!Number.isSafeInteger(targetId) || targetId <= 0) return c.json({ error: '잘못된 창작자 ID' }, 400);
+  if (!userId) return c.json({ following: false });
+  try {
+    const row = await c.env.DB.prepare('SELECT 1 AS following FROM user_follows WHERE follower_id=? AND following_id=? LIMIT 1').bind(userId, targetId).first<any>();
+    return c.json({ following: !!row });
+  } catch (e: any) { return c.json({ error: e?.message || '팔로우 상태 조회 실패' }, 500); }
+});
+app.post('/api/social/follow/:id', async (c) => {
+  const userId = await shareAuthUser(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  const targetId = Number(c.req.param('id'));
+  if (!Number.isSafeInteger(targetId) || targetId <= 0) return c.json({ error: '잘못된 창작자 ID' }, 400);
+  if (userId === targetId) return c.json({ error: '자기 자신은 팔로우할 수 없습니다.' }, 400);
+  const target = await c.env.DB.prepare('SELECT id FROM users WHERE id=?').bind(targetId).first<any>();
+  if (!target) return c.json({ error: '창작자를 찾을 수 없습니다.' }, 404);
+  try {
+    await c.env.DB.prepare('INSERT OR IGNORE INTO user_follows (follower_id, following_id) VALUES (?, ?)').bind(userId, targetId).run();
+    return c.json({ ok: true, following: true });
+  } catch (e: any) { return c.json({ error: e?.message || '팔로우 처리 실패' }, 500); }
+});
+app.delete('/api/social/follow/:id', async (c) => {
+  const userId = await shareAuthUser(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  const targetId = Number(c.req.param('id'));
+  if (!Number.isSafeInteger(targetId) || targetId <= 0) return c.json({ error: '잘못된 창작자 ID' }, 400);
+  try {
+    await c.env.DB.prepare('DELETE FROM user_follows WHERE follower_id=? AND following_id=?').bind(userId, targetId).run();
+    return c.json({ ok: true, following: false });
+  } catch (e: any) { return c.json({ error: e?.message || '팔로우 취소 실패' }, 500); }
+});
 app.get('/api/social/comments/:id', async (c) => {
   const shareId = c.req.param('id');
   try {
@@ -200,35 +266,74 @@ app.get('/api/social/comments/:id', async (c) => {
     ).bind(shareId).all();
     return c.json({ comments: rows.results || [] });
   } catch (e: any) {
-    return c.json({ comments: [], error: e?.message }, 500);
+    return c.json({ comments: [], error: e?.message || '댓글 조회 실패' }, 500);
   }
 });
 app.post('/api/social/comment/:id', async (c) => {
   const userId = await shareAuthUser(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
   const shareId = c.req.param('id');
+  const share = await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+  if (!share) return c.json({ error: '곡을 찾을 수 없습니다.' }, 404);
   const body = await c.req.json<any>().catch(() => ({}));
   const content = String(body.content || '').trim().slice(0, 1000);
   if (!content) return c.json({ error: '내용 필요' }, 400);
   if (content.length < 10) return c.json({ error: '10자 이상 입력해주세요' }, 400);
-
   const user = await c.env.DB.prepare('SELECT username FROM users WHERE id=?').bind(userId).first<any>();
   const username = user?.username || ('User' + userId);
-
-  const r = await c.env.DB.prepare(
-    'INSERT INTO social_comments (share_id, user_id, username, content) VALUES (?, ?, ?, ?)'
-  ).bind(shareId, userId, username, content).run();
-
-  const fresh = await c.env.DB.prepare(
-    'SELECT id, user_id, username, content, created_at FROM social_comments WHERE id=?'
-  ).bind(r.meta?.last_row_id).first<any>();
-
-  return c.json({ ok: true, comment: fresh });
+  try {
+    const r = await c.env.DB.prepare(
+      'INSERT INTO social_comments (share_id, user_id, username, content) VALUES (?, ?, ?, ?)'
+    ).bind(shareId, userId, username, content).run();
+    const fresh = await c.env.DB.prepare(
+      'SELECT id, user_id, username, content, created_at FROM social_comments WHERE id=?'
+    ).bind(r.meta?.last_row_id).first<any>();
+    return c.json({ ok: true, comment: fresh });
+  } catch (e: any) { return c.json({ error: e?.message || '댓글 등록 실패' }, 500); }
 });
-app.post('/api/social/report/comment/:id', (c) => c.json({ ok: true }));
-app.get('/api/playlist/my', (c) => c.json({ playlists: [] }));
-app.post('/api/playlist/:id/add', (c) => c.json({ ok: true }));
-app.post('/api/playlist', (c) => c.json({ ok: true, playlist: null }));
+app.post('/api/social/report/comment/:id', (c) => c.json({ ok: false, error: '신고 기능은 실제 신고 기록 테이블 연결 후 활성화됩니다.' }, 501));
+app.get('/api/playlist/my', async (c) => {
+  const userId = await shareAuthUser(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  try {
+    const rows = await c.env.DB.prepare(
+      'SELECT id, user_id, title, is_public, share_ids, subscriber_count, created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC'
+    ).bind(userId).all();
+    return c.json({ playlists: rows.results || [] });
+  } catch (e: any) { return c.json({ error: e?.message || '플레이리스트 조회 실패' }, 500); }
+});
+app.post('/api/playlist/:id/add', async (c) => {
+  const userId = await shareAuthUser(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  const playlistId = Number(c.req.param('id'));
+  const body = await c.req.json<any>().catch(() => ({}));
+  const shareId = String(body.share_id || '').trim();
+  if (!Number.isSafeInteger(playlistId) || playlistId <= 0 || !shareId) return c.json({ error: '플레이리스트와 곡 정보가 필요합니다.' }, 400);
+  const playlist = await c.env.DB.prepare('SELECT id, share_ids FROM playlists WHERE id=? AND user_id=?').bind(playlistId, userId).first<any>();
+  if (!playlist) return c.json({ error: '플레이리스트를 찾을 수 없거나 수정 권한이 없습니다.' }, 404);
+  const share = await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+  if (!share) return c.json({ error: '곡을 찾을 수 없습니다.' }, 404);
+  try {
+    let ids: string[] = [];
+    try { const parsed = JSON.parse(String(playlist.share_ids || '[]')); if (Array.isArray(parsed)) ids = parsed.map(String); } catch {}
+    if (!ids.includes(shareId)) ids.push(shareId);
+    await c.env.DB.prepare('UPDATE playlists SET share_ids=? WHERE id=? AND user_id=?').bind(JSON.stringify(ids), playlistId, userId).run();
+    return c.json({ ok: true, playlist_id: playlistId, share_ids: ids });
+  } catch (e: any) { return c.json({ error: e?.message || '플레이리스트 추가 실패' }, 500); }
+});
+app.post('/api/playlist', async (c) => {
+  const userId = await shareAuthUser(c);
+  if (!userId) return c.json({ error: '인증 필요' }, 401);
+  const body = await c.req.json<any>().catch(() => ({}));
+  const title = String(body.title || '').trim().slice(0, 100);
+  if (!title) return c.json({ error: '플레이리스트 이름을 입력해주세요.' }, 400);
+  try {
+    const r = await c.env.DB.prepare(
+      'INSERT INTO playlists (user_id, title, is_public, share_ids) VALUES (?, ?, ?, ?)'
+    ).bind(userId, title, body.is_public ? 1 : 0, '[]').run();
+    return c.json({ ok: true, playlist_id: Number(r.meta?.last_row_id || 0) });
+  } catch (e: any) { return c.json({ error: e?.message || '플레이리스트 생성 실패' }, 500); }
+});
 
 // ── Unsplash 이미지 검색 (곡 커버 자동 매칭용) ──
 app.get('/api/unsplash/search', async (c) => {
