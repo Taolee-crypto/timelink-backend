@@ -438,6 +438,8 @@ export async function decryptSegmentV3(
   lic: Uint8Array
 ): Promise<Uint8Array> {
   const section = header[kind];
+  if (!section) throw new Error(`TL3 ${kind} section is unavailable`);
+  if (!Number.isInteger(n) || n < 1 || n > section.N) throw new Error('TL3 segment index out of range');
   // 세그먼트 위치 계산
   const segmentLen = section.seg_bytes + GCM_TAG_BYTES;
   const lastLen = section.last_bytes;
