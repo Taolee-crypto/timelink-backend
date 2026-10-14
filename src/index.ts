@@ -1386,9 +1386,10 @@ async function ensureShareTLBalances(db: D1Database){
 async function shareAuthUser(c:any){
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
   if(!token) return null;
-  const payload=await verifyToken(token,c.env.JWT_SECRET);
+  const payload=await verifyToken(token,c.env.JWT_SECRET).catch(()=>null);
   if(!payload?.sub) return null;
-  return Number(payload.sub);
+  const userId=Number(payload.sub);
+  return Number.isSafeInteger(userId)&&userId>0 ? userId : null;
 }
 
 // ── 유저의 특정 곡 TL 잔액 조회 ──
