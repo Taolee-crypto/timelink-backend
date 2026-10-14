@@ -69,6 +69,14 @@ router.post('/:trackId/comments',authMiddleware,async (c) => {
   return c.json({ok:true,comment},201);
 });
 
+router.get('/:trackId/follow',authMiddleware,async (c) => {
+  const trackId=c.req.param('trackId'),user=c.get('user');
+  const track=await visibleTrack(c.env.DB,trackId);
+  if(!track) return c.json({ok:false,error:'Track not found'},404);
+  const row=await c.env.DB.prepare('SELECT id FROM v3_track_follows WHERE follower_user_id=? AND followed_user_id=?').bind(user.id,track.owner_user_id).first();
+  return c.json({ok:true,following:!!row});
+});
+
 router.post('/:trackId/follow',authMiddleware,async (c) => {
   const trackId=c.req.param('trackId'),user=c.get('user');
   const track=await visibleTrack(c.env.DB,trackId);
