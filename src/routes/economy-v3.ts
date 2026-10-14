@@ -68,10 +68,98 @@ router.get('/mining/history', async (c) => {
   return c.json({ ok: true, records: rows.results || [] });
 });
 
+const LEGACY_PREVIEW_TABLES = {
+  tl_files: {
+    fields: ['id', 'title', 'file_tl', 'revenue', 'hold_revenue', 'revenue_held', 'auth_status', 'shared', 'created_at'],
+    interpretation: 'file_tl, revenue, and hold_revenue are separate legacy fields; none is automatically treated as a payable balance.'
+  },
+  tl_shares: {
+    fields: ['id', 'title', 'artist', 'file_tl', 'pulse', 'plan', 'release_mode', 'content_kind', 'created_at'],
+    interpretation: 'SharePlace content metadata and file balance; this table is not a creator settlement ledger.'
+  },
+  transactions: {
+    fields: ['id', 'file_id', 'tx_type', 'amount', 'balance_after', 'counterpart_user_id', 'note', 'created_at'],
+    interpretation: 'Historical transaction evidence; amount must be interpreted together with tx_type and counterpart.'
+  },
+  play_events: {
+    fields: ['id', 'file_id', 'tl_deducted', 'revenue_credited', 'file_tl_after', 'play_duration_seconds', 'car_mode', 'created_at'],
+    interpretation: 'Playback evidence; revenue_credited is a recorded event value, not a substitute for current creator balance.'
+  },
+  poc_events: {
+    fields: ['id', 'delta', 'poc_after', 'reason', 'created_at'],
+    interpretation: 'Legacy POC evidence; POC is not TL or TLC.'
+  },
+  poc_logs: {
+    fields: ['id', 'mode', 'seconds', 'tl_spent', 'poc_gained', 'created_at'],
+    interpretation: 'Legacy contribution log; POC is not TL or TLC.'
+  },
+  tlc_mining_v2: {
+    fields: ['id', 'tl_p_base', 'poc_index', 'plan', 'multiplier', 'tlc_mined', 'created_at'],
+    interpretation: 'Legacy mining calculation record; a database record alone does not prove an on-chain mint.'
+  }
+} as const;
+
+type LegacyPreviewTable = keyof typeof LEGACY_PREVIEW_TABLES;
 
 /**
- * Read-only legacy balance preview.
- * Legacy buckets are reported independently; nothing is summed or imported.
+ * Return a bounded, user-scoped evidence sample from an allowlisted legacy table.
+ * Table and column identifiers come only from the constants above and PRAGMA metadata.
+ * No aggregate, conversion, credit, or mutation is performed.
+ */
+async function readLegacyEvidence(
+  db: D1Database,
+  table: LegacyPreviewTable,
+  userId: number
+): Promise<Record<string, unknown>> {
+  const definition = LEGACY_PREVIEW_TABLES[table];
+  const schema = await db.prepare(`PRAGMA table_info("${table}")`).all<{ name: string }>();
+  const available = new Set((schema.results || []).map((column) => column.name));
+  if (!available.size) {
+    return { available: false, reason: 'table_missing', rows: [] };
+  }
+
+  const selected = definition.fields.filter((field) => available.has(field));
+  if (!available.has('id')) {
+    return { available: false, reason: 'primary_key_unavailable', selected_columns: selected, rows: [] };
+  }
+
+  let where = '';
+  let values: (string | number)[] = [];
+  if (table === 'play_events') {
+    if (!available.has('file_id')) {
+      return { available: false, reason: 'file_reference_unavailable', selected_columns: selected, rows: [] };
+    }
+    where = 'file_id IN (SELECT id FROM tl_files WHERE user_id=?)';
+    values = [userId];
+  } else if (table === 'transactions' && available.has('user_id')) {
+    where = available.has('counterpart_user_id')
+      ? '(user_id=? OR counterpart_user_id=?)'
+      : 'user_id=?';
+    values = available.has('counterpart_user_id') ? [userId, userId] : [userId];
+  } else if (available.has('user_id')) {
+    where = 'CAST(user_id AS TEXT)=?';
+    values = [String(userId)];
+  } else {
+    return { available: false, reason: 'user_scope_unavailable', selected_columns: selected, rows: [] };
+  }
+
+  const projection = selected.map((field) => '"' + field + '"').join(', ');
+  const rows = await db.prepare(
+    `SELECT ${projection} FROM "${table}" WHERE ${where} ORDER BY id DESC LIMIT 100`
+  ).bind(...values).all();
+
+  return {
+    available: true,
+    selected_columns: selected,
+    row_limit: 100,
+    rows: rows.results || [],
+    interpretation: definition.interpretation
+  };
+}
+
+/**
+ * Read-only legacy reconciliation preview.
+ * Every source is reported independently; nothing is summed, imported, or credited.
  */
 router.get('/reconciliation/preview', async (c) => {
   const user = c.get('user');
@@ -94,6 +182,13 @@ router.get('/reconciliation/preview', async (c) => {
   if (!legacy) return c.json({ ok: false, error: 'User not found' }, 404);
 
   const ledger = await getLedgerWallet(c.env.DB, user.id);
+  const legacySources = {} as Record<string, Record<string, unknown>>;
+  const tables = Object.keys(LEGACY_PREVIEW_TABLES) as LegacyPreviewTable[];
+  const evidence = await Promise.all(
+    tables.map(async (table) => [table, await readLegacyEvidence(c.env.DB, table, user.id)] as const)
+  );
+  for (const [table, result] of evidence) legacySources[table] = result;
+
   return c.json({
     ok: true,
     read_only: true,
@@ -101,10 +196,11 @@ router.get('/reconciliation/preview', async (c) => {
     legacy_fields: legacy,
     detected_columns: selected,
     v3_accounts: ledger,
+    legacy_sources: legacySources,
     reconciliation: {
       status: 'not_imported',
       automatic_import: false,
-      rule: 'Each legacy field is reported independently. No fields are added together, converted, or credited.',
+      rule: 'Each legacy field and source record is reported independently. No fields are added together, converted, or credited.',
       review_required: true
     }
   });
