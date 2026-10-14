@@ -79,7 +79,7 @@ router.get('/', async (c) => {
   }));
   let modern:any[]=[];
   try {
-    const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE EXISTS (SELECT 1 FROM tl_files f WHERE f.file_url=s.stream_url AND LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0) ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
+    const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE EXISTS (SELECT 1 FROM tl_files f WHERE (f.stream_url=s.stream_url OR f.file_url=s.stream_url) AND LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0) ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
     modern=(modernRows.results||[]).map((share:any)=>({
       id:String(share.id),user_id:Number(share.user_id||0),username:String(share.username||'User'),creator:String(share.username||'User'),
       title:String(share.title||''),artist:String(share.artist||''),album:String(share.album||''),duration:Number(share.duration||0),
