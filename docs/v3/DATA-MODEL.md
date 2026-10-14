@@ -267,8 +267,8 @@ A route must not directly mutate another service's tables outside an explicitly 
 
 ## 7. Mandatory invariants and test cases
 
-- A registration request contains metadata only; API rejects audio/multipart payloads for the registration endpoint.
-- The metadata-registration request contains no MP3 audio bytes. A separate explicit upload request may transfer the selected audio only to the creator-approved storage adapter; verify that no audio bytes are written to D1 or implicitly sent to Workers.
+- Track creation stores metadata and source Asset references separately; no standalone MP3 Release or free MP3 publication endpoint exists.
+- Source MP3 bytes may be transferred only by a separate creator-authorized Asset upload to an approved storage adapter; verify that no audio bytes are written to D1 or implicitly sent to Workers.
 - Original filename, extracted tags, fallback title, and verified title remain independently queryable.
 - A Track can exist without a TrackRelease.
 - A TL3 Release cannot publish without a valid encrypted release asset, rights snapshot, price, and duration.
@@ -278,7 +278,7 @@ A route must not directly mutate another service's tables outside an explicitly 
 - Playlist order survives insert, move, and deletion.
 - Playback event replay cannot double-charge.
 - TL ledger reconciliation equals the balance read model.
-- POC validation and TLC issuance cannot be triggered by client-side counters. A qualifying accepted free-MP3 registration may create a POC-only contribution event; TLC issuance remains a separate policy-controlled process.
+- POC validation and TLC issuance cannot be triggered by client-side counters. Only a successful TL3 conversion may create a POC candidate; TLC issuance remains a separate policy-controlled process.
 - Legacy rows that cannot be safely mapped remain available in legacy tables and are listed in a migration exception report.
 
 ## 8. Items to settle before executable SQL
