@@ -207,3 +207,22 @@ WHEN (SELECT asset_code FROM v3_economy_accounts WHERE id = NEW.account_id) <> N
 BEGIN
   SELECT RAISE(ABORT, 'V3 entry asset does not match account asset');
 END;
+
+CREATE TRIGGER IF NOT EXISTS trg_v3_poc_snapshots_no_update
+BEFORE UPDATE ON v3_poc_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'V3 POC snapshots are immutable; create a new formula version');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_v3_poc_snapshots_no_delete
+BEFORE DELETE ON v3_poc_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'V3 POC snapshots are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_v3_tlc_mining_posted_no_update
+BEFORE UPDATE ON v3_tlc_mining_records
+WHEN OLD.status = 'posted'
+BEGIN
+  SELECT RAISE(ABORT, 'Posted V3 TLC mining records are immutable');
+END;
