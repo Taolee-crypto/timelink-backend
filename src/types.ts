@@ -1,5 +1,23 @@
+export interface R2BucketBinding {
+  put(
+    key: string,
+    value: ArrayBuffer | ArrayBufferView | Blob | string,
+    options?: {
+      httpMetadata?: { contentType?: string };
+      customMetadata?: Record<string, string>;
+    }
+  ): Promise<unknown>;
+  get(key: string): Promise<{
+    arrayBuffer(): Promise<ArrayBuffer>;
+    body: ReadableStream | null;
+  } | null>;
+  delete(key: string): Promise<void>;
+}
+
 export interface Env {
   DB: D1Database;
+  // Optional until billing is enabled. Keep the R2 integration typed and ready.
+  R2?: R2BucketBinding;
   JWT_SECRET: string;
   RESEND_API_KEY: string;
   ENVIRONMENT: string;
@@ -10,6 +28,12 @@ export interface Env {
   ONEDRIVE_CLIENT_SECRET?: string;
   ONEDRIVE_REDIRECT_URI?: string;
   STORAGE_ENCRYPTION_KEY?: string;
+  TL_SECRET?: string;
+  TL3_MASTER_SECRET?: string;
+  UNSPLASH_ACCESS_KEY?: string;
+  KAKAO_REST_API_KEY?: string;
+  SPOTIFY_CLIENT_ID?: string;
+  SPOTIFY_CLIENT_SECRET?: string;
 }
 
 export interface JWTPayload {
