@@ -3852,7 +3852,7 @@ app.get('/api/download/:shareId', async (c) => {
     const fileType=String(share.file_type||'').toLowerCase();
     if(shareKind(share)==='mp3') return c.json({error:'MP3는 무료 재생 전용이며 TL3 다운로드 대상이 아닙니다.'},400);
 
-    const safeTitle=String(share.title||'file').replace(/[<>:"\\/\\\\|?*]/g,'_');
+    const safeTitle=String(share.title||'file').replace(/[<>:"\/\\|?*]/g,'_');
     const downloadName=safeTitle+(fileType==='audio/tl3'?'.tl3':fileType.startsWith('video/')?'.tl4':fileType.startsWith('image/')?'.tlg':'.tlf');
 
     if(share.storage_object_id){
