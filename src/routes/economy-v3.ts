@@ -70,12 +70,16 @@ router.get('/mining/history', async (c) => {
 
 const LEGACY_PREVIEW_TABLES = {
   tl_files: {
-    fields: ['id', 'title', 'file_tl', 'revenue', 'hold_revenue', 'revenue_held', 'auth_status', 'shared', 'created_at'],
+    fields: ['id', 'title', 'file_tl', 'max_file_tl', 'revenue', 'hold_revenue', 'revenue_held', 'revenue_started_at', 'auth_status', 'shared', 'shared_to_shareplace', 'pulse', 'play_count', 'created_at', 'updated_at'],
     interpretation: 'file_tl, revenue, and hold_revenue are separate legacy fields; none is automatically treated as a payable balance.'
   },
   tl_shares: {
-    fields: ['id', 'title', 'artist', 'file_tl', 'pulse', 'plan', 'release_mode', 'content_kind', 'created_at'],
+    fields: ['id', 'title', 'artist', 'file_tl', 'creator_earned', 'pulse', 'plan', 'release_mode', 'content_kind', 'created_at'],
     interpretation: 'SharePlace content metadata and file balance; this table is not a creator settlement ledger.'
+  },
+  tl3_releases: {
+    fields: ['id', 'file_id', 'user_id', 'title', 'artist', 'price_tl', 'status', 'duration_ms', 'segment_count', 'created_at', 'updated_at', 'share_id'],
+    interpretation: 'TL3 release metadata and publication state; cryptographic keys, salts, token roots, and private payload fields are deliberately excluded.'
   },
   transactions: {
     fields: ['id', 'file_id', 'tx_type', 'amount', 'balance_after', 'counterpart_user_id', 'note', 'created_at'],
@@ -166,7 +170,7 @@ router.get('/reconciliation/preview', async (c) => {
   const schema = await c.env.DB.prepare('PRAGMA table_info(users)').all<{ name: string }>();
   const available = new Set((schema.results || []).map((column) => column.name));
   const candidates = [
-    'tl', 'tl_balance', 'tl_p', 'tl_a', 'tl_b', 'tlc_balance',
+    'tl', 'tl_balance', 'tl_p', 'tl_a', 'tl_b', 'tlc', 'tlc_balance',
     'tl_p_lifetime', 'tl_p_exchanged', 'total_tl_spent',
     'total_tl_earned', 'total_tl_exchanged', 'poc_index'
   ];
