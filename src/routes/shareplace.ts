@@ -52,9 +52,16 @@ router.get('/', async (c) => {
   const limit = Number(c.req.query('limit') || 20);
   const offset = Number(c.req.query('offset') || 0);
 
-  let query = `SELECT f.*, u.username FROM tl_files f
+  let query = `SELECT f.*, u.username,
+    (SELECT c.cert_no FROM tl_asset_certs c
+     JOIN tl_assets a ON a.asset_id = c.asset_id
+     WHERE a.file_id = f.id AND c.status = 'active'
+     LIMIT 1) AS cert_no
+    FROM tl_files f
     JOIN users u ON f.user_id = u.id
     WHERE f.auth_status = 'verified' AND f.shared = 1 AND f.revenue_held = 0`;
+
+  // CERT_MARK_V2: tl_files에 cert_no 서브쿼리 포함
   const params: (string | number)[] = [];
 
   if (genre) { query += ' AND f.genre = ?'; params.push(genre); }
@@ -68,7 +75,25 @@ router.get('/', async (c) => {
   const legacy = (rows.results||[]) as any[];
   let modern:any[]=[];
   try {
-    const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE 1=1 ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
+    // CERT_MARK_V3: tl_shares.id → tl3_releases.share_id → tl_assets.file_id → tl_asset_certs.cert_no
+    const modernRows=await c.env.DB.prepare(`
+      SELECT s.*, u.username,
+        (SELECT c.cert_no FROM tl_asset_certs c
+         JOIN tl_assets a ON a.asset_id = c.asset_id
+         JOIN tl3_releases r ON r.file_id = a.file_id
+         WHERE r.share_id = s.id AND c.status = 'active'
+         LIMIT 1) AS cert_no,
+        (SELECT a.asset_id FROM tl_assets a
+         JOIN tl3_releases r ON r.file_id = a.file_id
+         WHERE r.share_id = s.id
+         LIMIT 1) AS asset_id
+      FROM tl_shares s
+      JOIN users u ON CAST(s.user_id AS INTEGER)=u.id
+      WHERE 1=1
+      ORDER BY s.pulse DESC, s.created_at DESC
+      LIMIT ? OFFSET ?
+    `).bind(limit,offset).all();
+
     modern=(modernRows.results||[]).map((s:any)=>({
       ...s,
       id:s.id,
@@ -79,7 +104,9 @@ router.get('/', async (c) => {
       shared:1,
       auth_status:'verified',
       revenue_held:0,
-      content_kind:s.content_kind||'mp3'
+      content_kind:s.content_kind||'mp3',
+      cert_no: s.cert_no || null,
+      asset_id: s.asset_id || null
     }));
   } catch(e) { console.error('tl_shares list error:',e); }
   return c.json([...modern,...legacy]);
