@@ -14,8 +14,8 @@ async function publicTrack(db: D1Database, trackId: string) {
       m.display_title,
       COALESCE(m.verified_artist,m.extracted_artist) AS artist,
       m.verified_album,m.extracted_album,
-      r.id AS mp3_release_id,r.duration_seconds,
-      a.storage_uri_ref AS stream_url,
+      r.id AS release_id,r.duration_seconds,r.price_tl,
+      
       (SELECT ca.storage_uri_ref FROM v3_track_assets ca
         WHERE ca.track_id=t.id AND ca.asset_type='cover_art'
           AND ca.availability_status='available' AND ca.storage_uri_ref IS NOT NULL
@@ -32,7 +32,7 @@ async function publicTrack(db: D1Database, trackId: string) {
   `).bind(trackId).first<any>();
 }
 
-// Public catalogue contains only approved, active and actually streamable free MP3 releases.
+// Public catalogue exposes Track metadata and published TL3 products, never source MP3 bytes.
 router.get('/tracks', async (c) => {
   const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') || 20)));
   const offset = Math.max(0, Number(c.req.query('offset') || 0));
