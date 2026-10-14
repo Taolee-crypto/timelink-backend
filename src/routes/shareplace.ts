@@ -58,21 +58,28 @@ router.get('/', async (c) => {
   params.push(limit, offset);
 
   const rows = await c.env.DB.prepare(query).bind(...params).all();
-  const legacy = (rows.results||[]) as any[];
+  const origin=new URL(c.req.url).origin;
+  const legacy=((rows.results||[]) as any[]).map((f:any)=>({
+    id:String(f.id),user_id:Number(f.user_id||0),username:String(f.username||'User'),creator:String(f.username||'User'),
+    title:String(f.title||''),artist:String(f.artist||''),album:'',duration:Number(f.duration_seconds||0),
+    file_tl:Number(f.file_tl||0),category:String(f.genre||'Music'),file_type:String(f.file_type||''),
+    category_type:'',description:'',plan:'A',cover_url:f.cover_image||null,
+    pulse:Number(f.pulse||0),play_count:Number(f.play_count||0),created_at:f.created_at,
+    content_kind:Number(f.file_tl||0)>0?'tl3':'mp3',shared:1,auth_status:'verified',revenue_held:0,
+    stream_url:origin+'/api/legacy-stream/'+encodeURIComponent(String(f.id)),source_table:'tl_file'
+  }));
   let modern:any[]=[];
   try {
     const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE ((LOWER(COALESCE(s.content_kind,''))='mp3' AND LOWER(COALESCE(s.release_mode,'')) LIKE 'free_mp3%') OR EXISTS (SELECT 1 FROM tl_files f WHERE f.file_url=s.stream_url AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0)) ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
-    modern=(modernRows.results||[]).map((s:any)=>({
-      ...s,
-      id:s.id,
-      user_id:Number(s.user_id),
-      creator:s.username,
-      file_type:s.file_type||'audio/mp3',
-      stream_url:s.stream_url||'',
-      shared:1,
-      auth_status:'verified',
-      revenue_held:0,
-      content_kind:s.content_kind||'mp3'
+    modern=(modernRows.results||[]).map((share:any)=>({
+      id:String(share.id),user_id:Number(share.user_id||0),username:String(share.username||'User'),creator:String(share.username||'User'),
+      title:String(share.title||''),artist:String(share.artist||''),album:String(share.album||''),duration:Number(share.duration||0),
+      file_tl:Number(share.file_tl||0),category:String(share.category||'Music'),file_type:String(share.file_type||''),
+      category_type:String(share.category_type||''),description:String(share.description||''),plan:String(share.plan||'FREE'),
+      spotify_id:share.spotify_id||null,spotify_url:share.spotify_url||null,cover_url:share.cover_url||null,
+      country:String(share.country||'KR'),content_lang:String(share.content_lang||'ko'),pulse:Number(share.pulse||0),
+      created_at:share.created_at,content_kind:share.content_kind||'tl3',shared:1,auth_status:'verified',revenue_held:0,
+      stream_url:origin+'/api/stream/'+encodeURIComponent(String(share.id)),source_table:'share'
     }));
   } catch(e) { console.error('tl_shares list error:',e); }
   return c.json([...modern,...legacy]);
