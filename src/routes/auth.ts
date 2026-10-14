@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { hashPassword, verifyPassword, makeAccessToken } from '../auth';
+import { hashPassword, verifyPassword, makeAccessToken, verifyToken } from '../auth';
 import type { Env, User } from '../types';
 
 const router = new Hono<{ Bindings: Env }>();
