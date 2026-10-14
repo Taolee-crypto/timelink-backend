@@ -608,27 +608,25 @@ app.post('/api/files/sync', async (c) => {
     ).bind(body.title, userId).first<{ id: number }>();
     if (existing) {
       await c.env.DB.prepare(`
-        UPDATE tl_files SET artist=?, genre=?, stream_url=?, cover_image=?,
-          price_per_sec=?, spotify_album=?, shared_to_shareplace=?, pulse=?,
-          auth_status=?, icon=?, updated_at=datetime('now') WHERE id=?
+        UPDATE tl_files SET artist=?, genre=?, file_type=?, stream_url=?, cover_image=?,
+        price_per_sec=?, spotify_album=?, shared_to_shareplace=0, shared=0, pulse=?,
+        auth_status='unverified', icon=?, updated_at=datetime('now') WHERE id=?
       `).bind(
-        body.artist||'', body.genre||'etc', body.stream_url||'', body.cover_image||'',
-        body.price_per_sec||1, body.spotify_album||'',
-        body.shared_to_shareplace ? 1 : 0, body.pulse||0,
-        body.auth_status||'unverified', body.icon||'🎵', existing.id
+        body.artist||'', body.genre||'etc', body.file_type||'application/octet-stream', body.stream_url||'', body.cover_image||'',
+        body.price_per_sec||1, body.spotify_album||'', body.pulse||0,
+        body.icon||'🎵', existing.id
       ).run();
       return c.json({ ok: true, action: 'updated', d1_id: existing.id });
     } else {
       const res = await c.env.DB.prepare(`
-        INSERT INTO tl_files (user_id,title,artist,genre,stream_url,cover_image,
+        INSERT INTO tl_files (user_id,title,artist,genre,file_type,stream_url,cover_image,
           price_per_sec,spotify_album,shared_to_shareplace,pulse,auth_status,icon,file_tl,max_file_tl,shared)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0,?) RETURNING id
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'unverified',?,?,?,0) RETURNING id
       `).bind(
-        userId, body.title, body.artist||'', body.genre||'etc',
+        userId, body.title, body.artist||'', body.genre||'etc', body.file_type||'application/octet-stream',
         body.stream_url||'', body.cover_image||'', body.price_per_sec||1,
-        body.spotify_album||'', body.shared_to_shareplace ? 1 : 0, body.pulse||0,
-        body.auth_status||'unverified', body.icon||'🎵',
-        body.shared_to_shareplace ? 1 : 0
+        body.spotify_album||'', 0, body.pulse||0, body.icon||'🎵',
+        Math.max(0,Math.floor(Number(body.file_tl||0))), Math.max(0,Math.floor(Number(body.file_tl||0)))
       ).first<{ id: number }>();
       return c.json({ ok: true, action: 'created', d1_id: res?.id });
     }
