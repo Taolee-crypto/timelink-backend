@@ -36,6 +36,9 @@ router.post('/', async (c) => {
 
     const releaseMode = String(body.release_mode || '').toLowerCase();
     const fileType = String(body.file_type || '').toLowerCase();
+    if (fileType === 'audio/mp3' || fileType === 'audio/mpeg' || releaseMode.startsWith('free_mp3')) {
+      return c.json({ ok: false, error: 'MP3 원본은 비공개 소스 자산입니다. TL3로 변환한 뒤 공유해 주세요.' }, 400);
+    }
     if (releaseMode !== 'tl3' || fileType !== 'audio/tl3') {
       return c.json({ ok: false, error: '정식 TL3 디지털 자산만 공유할 수 있습니다.' }, 400);
     }
@@ -46,7 +49,7 @@ router.post('/', async (c) => {
     if (streamUrl.includes('/api/storage/')) {
       storageKey = decodeURIComponent(streamUrl.split('/api/storage/')[1].split('?')[0]);
     }
-    const ownedKey = storageKey.match(/^tracks\\/u(\\d+)\\/[A-Za-z0-9_-]{1,160}\\.tl3$/i);
+    const ownedKey = storageKey.match(/^tracks\/u(\d+)\/[A-Za-z0-9_-]{1,160}\.tl3$/i);
     if (!ownedKey || Number(ownedKey[1]) !== userId) {
       return c.json({ ok: false, error: 'TL3 저장 자산의 소유권을 확인할 수 없습니다.' }, 403);
     }
