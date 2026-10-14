@@ -10,7 +10,7 @@ on:
       - "scripts/validate-v3-music-review.py"
       - ".github/workflows/v3-music-review-check.yml"
   push:
-    branches: [v3/music-review-admin]
+    branches: [v3/music-core-api, v3/music-review-admin]
     paths:
       - "src/routes/music-v3-admin.ts"
       - "src/index.ts"
