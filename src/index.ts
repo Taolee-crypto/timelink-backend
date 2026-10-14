@@ -3622,17 +3622,6 @@ app.options('/api/stream/:shareId', async (c) => new Response(null, {
   },
 }));
 
-app.get('/api/stream/:shareId',async(c)=>{
-  const shareId=c.req.param('shareId');
-  const cors:Record<string,string>={
-    'Access-Control-Allow-Origin':'*',
-    'Access-Control-Allow-Methods':'GET, HEAD, OPTIONS',
-    'Access-Control-Allow-Headers':'Range, Content-Type, Authorization',
-    'Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance',
-    'Accept-Ranges':'bytes',
-    'Cache-Control':'private, no-store'
-  };
-
 app.get('/api/stream/:shareId',async(c)=>{const token=(c.req.header('Authorization')||'').replace('Bearer ','')||c.req.query('tk')||'',userId=parseTokenUserId(token),shareId=c.req.param('shareId'),cors:any={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance','Accept-Ranges':'bytes'};try{await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_object_id INTEGER").run().catch(()=>{});
 await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_provider TEXT DEFAULT ''").run().catch(()=>{});
 const share=await c.env.DB.prepare('SELECT id,stream_url,storage_object_id,storage_provider FROM tl_shares WHERE id=?').bind(shareId).first() as any;if(!share)return new Response(JSON.stringify({error:'파일 없음'}),{status:404,headers:cors});
