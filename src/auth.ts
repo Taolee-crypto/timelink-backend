@@ -39,8 +39,10 @@ async function getKey(secret: string): Promise<CryptoKey> {
 
 function base64url(data: ArrayBuffer | Uint8Array): string {
   const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
-  return btoa(String.fromCharCode(...bytes)
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
 }
 
 function base64urlDecode(str: string): string {
