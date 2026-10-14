@@ -5,6 +5,19 @@ import { getLedgerHistory, getLedgerWallet } from '../economy-ledger';
 
 const router = new Hono<{ Bindings: Env; Variables: { user: User } }>();
 router.use('*', authMiddleware);
+router.use('*', async (c, next) => {
+  const schema = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name LIKE 'v3_%'"
+  ).first<{ count: number }>();
+  if (Number(schema?.count || 0) < 9) {
+    return c.json({
+      ok: false,
+      code: 'V3_LEDGER_NOT_INITIALIZED',
+      error: 'V3 economy migration has not been applied to this database'
+    }, 503);
+  }
+  await next();
+});
 
 // V3 ledger reads are intentionally separate from legacy wallet reads during cutover.
 router.get('/wallet', async (c) => {
