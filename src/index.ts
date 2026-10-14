@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
 import { verifyToken, makeAccessToken, hashPassword, verifyPassword } from './auth';
@@ -32,6 +33,8 @@ import { buildTL3V3, buildTL3V3FromMp3, parseTL3V3, decryptSegmentV3, decryptSin
 
 
 const app = new Hono<{ Bindings: Env }>();
+app.use('/api/upload/*', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
+app.use('/api/upload', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
 
 app.use('*', cors({
   origin: '*',
@@ -40,7 +43,7 @@ app.use('*', cors({
   maxAge: 86400,
 }));
 
-app.options('*', (c) => c.text('', 204));
+app.options('*', () => new Response(null, { status: 204 }));
 
 // ══════════════════════════════════════════════════════════
 
@@ -414,7 +417,7 @@ app.get('/api/unsplash/search', async (c) => {
       { headers: { 'Authorization': 'Client-ID ' + key } }
     );
     if (!r.ok) return c.json({ error: 'Unsplash API 오류', status: r.status }, 502);
-    const d = await r.json();
+    const d = await r.json() as { results?: Array<{ id: string; urls?: { regular?: string; small?: string; thumb?: string }; alt_description?: string; user?: { name?: string; links?: { html?: string } } }> };
     const photos = (d.results || []).map(p => ({
       id: p.id,
       url: p.urls?.regular || p.urls?.small,
@@ -613,7 +616,7 @@ app.post('/api/upload/mp3', async (c) => {
   if(!userId) return c.json({ok:false,error:'인증 필요'},401);
   try{
     await ensureD1Storage(c.env.DB);
-    const form=await c.req.parseBody({limit:D1_MAX_FILE_SIZE});
+    const form=await c.req.parseBody();
     const file=form['file'] as File;
     if(!file) return c.json({ok:false,error:'MP3 파일이 없습니다.'},400);
     const name=String(file.name||'audio.mp3').replace(/[^a-zA-Z0-9._-]/g,'_');
@@ -884,7 +887,7 @@ app.get('/api/v1/tl3/header/:id', async (c) => {
     }
     const row = await c.env.DB.prepare("SELECT header_json,title,artist,duration_ms,segment_count,price_tl,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
     if (!row) return c.json({ok:false,error:'TL3 release not found'},404);
-    var header = {};
+    var header: Record<string, any> = {};
     try { header = JSON.parse(String(row.header_json||'{}')); } catch(_){ }
     return c.json({
       ok: true,
@@ -995,11 +998,13 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     if (Number(ss.last_segment_at) && now - Number(ss.last_segment_at) < 1) {
       return c.json({ok:false,error:'rate limit',retry_after:1-(now-Number(ss.last_segment_at))},429);
     }
+    const masterSecret = c.env.TL3_MASTER_SECRET;
+    if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
     const cost = Number((Number(seg.duration_ms)/1000).toFixed(3));
     const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-?,total_tl_spent=total_tl_spent+? WHERE id=? AND tl_balance>=?').bind(cost,cost,u.id,cost).run();
     if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:cost,balance:u.tl_balance},402);
     const shareIdKey = `tl3_${fileId}`;
-    const licN = await deriveLicenseBytes(c.env.TL3_MASTER_SECRET, shareIdKey);
+    const licN = await deriveLicenseBytes(masterSecret, shareIdKey);
     const nextNs = Math.max(Number(ss.next_segment||0), segmentIndex + 1);
     await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(nextNs,segmentIndex,cost,Number(seg.duration_ms),now,now,sessionId).run();
     const fresh = await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
@@ -1124,7 +1129,9 @@ app.get('/api/v1/tl3/offline/lic/:session_id', async (c) => {
     if (Number(ss.lic_delivered) === 1) return c.json({ok:false,error:'이미 lic이 전달된 세션입니다.'},409);
     if (new Date(ss.expires_at).getTime() < Date.now()) return c.json({ok:false,error:'세션이 만료되었습니다.'},410);
 
-    const lic = await deriveLicenseBytes(c.env.TL3_MASTER_SECRET, ss.share_id);
+    const masterSecret = c.env.TL3_MASTER_SECRET;
+    if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
+    const lic = await deriveLicenseBytes(masterSecret, ss.share_id);
     await c.env.DB.prepare("UPDATE tl3_offline_sessions SET lic_delivered=1,updated_at=datetime('now') WHERE id=?").bind(sid).run();
     return c.json({ok:true, lic:hex(lic), share_id:ss.share_id, total_segments:Number(ss.total_segments)});
   } catch(e:any) { return c.json({ok:false,error:e.message||'offline lic error'},500); }
@@ -1282,13 +1289,15 @@ app.get('/api/spotify/search', async (c) => {
 });
 
 // ── JWT / 토큰 파싱 ──
-function parseJWT(token: string): { userId: number; username: string } {
+function parseJWT(token: string): { userId: number; username: string; id?: number; sub?: number } {
   if (token.split('.').length === 3) {
     try {
       const payload = JSON.parse(atob(token.split('.')[1]));
       if (payload.exp && payload.exp * 1000 < Date.now()) throw new Error('Token expired');
       return {
         userId: Number(payload.userId || payload.id || payload.sub),
+        id: Number(payload.id || 0),
+        sub: Number(payload.sub || 0),
         username: payload.username || payload.email || 'User'
       };
     } catch(e) { throw new Error('Invalid JWT'); }
@@ -1660,7 +1669,7 @@ app.patch('/api/shares/:id', async (c) => {
   let userId: number;
   try {
     const p = parseJWT(auth);
-    userId = p.userId || p.id || p.sub;
+    userId = Number(p.userId ?? p.id ?? p.sub ?? 0);
     if (!userId) throw new Error('no userId');
   } catch {
     return c.json({ error: '토큰 오류' }, 401);
