@@ -74,12 +74,11 @@ Scope: read-only audit of `feature/renewal-private-library-api` source. No produ
 
 **Required fix:** remove POC credit for free MP3 upload. Keep TL3 issuance contribution only if the finalized POC rules explicitly authorize it; write any contribution event through the canonical, idempotent TL Economics ledger rather than an uncoordinated log.
 
-### P1 — Committed Worker configuration contains a plaintext provider/API key
+### P1 — Previously committed Worker configuration contained a plaintext provider/API key
 
-- The inspected `wrangler.toml` contains a credential-like `TON_API_KEY` value under `[vars]`.
-- Treat the committed value as exposed: revoke/rotate it at its provider, move the replacement to Worker secrets, and remove the plaintext value from tracked configuration and repository history as appropriate.
-
-**Required fix:** secrets belong in `wrangler secret put` / protected deployment secrets, never `[vars]`. Review other repository history and logs for the same credential.
+- **Completed in current branch:** removed `TON_API_KEY` from tracked `wrangler.toml` `[vars]` and declared it as an optional Worker secret binding in `src/types.ts`.
+- **Still required:** the old value remains exposed in Git history and must be revoked/rotated at TON Center. Set the replacement through `wrangler secret put TON_API_KEY` or the protected deployment secret store; never restore it under `[vars]`.
+- Review repository history and logs for other copies. Removing the current file line does not erase historical exposure.
 
 ### P2 — Track Page counters and moderation require stronger operational controls
 
@@ -161,4 +160,4 @@ The P0 playback authorization paths have now been closed in code on the renewal 
 - The public catalogue filters out modern shares that do not satisfy the publication gate.
 - A static regression validator now runs in the Worker CI workflow and checks these authorization boundaries.
 
-The P0 stream authorization and upload-session controls and the public response DTO allowlist are now implemented in code. Remaining blockers are TON credential rotation, canonical TL3 contribution ledger integration, the free-MP3 migration decision, and social API integration tests. These changes have not yet been exercised against a staging D1 database with two real accounts. Do not mark the PR ready or deploy until staging tests pass.
+The P0 stream authorization and upload-session controls and the public response DTO allowlist are now implemented in code. Remaining blockers are TON credential rotation (the plaintext value has been removed from the current branch but still requires provider-side revocation), canonical TL3 contribution ledger integration, the free-MP3 migration decision, and social API integration tests. These changes have not yet been exercised against a staging D1 database with two real accounts. Do not mark the PR ready or deploy until staging tests pass.
