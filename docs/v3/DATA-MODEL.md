@@ -143,7 +143,7 @@ Critical invariant: MP3 is a source Asset only, never a free-to-listen Release. 
 |---|---|---|
 | id | TEXT PK | |
 | track_id | TEXT FK | |
-| release_type | TEXT | TL3 initially |
+| release_type | TEXT | TL3 only in the initial music product |
 | version | INTEGER | unique per Track and release type |
 | status | TEXT | draft/preparing/ready_for_review/published/suspended/withdrawn |
 | asset_id | TEXT FK NULL | published TL3 object asset |
@@ -217,7 +217,7 @@ Do not use SharePlace entry ID as the Track ID. Discovery placement can change w
 
 #### `poc_events`
 - `id TEXT PK`, `user_id INTEGER FK`, `track_id TEXT NULL`, `event_type TEXT`, `source_event_id TEXT`, `score_policy_version TEXT`, `score_value INTEGER`, `validation_status TEXT`, `evidence_ref TEXT NULL`, `idempotency_key TEXT UNIQUE`, `created_at TEXT`.
-- A qualifying accepted free-MP3 metadata registration may create one deduplicated POC-only contribution event under the active scoring policy. It must never issue TL, TL bonuses, or TLC directly; duplicate, unverified, or rejected registrations are excluded.
+- Only a successfully completed MP3-to-TL3 conversion may create a deduplicated POC candidate event. MP3 metadata intake and source Asset upload create no POC event. The conversion candidate must be evidence-backed, policy-versioned, and validated before affecting the POC score. It never directly issues TL, TL bonuses, or TLC.
 
 #### `tlc_mining_records`
 - `id TEXT PK`, `user_id INTEGER FK`, `poc_batch_id TEXT`, `amount_atomic TEXT`, `chain_id TEXT`, `wallet_address TEXT`, `transaction_hash TEXT NULL`, `status TEXT`, `policy_version TEXT`, `created_at TEXT`, `confirmed_at TEXT NULL`.
