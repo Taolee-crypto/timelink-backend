@@ -7,7 +7,7 @@ This document defines the normalized V3 relational model. It is a target design,
 
 ## 1. Modeling rules
 
-- Use opaque text IDs (UUID/ULID generated server-side) for new domain records. Never trust client-generated owner IDs.
+- Use opaque text IDs (UUID/ULID generated server-side) for new domain records. Preserve the live D1 identity type: `users.id` is INTEGER, so every new foreign-key column referencing `users.id` (owner, creator, claimant, follower, reporter, moderator, or actor) must also be INTEGER. Never trust client-generated owner IDs.
 - Store timestamps in UTC ISO-8601 or integer epoch consistently within a table family; the implementation migration must select one representation and use it consistently. Existing legacy timestamps must be preserved as-is during migration.
 - Monetary/accounting amounts use integer units, never floating point.
 - Every creator-owned record has an explicit `owner_user_id` and server-enforced ownership checks.
@@ -55,7 +55,7 @@ erDiagram
 | Column | Type | Rule |
 |---|---|---|
 | id | TEXT PK | server-generated |
-| user_id | TEXT FK UNIQUE | references canonical users.id |
+| user_id | INTEGER FK UNIQUE | references canonical users.id |
 | display_name | TEXT | bounded |
 | bio | TEXT | bounded |
 | avatar_asset_id | TEXT NULL | references track_assets only if generic asset model is extended; otherwise use profile_assets |
@@ -71,7 +71,7 @@ Do not create a second credential/account table for creators. Existing user iden
 | Column | Type | Rule |
 |---|---|---|
 | id | TEXT PK | stable Track ID |
-| owner_user_id | TEXT FK | creator/owner |
+| owner_user_id | INTEGER FK | creator/owner |
 | status | TEXT | draft/active/hidden/under_review/removed |
 | visibility | TEXT | private/unlisted/public |
 | canonical_metadata_version_id | TEXT NULL | points to confirmed metadata version |
@@ -98,7 +98,7 @@ Indexes: `(owner_user_id, updated_at)`, `(status, visibility, updated_at)`.
 | metadata_source | TEXT | id3/filename_fallback/manual/mixed |
 | metadata_status | TEXT | pending_review/confirmed/needs_attention |
 | extracted_payload_json | TEXT NULL | bounded allowlisted tags |
-| confirmed_by | TEXT NULL | user ID |
+| confirmed_by | INTEGER NULL | user ID |
 | confirmed_at | TEXT NULL | UTC |
 | created_at | TEXT | UTC |
 
@@ -117,7 +117,7 @@ Constraints: unique `(track_id, version)`; never overwrite extraction provenance
 | size_bytes | INTEGER NULL | non-negative |
 | mime_type | TEXT NULL | allowlisted |
 | availability_status | TEXT | local_only/available/unavailable/revoked |
-| created_by | TEXT FK | |
+| created_by | INTEGER FK | |
 | created_at | TEXT | UTC |
 
 Critical invariant: an MP3 source registration may create a metadata/provenance record, but it must not create a server-hosted audio asset. If a `creator_source_reference` row is used, it records only a local-source registration fact and must have no retrievable server URI or object key. Prefer keeping source registration details in the metadata registration record to avoid implying remote availability.
@@ -127,7 +127,7 @@ Critical invariant: an MP3 source registration may create a metadata/provenance 
 |---|---|---|
 | id | TEXT PK | |
 | track_id | TEXT FK | |
-| claimant_user_id | TEXT FK | |
+| claimant_user_id | INTEGER FK | |
 | rights_role | TEXT | author/composer/lyricist/performer/producer/label/administrator/other |
 | ownership_share_bps | INTEGER NULL | basis points; validate aggregate policy |
 | territory | TEXT NULL | ISO country or documented region code |
@@ -173,32 +173,32 @@ Constraints: unique `(track_id, release_type, version)`; enforce one active publ
 Do not use SharePlace entry ID as the Track ID. Discovery placement can change without changing the musical work.
 
 #### `track_likes`
-- `id TEXT PK`, `track_id TEXT FK`, `user_id TEXT FK`, `created_at TEXT`.
+- `id TEXT PK`, `track_id TEXT FK`, `user_id INTEGER FK`, `created_at TEXT`.
 - Unique `(track_id, user_id)`; index `(track_id, created_at)`.
 
 #### `track_comments`
-- `id TEXT PK`, `track_id TEXT FK`, `user_id TEXT FK`, `parent_comment_id TEXT NULL`, `body TEXT`, `status TEXT`, `created_at TEXT`, `updated_at TEXT`, `deleted_at TEXT NULL`.
+- `id TEXT PK`, `track_id TEXT FK`, `user_id INTEGER FK`, `parent_comment_id TEXT NULL`, `body TEXT`, `status TEXT`, `created_at TEXT`, `updated_at TEXT`, `deleted_at TEXT NULL`.
 - Index `(track_id, created_at)`; bound body length; prevent arbitrary-depth nesting in the first release.
 
 #### `user_follows`
-- `id TEXT PK`, `follower_user_id TEXT FK`, `following_user_id TEXT FK`, `created_at TEXT`.
+- `id TEXT PK`, `follower_user_id INTEGER FK`, `following_user_id INTEGER FK`, `created_at TEXT`.
 - Unique pair; check follower != following.
 
 #### `playlists`
-- `id TEXT PK`, `owner_user_id TEXT FK`, `title TEXT`, `description TEXT NULL`, `visibility TEXT`, `created_at TEXT`, `updated_at TEXT`, `deleted_at TEXT NULL`.
+- `id TEXT PK`, `owner_user_id INTEGER FK`, `title TEXT`, `description TEXT NULL`, `visibility TEXT`, `created_at TEXT`, `updated_at TEXT`, `deleted_at TEXT NULL`.
 
 #### `playlist_tracks`
 - `id TEXT PK`, `playlist_id TEXT FK`, `track_id TEXT FK`, `position INTEGER`, `added_at TEXT`.
 - Unique `(playlist_id, track_id)`; unique `(playlist_id, position)`.
 
 #### `content_reports`
-- `id TEXT PK`, `reporter_user_id TEXT FK`, `target_type TEXT`, `target_id TEXT`, `reason_code TEXT`, `details TEXT NULL`, `status TEXT`, `moderator_user_id TEXT NULL`, `resolution_note TEXT NULL`, `created_at TEXT`, `resolved_at TEXT NULL`.
+- `id TEXT PK`, `reporter_user_id INTEGER FK`, `target_type TEXT`, `target_id TEXT`, `reason_code TEXT`, `details TEXT NULL`, `status TEXT`, `moderator_user_id INTEGER NULL`, `resolution_note TEXT NULL`, `created_at TEXT`, `resolved_at TEXT NULL`.
 - Index `(status, created_at)`; rate limit per reporter and target.
 
 ### 3.4 Playback and financial records
 
 #### `playback_sessions`
-- `id TEXT PK`, `user_id TEXT FK`, `release_id TEXT FK`, `status TEXT`, `license_id TEXT UNIQUE`, `device_binding_hash TEXT NULL`, `started_at TEXT`, `expires_at TEXT`, `last_sequence INTEGER DEFAULT 0`, `validated_seconds INTEGER DEFAULT 0`, `settled_seconds INTEGER DEFAULT 0`, `policy_version TEXT`, `closed_at TEXT NULL`.
+- `id TEXT PK`, `user_id INTEGER FK`, `release_id TEXT FK`, `status TEXT`, `license_id TEXT UNIQUE`, `device_binding_hash TEXT NULL`, `started_at TEXT`, `expires_at TEXT`, `last_sequence INTEGER DEFAULT 0`, `validated_seconds INTEGER DEFAULT 0`, `settled_seconds INTEGER DEFAULT 0`, `policy_version TEXT`, `closed_at TEXT NULL`.
 - Index `(user_id, status, expires_at)`, `(release_id, started_at)`.
 - Never persist raw device fingerprints where a keyed hash suffices.
 
@@ -207,20 +207,20 @@ Do not use SharePlace entry ID as the Track ID. Discovery placement can change w
 - Unique `(session_id, sequence)`; never use client-reported duration alone as billable truth.
 
 #### `tl_ledger`
-- `id TEXT PK`, `user_id TEXT FK`, `entry_type TEXT`, `amount_tl INTEGER`, `balance_after_tl INTEGER NULL`, `related_session_id TEXT NULL`, `related_order_id TEXT NULL`, `idempotency_key TEXT UNIQUE`, `description_code TEXT`, `created_at TEXT`.
+- `id TEXT PK`, `user_id INTEGER FK`, `entry_type TEXT`, `amount_tl INTEGER`, `balance_after_tl INTEGER NULL`, `related_session_id TEXT NULL`, `related_order_id TEXT NULL`, `idempotency_key TEXT UNIQUE`, `description_code TEXT`, `created_at TEXT`.
 - Amount is signed or direction+positive amount; choose one convention before SQL and enforce consistently. No UPDATE/DELETE in application paths.
 - Index `(user_id, created_at)`.
 
 #### `creator_revenue_ledger`
-- `id TEXT PK`, `creator_user_id TEXT FK`, `track_id TEXT FK`, `release_id TEXT FK`, `playback_session_id TEXT NULL`, `entry_type TEXT`, `amount_tl INTEGER`, `status TEXT`, `idempotency_key TEXT UNIQUE`, `created_at TEXT`.
+- `id TEXT PK`, `creator_user_id INTEGER FK`, `track_id TEXT FK`, `release_id TEXT FK`, `playback_session_id TEXT NULL`, `entry_type TEXT`, `amount_tl INTEGER`, `status TEXT`, `idempotency_key TEXT UNIQUE`, `created_at TEXT`.
 - Revenue is not identical to listener TL consumption; fees, holds, refunds, and payout adjustments are explicit entries.
 
 #### `poc_events`
-- `id TEXT PK`, `user_id TEXT FK`, `track_id TEXT NULL`, `event_type TEXT`, `source_event_id TEXT`, `score_policy_version TEXT`, `score_value INTEGER`, `validation_status TEXT`, `evidence_ref TEXT NULL`, `idempotency_key TEXT UNIQUE`, `created_at TEXT`.
+- `id TEXT PK`, `user_id INTEGER FK`, `track_id TEXT NULL`, `event_type TEXT`, `source_event_id TEXT`, `score_policy_version TEXT`, `score_value INTEGER`, `validation_status TEXT`, `evidence_ref TEXT NULL`, `idempotency_key TEXT UNIQUE`, `created_at TEXT`.
 - A qualifying accepted free-MP3 metadata registration may create one deduplicated POC-only contribution event under the active scoring policy. It must never issue TL, TL bonuses, or TLC directly; duplicate, unverified, or rejected registrations are excluded.
 
 #### `tlc_mining_records`
-- `id TEXT PK`, `user_id TEXT FK`, `poc_batch_id TEXT`, `amount_atomic TEXT`, `chain_id TEXT`, `wallet_address TEXT`, `transaction_hash TEXT NULL`, `status TEXT`, `policy_version TEXT`, `created_at TEXT`, `confirmed_at TEXT NULL`.
+- `id TEXT PK`, `user_id INTEGER FK`, `poc_batch_id TEXT`, `amount_atomic TEXT`, `chain_id TEXT`, `wallet_address TEXT`, `transaction_hash TEXT NULL`, `status TEXT`, `policy_version TEXT`, `created_at TEXT`, `confirmed_at TEXT NULL`.
 - Token amounts use integer atomic units as strings if they exceed safe SQL integer range. Never store private keys or wallet secrets.
 
 ## 4. API-to-table ownership
