@@ -13,6 +13,7 @@ import disputesRouter from './routes/disputes';
 import chartsRouter from './routes/charts';
 import paymentRouter from './payment';
 import ecoRouter from './economics';
+import economyV3Router from './routes/economy-v3';
 import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
@@ -169,6 +170,7 @@ app.get('/api/v1/health', async (c) => {
 
 app.route('/api/v1/auth', authRouter);
 app.route('/api/v1/users', usersRouter);
+app.route('/api/v3/economy', economyV3Router);
 app.route('/api/v1/files', filesRouter);
 app.route('/api/v1/playback', playbackRouter);
 app.route('/api/v1/shareplace', shareplaceRouter);
