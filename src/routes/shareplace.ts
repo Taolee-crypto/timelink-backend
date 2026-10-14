@@ -32,7 +32,7 @@ router.post('/', async (c) => {
     const streamUrl=streamUrl.trim();
     let storageKey=streamUrl;
     if(streamUrl.includes('/api/storage/'))storageKey=decodeURIComponent(streamUrl.split('/api/storage/')[1].split('?')[0]);
-    const ownedKey=storageKey.match(/^tracks\\/u(\\d+)\\/[A-Za-z0-9_-]{1,160}\\.tl3$/i);
+    const ownedKey=storageKey.match(/^tracks\/u(\d+)\/[A-Za-z0-9_-]{1,160}\.tl3$/i);
     if(!ownedKey||Number(ownedKey[1])!==userId)return c.json({ok:false,error:'TL3 저장 자산의 소유권을 확인할 수 없습니다.'},403);
     const stored=await getD1ObjectMeta(c.env.DB,storageKey);
     if(!stored)return c.json({ok:false,error:'완료된 TL3 저장 자산을 찾을 수 없습니다.'},404);
