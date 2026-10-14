@@ -15,6 +15,10 @@ checks = {
     "legacy TL upload rejects missing secret": "if(!secret)return c.json({ok:false,error:'TL_SECRET 설정이 필요합니다.'},503)" in source,
     "legacy TL header binds creator to JWT": "creatorId:uid" in source,
     "legacy TL key is creator-namespaced": "key=`tl/u${uid}/${shareId}.tl`" in source,
+    "namespaced storage stream resolves owner": "const ownerMatch=key.match(/^(?:tracks|tl)\\/u(\\d+)\\//)" in source,
+    "protected TL files are owner-only": "if(key.startsWith('tl/')||/\\.(tl3|tl)$/i.test(key))" in source,
+    "public stream requires a published legacy MP3 link": "isPublic=!!legacyFile||!!legacyShare" in source,
+    "private stream is not cached publicly": "isPublic?'public, max-age=3600':'private, no-store'" in source,
     "sync no longer creates fallback user": "VALUES (?, ?, 'local_sync', 1000) RETURNING id" not in source,
 }
 failed = [name for name, ok in checks.items() if not ok]
