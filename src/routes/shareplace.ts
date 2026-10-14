@@ -29,7 +29,7 @@ router.post('/', async (c) => {
     if(releaseMode!=='tl3'||fileType!=='audio/tl3')
       return c.json({ok:false,error:'정식 TL3 디지털 자산만 공유할 수 있습니다.'},400);
     if(body.rights_confirmed!==true)return c.json({ok:false,error:'창작자 권리 확인이 필요합니다.'},400);
-    const streamUrl=streamUrl.trim();
+    const streamUrl=String(body.stream_url||'').trim();
     let storageKey=streamUrl;
     if(streamUrl.includes('/api/storage/'))storageKey=decodeURIComponent(streamUrl.split('/api/storage/')[1].split('?')[0]);
     const ownedKey=storageKey.match(/^tracks\/u(\d+)\/[A-Za-z0-9_-]{1,160}\.tl3$/i);
