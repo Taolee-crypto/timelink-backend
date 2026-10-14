@@ -68,7 +68,7 @@ router.get('/', async (c) => {
   const legacy = (rows.results||[]) as any[];
   let modern:any[]=[];
   try {
-    const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE 1=1 ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
+    const modernRows=await c.env.DB.prepare(`SELECT s.*, u.username FROM tl_shares s JOIN users u ON CAST(s.user_id AS INTEGER)=u.id WHERE ((LOWER(COALESCE(s.content_kind,''))='mp3' AND LOWER(COALESCE(s.release_mode,'')) LIKE 'free_mp3%') OR EXISTS (SELECT 1 FROM tl_files f WHERE f.file_url=s.stream_url AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0)) ORDER BY s.pulse DESC, s.created_at DESC LIMIT ? OFFSET ?`).bind(limit,offset).all();
     modern=(modernRows.results||[]).map((s:any)=>({
       ...s,
       id:s.id,
