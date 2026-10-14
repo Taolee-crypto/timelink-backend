@@ -127,8 +127,7 @@ router.get('/', async (c) => {
       WHERE a.file_id = f.id AND c.status = 'active' LIMIT 1) AS cert_no
     FROM tl_files f JOIN users u ON f.user_id = u.id
     WHERE LOWER(f.file_type) = 'audio/tl3'
-      AND f.auth_status = 'verified' AND f.shared = 1
-      AND COALESCE(f.revenue_held, 0) = 0`;
+      AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0`;
   const params: (string | number)[] = [];
   if (genre) { query += ' AND f.genre = ?'; params.push(genre); }
   query += ` ORDER BY ${orderCol} DESC LIMIT ? OFFSET ?`;
@@ -159,10 +158,9 @@ router.get('/', async (c) => {
       JOIN users u ON CAST(s.user_id AS INTEGER) = u.id
       WHERE EXISTS (
         SELECT 1 FROM tl_files f
-        WHERE (f.stream_url = s.stream_url OR f.file_url = s.stream_url)
+        WHERE (f.stream_url=s.stream_url OR f.file_url=s.stream_url)
           AND LOWER(f.file_type) = 'audio/tl3'
-          AND f.auth_status = 'verified' AND f.shared = 1
-          AND COALESCE(f.revenue_held, 0) = 0
+          AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
       )
       ORDER BY s.pulse DESC, s.created_at DESC
       LIMIT ? OFFSET ?
