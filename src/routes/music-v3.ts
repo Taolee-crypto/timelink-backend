@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../middleware';
 import { ensureStorageTables } from '../storage';
+import { buildTL3V3FromMp3, parseTL3V3 } from '../tl3v3';
+import { parseMp3Segments } from '../mp3-segments';
 import type { Env, User } from '../types';
 
 const router = new Hono<{ Bindings: Env; Variables: { user: User } }>();
@@ -11,6 +13,34 @@ const MAX_TITLE = 240;
 const MAX_TEXT = 4000;
 const providers = new Set(['google_drive', 'onedrive']);
 const assetTypes = new Set(['mp3_audio', 'tl3_release_file', 'cover_art', 'lyrics', 'sheet_music', 'other']);
+
+const MAX_TL3_SOURCE_BYTES = 100 * 1024 * 1024;
+
+function trustedLocalAgentUrl(value: unknown): URL | null {
+  try {
+    const url = new URL(String(value || ''));
+    const host = url.hostname.toLowerCase();
+    const trustedHost = host === 'agent.timelink.digital' || host.endsWith('.trycloudflare.com');
+    const trustedPath = /^\\/local\\/[a-f0-9]{36}$/i.test(url.pathname);
+    if (url.protocol !== 'https:' || !trustedHost || !trustedPath
+      || url.username || url.password || url.search || url.hash) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedHash(value: unknown): string {
+  return String(value || '').trim().toLowerCase().replace(/^sha256:/, '');
+}
+
+async function sha256Hex(data: Uint8Array): Promise<string> {
+  const copy = new Uint8Array(data.byteLength);
+  copy.set(data);
+  const digest = await crypto.subtle.digest('SHA-256', copy.buffer as ArrayBuffer);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 
 async function ready(c: any) {
   const row = await c.env.DB.prepare(
@@ -202,6 +232,105 @@ router.post('/tracks/:id/rights', async (c) => {
     VALUES(?,?,?,?,?,?,?,'declared',?,datetime('now'))
   `).bind(id,trackId,user.id,role,share,String(body.territory||'').slice(0,64)||null,String(body.evidence_ref||'').slice(0,MAX_TEXT)||null,terms).run();
   return c.json({ok:true,rights_id:id,verification_status:'declared'},201);
+});
+
+// POST /tracks/:id/conversions/tl3/build — create an encrypted TL3 container without storing file bytes in D1
+router.post('/tracks/:id/conversions/tl3/build', async (c) => {
+  const unavailable=await ready(c); if(unavailable) return unavailable;
+  const user=c.get('user'),trackId=c.req.param('id');
+  if(!await ownedTrack(c.env.DB,trackId,user.id)) return c.json({ok:false,error:'Track not found'},404);
+  let body:any; try {body=await c.req.json();} catch {return c.json({ok:false,error:'Invalid JSON body'},400);}
+  const sourceAssetId=String(body.source_asset_id||'');
+  if(!sourceAssetId) return c.json({ok:false,error:'source_asset_id is required'},422);
+
+  const source=await c.env.DB.prepare(`
+    SELECT a.id,a.asset_type,a.storage_provider,a.storage_uri_ref,a.content_hash,a.size_bytes,a.mime_type,a.availability_status,
+      m.display_title,COALESCE(m.verified_artist,m.extracted_artist) AS artist
+    FROM v3_track_assets a
+    JOIN v3_tracks t ON t.id=a.track_id
+    LEFT JOIN v3_track_metadata_versions m ON m.track_id=t.id
+      AND m.version=(SELECT MAX(mx.version) FROM v3_track_metadata_versions mx WHERE mx.track_id=t.id)
+    WHERE a.id=? AND a.track_id=? AND t.owner_user_id=?
+  `).bind(sourceAssetId,trackId,user.id).first<any>();
+  if(!source||source.asset_type!=='mp3_audio'||source.availability_status!=='available') {
+    return c.json({ok:false,error:'An available MP3 source Asset belonging to this Track is required'},422);
+  }
+  if(source.storage_provider!=='local_agent') {
+    return c.json({ok:false,code:'STORAGE_PROVIDER_NOT_READY',error:'TL3 conversion currently requires a source stored through the TimeLink Local Agent'},409);
+  }
+  const sourceUrl=trustedLocalAgentUrl(source.storage_uri_ref);
+  if(!sourceUrl) return c.json({ok:false,error:'The source Asset does not have a valid TimeLink Local Agent URL'},422);
+  if(Number(source.size_bytes||0)>MAX_TL3_SOURCE_BYTES) return c.json({ok:false,error:'The MP3 source exceeds the 100 MB conversion limit'},413);
+  const expectedSourceHash=normalizedHash(source.content_hash);
+  if(!/^[a-f0-9]{64}$/.test(expectedSourceHash)) return c.json({ok:false,error:'The source Asset must have a SHA-256 content hash'},422);
+  if(!source.display_title||!source.artist) return c.json({ok:false,error:'Track title and artist metadata are required before conversion'},422);
+  const masterSecret=String(c.env.TL3_MASTER_SECRET||'');
+  if(!masterSecret) return c.json({ok:false,code:'TL3_CONVERSION_NOT_CONFIGURED',error:'TL3 conversion is not configured on the server'},503);
+
+  const schema=await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v3_tl3_conversion_jobs'").first();
+  if(!schema) return c.json({ok:false,code:'V3_TL3_CONVERSION_NOT_INITIALIZED',error:'V3 TL3 conversion migration has not been applied'},503);
+  const recent=await c.env.DB.prepare(`
+    SELECT COUNT(*) AS count FROM v3_tl3_conversion_jobs
+    WHERE owner_user_id=? AND created_at>=datetime('now','-5 minutes')
+  `).bind(user.id).first<any>();
+  if(Number(recent?.count||0)>=3) return c.json({ok:false,error:'Too many TL3 conversion attempts. Please wait before trying again.'},429);
+
+  const jobId=ID();
+  const licenseReference='v3_'+trackId.replace(/-/g,'')+'_'+crypto.randomUUID().replace(/-/g,'');
+  await c.env.DB.prepare(`
+    INSERT INTO v3_tl3_conversion_jobs
+      (id,track_id,source_asset_id,owner_user_id,license_reference,source_content_hash,status)
+    VALUES(?,?,?,?,?,?,'building')
+  `).bind(jobId,trackId,sourceAssetId,user.id,licenseReference,expectedSourceHash).run();
+
+  try {
+    const upstream=await fetch(sourceUrl.toString(),{redirect:'manual'});
+    if(!upstream.ok||upstream.status>=300&&upstream.status<400) throw new Error('The Local Agent could not provide the source MP3');
+    const raw=new Uint8Array(await upstream.arrayBuffer());
+    if(!raw.byteLength||raw.byteLength>MAX_TL3_SOURCE_BYTES) throw new Error('The source MP3 is empty or exceeds the 100 MB conversion limit');
+    const actualSourceHash=await sha256Hex(raw);
+    if(actualSourceHash!==expectedSourceHash) throw new Error('The source MP3 content no longer matches its registered SHA-256 hash');
+    const segments=parseMp3Segments(raw,5000);
+    const durationMs=segments.reduce((total,segment)=>total+segment.durationMs,0);
+    const durationSeconds=Math.max(1,Math.round(durationMs/1000));
+    const build=await buildTL3V3FromMp3({
+      title:String(source.display_title),
+      artist:String(source.artist),
+      cid:String(user.id),
+      name:String(user.id),
+      creator_id:Number(user.id),
+      mp3Raw:raw,
+      segments,
+      masterSecret,
+      shareId:licenseReference,
+      licId:'k_2026_01'
+    });
+    const outputHash=await sha256Hex(build.data);
+    await c.env.DB.prepare(`
+      UPDATE v3_tl3_conversion_jobs
+      SET status='built',output_content_hash=?,output_size_bytes=?,duration_seconds=?,segment_count=?
+      WHERE id=? AND status='building'
+    `).bind(outputHash,build.data.byteLength,durationSeconds,segments.length,jobId).run();
+
+    const outputBuffer=new ArrayBuffer(build.data.byteLength);
+    new Uint8Array(outputBuffer).set(build.data);
+    const headers=new Headers({
+      'Content-Type':'application/octet-stream',
+      'Content-Disposition':`attachment; filename="TimeLink-${trackId.slice(0,8)}.tl3"`,
+      'Cache-Control':'no-store',
+      'X-TimeLink-Conversion-Job':jobId,
+      'X-TimeLink-License-Reference':licenseReference,
+      'X-TimeLink-Duration-Seconds':String(durationSeconds),
+      'X-TimeLink-Segment-Count':String(segments.length),
+      'X-TimeLink-Source-Hash':actualSourceHash,
+      'X-TimeLink-Output-Hash':outputHash,
+      'Access-Control-Expose-Headers':'X-TimeLink-Conversion-Job, X-TimeLink-License-Reference, X-TimeLink-Duration-Seconds, X-TimeLink-Segment-Count, X-TimeLink-Source-Hash, X-TimeLink-Output-Hash'
+    });
+    return new Response(outputBuffer,{status:200,headers});
+  } catch(error:any) {
+    await c.env.DB.prepare("UPDATE v3_tl3_conversion_jobs SET status='failed' WHERE id=? AND status='building'").bind(jobId).run();
+    return c.json({ok:false,error:String(error?.message||'TL3 conversion failed').slice(0,300)},422);
+  }
 });
 
 // POST /tracks/:id/conversions/tl3/complete — record an explicitly confirmed conversion candidate
