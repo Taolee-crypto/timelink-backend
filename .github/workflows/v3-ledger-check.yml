@@ -1,0 +1,30 @@
+name: TimeLink V3 backend validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "migrations/**"
+      - "wrangler.toml"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/v3-ledger-check.yml"
+  push:
+    branches: ["v3/economy-ledger-foundation"]
+
+jobs:
+  worker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Compile Cloudflare Worker (dry run)
+        run: npx wrangler deploy --dry-run --outdir=dist
