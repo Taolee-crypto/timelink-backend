@@ -200,7 +200,6 @@ app.get('/api/storage/object/:id/stream', async (c) => {
     const linked=await c.env.DB.prepare(
       'SELECT * FROM tl_shares WHERE storage_object_id=? AND CAST(user_id AS INTEGER)=?'
     ).bind(objectId,ownerId).all<any>();
-    const publicRelease=(linked.results||[]).some((row:any)=>false);
     let isPublic=false;
     for(const row of (linked.results||[])){
       if(await isPublicPlaybackShare(c.env.DB,row)){isPublic=true;break;}
@@ -711,73 +710,59 @@ app.post('/api/upload/complete',async(c)=>{const session=await storageUser(c),ui
 app.get('/api/storage/:key{.+}', async (c) => {
   try {
     await ensureD1Storage(c.env.DB);
-    const key = decodeURIComponent(c.req.param('key'));
-    const meta = await getD1ObjectMeta(c.env.DB, key);
-    if (!meta) return c.json({ error: '파일 없음' }, 404);
+    const key=decodeURIComponent(c.req.param('key'));
+    const meta=await getD1ObjectMeta(c.env.DB,key);
+    if(!meta) return c.json({error:'파일 없음'},404);
 
-    // New user objects are owner-scoped. Only explicitly shared legacy audio/cover
-    // objects retain public access; TL containers remain owner-only on this raw route.
-    const ownerMatch = key.match(/^(?:tracks|tl)\/u(\d+)\//);
-    const ownerId = ownerMatch ? Number(ownerMatch[1]) : 0;
-    const session = await storageUser(c);
-    const viewerId = Number(session?.sub || 0);
-    let isPublic = false;
+    const canonical=`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`;
+    const viewerId=await playbackUserId(c);
+    const scoped=key.match(/^(?:tracks|tl)\/u(\d+)\//);
+    const ownerIds=new Set<number>();
+    if(scoped) ownerIds.add(Number(scoped[1]));
+    let isPublic=false;
 
-    if (ownerId > 0) {
-      if (key.startsWith('tl/') || /\.(tl3|tl)$/i.test(key)) {
-        if (viewerId !== ownerId) return c.json({ error: '보호된 파일입니다.' }, 403);
-      } else {
-        const url = `https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`;
-        const legacyFile = await c.env.DB.prepare(
-          "SELECT id FROM tl_files WHERE (stream_url=? OR cover_image=?) AND (shared=1 OR shared_to_shareplace=1) LIMIT 1"
-        ).bind(url, url).first();
-        const legacyShare = await c.env.DB.prepare(
-          "SELECT id FROM tl_shares WHERE stream_url=? AND (content_kind='mp3' OR release_mode LIKE 'free_mp3%') LIMIT 1"
-        ).bind(url).first().catch(() => null);
-        const publicCover = await c.env.DB.prepare(
-          "SELECT id FROM tl_shares WHERE cover_url=? LIMIT 1"
-        ).bind(url).first().catch(() => null);
-        isPublic = !!legacyFile || !!legacyShare || !!publicCover;
-        if (!isPublic && viewerId !== ownerId) {
-          return c.json({ error: '공개 승인되지 않았거나 접근 권한이 없습니다.' }, 403);
-        }
-      }
-    } else {
-      // Preserve legacy non-owner-prefixed object URLs during migration.
-      isPublic = true;
+    const shareRows=await c.env.DB.prepare(
+      'SELECT * FROM tl_shares WHERE stream_url IN (?,?,?) OR stream_url LIKE ?'
+    ).bind(canonical,'/api/storage/'+encodeURIComponent(key),key,'%'+key).all<any>().catch(()=>({results:[]}));
+    for(const share of (shareRows.results||[])){
+      const uid=Number(share.user_id||0);if(uid>0) ownerIds.add(uid);
+      if(await isPublicPlaybackShare(c.env.DB,share)) isPublic=true;
     }
 
-    const cors: Record<string, string> = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-      'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization',
-      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
-      'Accept-Ranges': 'bytes',
-      'Cache-Control': isPublic ? 'public, max-age=3600' : 'private, no-store'
+    const fileRows=await c.env.DB.prepare(
+      'SELECT id,user_id,auth_status,shared,revenue_held,file_url,cover_image FROM tl_files WHERE file_url IN (?,?) OR cover_image IN (?,?)'
+    ).bind(canonical,'/api/storage/'+encodeURIComponent(key),canonical,'/api/storage/'+encodeURIComponent(key)).all<any>().catch(()=>({results:[]}));
+    for(const file of (fileRows.results||[])){
+      const uid=Number(file.user_id||0);if(uid>0) ownerIds.add(uid);
+      if(file.auth_status==='verified'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0) isPublic=true;
+    }
+
+    const isOwner=ownerIds.has(viewerId)&&viewerId>0;
+    if(!isOwner&&!isPublic) return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
+
+    const cors:Record<string,string>={
+      'Access-Control-Allow-Origin':'*',
+      'Access-Control-Allow-Methods':'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers':'Range, Content-Type, Authorization',
+      'Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length',
+      'Accept-Ranges':'bytes',
+      'Cache-Control':isPublic?'public, max-age=300':'private, no-store'
     };
-    const range = c.req.header('Range') || '';
-    let start = 0, end = meta.size - 1, status = 200;
-    if (range) {
-      const match = range.match(/bytes=(\d+)-(\d*)/);
-      if (!match) return new Response('Invalid Range', { status: 416, headers: cors });
-      start = Number(match[1]);
-      end = match[2] !== '' ? Math.min(Number(match[2]), meta.size - 1) : Math.min(start + D1_CHUNK_SIZE - 1, meta.size - 1);
-      status = 206;
+    const range=c.req.header('Range')||'';
+    let start=0,end=meta.size-1,status=200;
+    if(range){
+      const match=range.match(/bytes=(\d+)-(\d*)/);
+      if(!match) return new Response('Invalid Range',{status:416,headers:cors});
+      start=Number(match[1]);
+      end=match[2]!==''?Math.min(Number(match[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);
+      status=206;
     }
-    if (start < 0 || start >= meta.size || end < start) {
-      return new Response('Range Not Satisfiable', { status: 416, headers: cors });
-    }
-    const bytes = await readD1Range(c.env.DB, key, start, end - start + 1);
-    const headers: Record<string, string> = {
-      ...cors,
-      'Content-Type': meta.content_type || 'application/octet-stream',
-      'Content-Length': String(bytes.byteLength)
-    };
-    if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${meta.size}`;
-    return new Response(bytes, { status, headers });
-  } catch (e: any) {
-    return c.json({ error: e?.message || '파일 읽기 실패' }, 500);
-  }
+    if(start<0||start>=meta.size||end<start) return new Response('Range Not Satisfiable',{status:416,headers:cors});
+    const bytes=await readD1Range(c.env.DB,key,start,end-start+1);
+    const headers:Record<string,string>={...cors,'Content-Type':meta.content_type||'application/octet-stream','Content-Length':String(bytes.byteLength)};
+    if(status===206) headers['Content-Range']=`bytes ${start}-${end}/${meta.size}`;
+    return new Response(bytes,{status,headers});
+  }catch(e:any){return c.json({error:e?.message||'파일 읽기 실패'},500);}
 });
 app.options('/api/storage/:key{.+}',()=>new Response(null,{status:204}));
 app.post('/api/upload',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const f=await c.req.parseBody(),file=f['file'] as File,id=String(f['trackId']||'').trim(),mode=String(f['release_mode']||'').trim().toLowerCase(),isTl3=String(f['isTl3']||'').toLowerCase()==='true';if(!file||!/^[A-Za-z0-9_-]{1,100}$/.test(id))return c.json({ok:false,error:'file, 유효한 trackId 필수'},400);if(file.size<=0||file.size>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'파일 크기가 올바르지 않습니다.'},413);if(isTl3){if(file.size<7)return c.json({ok:false,error:'잘못된 TL3 파일입니다.'},400);const h=new Uint8Array(await file.slice(0,7).arrayBuffer());if(h[0]!==0x54||h[1]!==0x4c||h[2]!==0x4e||h[3]!==0x4b||h[4]!==0x02)return c.json({ok:false,error:'TL3 v2 헤더가 아닙니다.'},400);}const ext=isTl3?'tl3':(mode==='free_mp3'?'mp3':(file.name.split('.').pop()||'bin').toLowerCase());if(!/^[a-z0-9]{1,8}$/.test(ext))return c.json({ok:false,error:'파일 확장자가 올바르지 않습니다.'},400);const key=`tracks/u${uid}/${id}.${ext}`,ct=isTl3?'application/octet-stream':(mode==='free_mp3'?'audio/mpeg':(file.type||'application/octet-stream'));await putD1Object(c.env.DB,key,new Uint8Array(await file.arrayBuffer()),ct,file.name||key);const url=`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`;return c.json({ok:true,url,stream_url:url,key,trackId:id,file_type:isTl3?'audio/tl3':ct,release_mode:isTl3?'tl3':(mode||'original'),size:file.size,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'D1 파일 저장 실패'},500);}});
@@ -2111,7 +2096,46 @@ app.options('/api/audio/:filename', (c) => new Response(null, { headers: {
   'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
 }}));
 
-app.get('/api/audio/:filename',async(c)=>{try{await ensureD1Storage(c.env.DB);const key=`tracks/${c.req.param('filename')}`,meta=await getD1ObjectMeta(c.env.DB,key);if(!meta)return c.json({error:'Not found'},404);const cors:any={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length','Accept-Ranges':'bytes','Cache-Control':'public, max-age=3600'};const rh=c.req.header('Range')||'';let start=0,end=meta.size-1,status=200;if(rh){const m=rh.match(/bytes=(\\d+)-(\\d*)/);if(!m)return new Response('Invalid Range',{status:416});start=Number(m[1]);end=m[2]!==''?Math.min(Number(m[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;}const bytes=await readD1Range(c.env.DB,key,start,end-start+1),h:any={...cors,'Content-Type':meta.content_type||'audio/mpeg','Content-Length':String(bytes.byteLength)};if(status===206)h['Content-Range']=`bytes ${start}-${end}/${meta.size}`;return new Response(bytes,{status,headers:h});}catch(e:any){return c.json({error:e?.message||'오디오 읽기 실패'},500);}});
+app.get('/api/audio/:filename',async(c)=>{
+  try{
+    await ensureD1Storage(c.env.DB);
+    const filename=c.req.param('filename');
+    if(!/^[A-Za-z0-9._-]{1,180}$/.test(filename)) return c.json({error:'잘못된 파일명'},400);
+    const key=`tracks/${filename}`;
+    const meta=await getD1ObjectMeta(c.env.DB,key);
+    if(!meta) return c.json({error:'Not found'},404);
+    const viewerId=await playbackUserId(c);
+    const canonical=`https://api.timelink.digital/api/audio/${encodeURIComponent(filename)}`;
+    const shares=await c.env.DB.prepare(
+      'SELECT * FROM tl_shares WHERE stream_url IN (?,?,?) OR stream_url LIKE ?'
+    ).bind(canonical,key,'/api/audio/'+filename,'%'+filename).all<any>().catch(()=>({results:[]}));
+    let isPublic=false;
+    const owners=new Set<number>();
+    for(const share of (shares.results||[])){
+      const uid=Number(share.user_id||0);if(uid>0)owners.add(uid);
+      if(await isPublicPlaybackShare(c.env.DB,share))isPublic=true;
+    }
+    const files=await c.env.DB.prepare(
+      "SELECT user_id FROM tl_files WHERE file_url IN (?,?) AND auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0"
+    ).bind(canonical,key).all<any>().catch(()=>({results:[]}));
+    for(const file of (files.results||[])){owners.add(Number(file.user_id));isPublic=true;}
+    const isOwner=viewerId>0&&owners.has(viewerId);
+    if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
+    const cors:Record<string,string>={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length','Accept-Ranges':'bytes','Cache-Control':isPublic?'public, max-age=300':'private, no-store'};
+    const range=c.req.header('Range')||'';
+    let start=0,end=meta.size-1,status=200;
+    if(range){
+      const match=range.match(/bytes=(\d+)-(\d*)/);
+      if(!match)return new Response('Invalid Range',{status:416,headers:cors});
+      start=Number(match[1]);end=match[2]!==''?Math.min(Number(match[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;
+    }
+    if(start<0||start>=meta.size||end<start)return new Response('Range Not Satisfiable',{status:416,headers:cors});
+    const bytes=await readD1Range(c.env.DB,key,start,end-start+1);
+    const headers:Record<string,string>={...cors,'Content-Type':meta.content_type||'audio/mpeg','Content-Length':String(bytes.byteLength)};
+    if(status===206)headers['Content-Range']=`bytes ${start}-${end}/${meta.size}`;
+    return new Response(bytes,{status,headers});
+  }catch(e:any){return c.json({error:e?.message||'오디오 읽기 실패'},500);}
+});
 app.options('/api/audio/:filename',(c)=>new Response(null,{status:204}));
 var API_STREAM_BASE = 'https://api.timelink.digital/api/stream/';
 
