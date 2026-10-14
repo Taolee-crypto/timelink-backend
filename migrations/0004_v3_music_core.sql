@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS v3_track_releases (
   status TEXT NOT NULL DEFAULT 'draft'
     CHECK (status IN ('draft','preparing','ready_for_review','published','suspended','withdrawn')),
   asset_id TEXT REFERENCES v3_track_assets(id),
+  source_asset_id TEXT NOT NULL REFERENCES v3_track_assets(id),
   rights_snapshot_json TEXT NOT NULL DEFAULT '{}'
     CHECK (length(rights_snapshot_json) <= 32768),
   price_tl INTEGER NOT NULL CHECK (price_tl > 0),
@@ -116,7 +117,7 @@ CREATE TABLE IF NOT EXISTS v3_track_releases (
 CREATE INDEX IF NOT EXISTS idx_v3_track_releases_track_status
   ON v3_track_releases(track_id, release_type, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_v3_track_one_published_release
-  ON v3_track_releases(track_id, release_type)
+  ON v3_track_releases(track_id)
   WHERE status = 'published';
 
 CREATE TABLE IF NOT EXISTS v3_shareplace_entries (
@@ -166,6 +167,13 @@ BEGIN
       AND NEW.release_type = 'TL3' AND a.asset_type = 'tl3_release_file'
   ) THEN RAISE(ABORT, 'Published TL3 release requires a matching available TL3 asset') END;
   SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM v3_track_assets source
+    WHERE source.id = NEW.source_asset_id
+      AND source.track_id = NEW.track_id
+      AND source.asset_type = 'mp3_audio'
+      AND source.availability_status IN ('available','local_only')
+  ) THEN RAISE(ABORT, 'TL3 conversion requires a source MP3 asset') END;
+  SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM v3_track_rights r
     WHERE r.track_id = NEW.track_id
       AND r.verification_status = 'verified'
@@ -173,7 +181,7 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_v3_release_asset_update
-BEFORE UPDATE OF status, asset_id, track_id, release_type ON v3_track_releases
+BEFORE UPDATE OF status, asset_id, source_asset_id, track_id, release_type ON v3_track_releases
 WHEN NEW.status = 'published'
 BEGIN
   SELECT CASE WHEN NEW.asset_id IS NULL
