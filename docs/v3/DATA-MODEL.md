@@ -268,7 +268,7 @@ A route must not directly mutate another service's tables outside an explicitly 
 ## 7. Mandatory invariants and test cases
 
 - A registration request contains metadata only; API rejects audio/multipart payloads for the registration endpoint.
-- The browser's network trace during MP3 registration contains no MP3 audio bytes.
+- The metadata-registration request contains no MP3 audio bytes. A separate explicit upload request may transfer the selected audio only to the creator-approved storage adapter; verify that no audio bytes are written to D1 or implicitly sent to Workers.
 - Original filename, extracted tags, fallback title, and verified title remain independently queryable.
 - A Track can exist without a TrackRelease.
 - A TL3 Release cannot publish without a valid encrypted release asset, rights snapshot, price, and duration.
