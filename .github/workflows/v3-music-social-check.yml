@@ -7,17 +7,28 @@ on:
       - "src/routes/music-v3-public.ts"
       - "src/routes/music-v3-social.ts"
       - "src/routes/music-v3-admin.ts"
+      - "src/routes/music-v3.ts"
       - "src/index.ts"
+      - "migrations/0004_v3_music_core.sql"
+      - "migrations/0005_v3_music_review_audit.sql"
       - "migrations/0006_v3_music_social.sql"
+      - "scripts/validate-v3-music.py"
+      - "scripts/validate-v3-music-review.py"
       - "scripts/validate-v3-music-social.py"
       - ".github/workflows/v3-music-social-check.yml"
   push:
-    branches: [v3/music-review-admin, v3/music-shareplace-social]
+    branches: [v3/music-shareplace-social]
     paths:
       - "src/routes/music-v3-public.ts"
       - "src/routes/music-v3-social.ts"
+      - "src/routes/music-v3-admin.ts"
+      - "src/routes/music-v3.ts"
       - "src/index.ts"
+      - "migrations/0004_v3_music_core.sql"
+      - "migrations/0005_v3_music_review_audit.sql"
       - "migrations/0006_v3_music_social.sql"
+      - "scripts/validate-v3-music.py"
+      - "scripts/validate-v3-music-review.py"
       - "scripts/validate-v3-music-social.py"
       - ".github/workflows/v3-music-social-check.yml"
 

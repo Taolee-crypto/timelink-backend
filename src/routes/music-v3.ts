@@ -20,6 +20,11 @@ async function ready(c: any) {
   return null;
 }
 
+async function hasPocSchema(db: D1Database): Promise<boolean> {
+  const row = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v3_poc_events'").first();
+  return !!row;
+}
+
 async function ownedTrack(db: D1Database, trackId: string, userId: number) {
   return db.prepare('SELECT id, owner_user_id, status, visibility, created_at, updated_at FROM v3_tracks WHERE id=? AND owner_user_id=? AND deleted_at IS NULL')
     .bind(trackId, userId).first<any>();
@@ -119,14 +124,20 @@ router.post('/tracks/:id/assets', async (c) => {
     FROM storage_objects WHERE id=? AND user_id=? AND status='active'
   `).bind(Number(body.storage_object_id),user.id).first<any>();
   if(!object || !providers.has(String(object.provider))) return c.json({ok:false,error:'Storage object not found or not owned by this creator'},404);
-  if(type==='mp3_audio' && !String(object.mime_type||'').toLowerCase().includes('audio')) return c.json({ok:false,error:'MP3 audio asset must have an audio MIME type'},422);
-  if(type==='tl3_release_file' && !String(object.mime_type||'').toLowerCase().includes('octet-stream')) return c.json({ok:false,error:'TL3 release asset must be an application/octet-stream object'},422);
+  if(type==='mp3_audio' && !String(object.mime_type||'').toLowerCase().includes('audio')) return c.json({ok:false,error:'Source MP3 Asset must have an audio MIME type'},422);
+  const contentHash=String(object.content_hash||'');
+  const sizeBytes=Number(object.size||0);
+  if(type==='tl3_release_file') {
+    if(!String(object.mime_type||'').toLowerCase().includes('octet-stream')) return c.json({ok:false,error:'TL3 Release Asset must be an application/octet-stream object'},422);
+    if(!/^(sha256:)?[a-f0-9]{64}$/i.test(contentHash) || !Number.isSafeInteger(sizeBytes) || sizeBytes<=0) return c.json({ok:false,error:'A TL3 conversion requires a SHA-256 hash and positive file size'},422);
+  }
   const assetId=ID();
-  await c.env.DB.prepare(`
+  const statements=[c.env.DB.prepare(`
     INSERT INTO v3_track_assets(id,track_id,asset_type,storage_provider,storage_object_id,content_hash,size_bytes,mime_type,availability_status,created_by)
     VALUES(?,?,?,?,?,?,?,?, 'available',?)
-  `).bind(assetId,trackId,type,object.provider,String(object.id),object.content_hash,object.size,object.mime_type,user.id).run();
-  await c.env.DB.prepare("UPDATE v3_tracks SET updated_at=datetime('now') WHERE id=?").bind(trackId).run();
+  `).bind(assetId,trackId,type,object.provider,String(object.id),contentHash||null,sizeBytes,object.mime_type,user.id)];
+  statements.push(c.env.DB.prepare("UPDATE v3_tracks SET updated_at=datetime('now') WHERE id=?").bind(trackId));
+  await c.env.DB.batch(statements);
   return c.json({ok:true,asset_id:assetId,asset_type:type,availability_status:'available'},201);
 });
 
@@ -142,6 +153,11 @@ router.post('/tracks/:id/assets/local', async (c) => {
   if(hash && !/^(sha256:)?[a-f0-9]{64}$/i.test(hash)) return c.json({ok:false,error:'content_hash must be a SHA-256 hex digest'},422);
   const size=Number(body.size_bytes||0);
   if(!Number.isSafeInteger(size)||size<0) return c.json({ok:false,error:'size_bytes must be a non-negative integer'},422);
+  const mimeType=String(body.mime_type||'').slice(0,120);
+  if(type==='tl3_release_file') {
+    if(!/^(sha256:)?[a-f0-9]{64}$/i.test(hash) || !Number.isSafeInteger(size) || size<=0) return c.json({ok:false,error:'A TL3 conversion requires a SHA-256 hash and positive file size'},422);
+    if(!mimeType.toLowerCase().includes('octet-stream')) return c.json({ok:false,error:'TL3 Release Asset must be an application/octet-stream object'},422);
+  }
   // Local Agent URLs are accepted only over HTTPS from the configured TimeLink agent
   // host or Cloudflare quick tunnels. Arbitrary URLs are rejected to prevent SSRF/open redirects.
   let streamUri:string|null=null;
@@ -159,10 +175,11 @@ router.post('/tracks/:id/assets/local', async (c) => {
   }
   const assetId=ID();
   const availability=streamUri?'available':'local_only';
-  await c.env.DB.prepare(`
+  const statements=[c.env.DB.prepare(`
     INSERT INTO v3_track_assets(id,track_id,asset_type,storage_provider,storage_uri_ref,content_hash,size_bytes,mime_type,availability_status,created_by)
     VALUES(?,?,?,'local_agent',?,?,?,?,?,?)
-  `).bind(assetId,trackId,type,streamUri,hash||null,size,String(body.mime_type||'').slice(0,120)||null,availability,user.id).run();
+  `).bind(assetId,trackId,type,streamUri,hash||null,size,mimeType||null,availability,user.id)];
+  await c.env.DB.batch(statements);
   return c.json({ok:true,asset_id:assetId,asset_type:type,availability_status:availability,streamable:!!streamUri},201);
 });
 
@@ -187,20 +204,66 @@ router.post('/tracks/:id/rights', async (c) => {
   return c.json({ok:true,rights_id:id,verification_status:'declared'},201);
 });
 
-// POST /tracks/:id/releases — create a draft commercial/free release, no automatic publication
+// POST /tracks/:id/conversions/tl3/complete — record an explicitly confirmed conversion candidate
+// This records pending evidence only. It does not award POC, TL, or TLC.
+router.post('/tracks/:id/conversions/tl3/complete', async (c) => {
+  const unavailable=await ready(c); if(unavailable) return unavailable;
+  const user=c.get('user'),trackId=c.req.param('id');
+  if(!await ownedTrack(c.env.DB,trackId,user.id)) return c.json({ok:false,error:'Track not found'},404);
+  let body:any; try {body=await c.req.json();} catch {return c.json({ok:false,error:'Invalid JSON body'},400);}
+  const sourceAssetId=String(body.source_asset_id||'');
+  const outputAssetId=String(body.output_asset_id||'');
+  if(!sourceAssetId||!outputAssetId||sourceAssetId===outputAssetId) return c.json({ok:false,error:'Distinct source_asset_id and output_asset_id are required'},422);
+  const [source,output]=await Promise.all([
+    c.env.DB.prepare("SELECT id,asset_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?").bind(sourceAssetId,trackId).first<any>(),
+    c.env.DB.prepare("SELECT id,asset_type,storage_provider,content_hash,size_bytes,mime_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?").bind(outputAssetId,trackId).first<any>()
+  ]);
+  if(!source||source.asset_type!=='mp3_audio') return c.json({ok:false,error:'The source must be an MP3 source Asset belonging to this Track'},422);
+  if(!output||output.asset_type!=='tl3_release_file'||output.availability_status!=='available') return c.json({ok:false,error:'The completed TL3 output must be an available TL3 Asset belonging to this Track'},422);
+  const hash=String(output.content_hash||'');
+  const size=Number(output.size_bytes||0);
+  if(!/^(sha256:)?[a-f0-9]{64}$/i.test(hash)||!Number.isSafeInteger(size)||size<=0||!String(output.mime_type||'').toLowerCase().includes('octet-stream')) {
+    return c.json({ok:false,error:'The TL3 output requires a SHA-256 hash, positive size, and application/octet-stream MIME type'},422);
+  }
+  if(!await hasPocSchema(c.env.DB)) return c.json({ok:false,code:'V3_POC_NOT_INITIALIZED',error:'V3 POC migration must be applied before recording conversion evidence'},503);
+  const evidence=JSON.stringify({
+    track_id:trackId,
+    source_asset_id:sourceAssetId,
+    output_asset_id:outputAssetId,
+    output_content_hash:hash,
+    output_size_bytes:size,
+    storage_provider:output.storage_provider,
+    confirmed_by_user_id:user.id
+  });
+  const eventKey='tl3-conversion:'+outputAssetId;
+  const result=await c.env.DB.prepare(`
+    INSERT OR IGNORE INTO v3_poc_events
+      (id,user_id,event_key,event_type,source,source_reference,base_value,contribution_value,verification_status,formula_version,metadata_json)
+    VALUES(?,?,?,?,?,?,0,0,'pending','poc-v1',?)
+  `).bind(ID(),String(user.id),eventKey,'tl3_conversion_completed','music_v3',outputAssetId,evidence).run();
+  const event=await c.env.DB.prepare("SELECT id,verification_status,contribution_value FROM v3_poc_events WHERE event_key=?").bind(eventKey).first<any>();
+  return c.json({
+    ok:true,
+    conversion_recorded:true,
+    duplicate:!Number(result.meta?.changes||0),
+    poc_candidate:{id:event?.id||null,status:event?.verification_status||'pending',contribution_value:Number(event?.contribution_value||0)},
+    message:'Conversion evidence is pending validation. No POC score, TL, or TLC is issued by this request.'
+  },201);
+});
+
+// POST /tracks/:id/releases — create a draft TL3 commercial Release
 router.post('/tracks/:id/releases', async (c) => {
   const unavailable=await ready(c); if(unavailable) return unavailable;
   const user=c.get('user'),trackId=c.req.param('id');
   if(!await ownedTrack(c.env.DB,user.id,trackId)) return c.json({ok:false,error:'Track not found'},404);
   let body:any; try {body=await c.req.json();} catch {return c.json({ok:false,error:'Invalid JSON body'},400);}
   const type=String(body.release_type||'');
-  if(type!=='MP3' && type!=='TL3') return c.json({ok:false,error:'release_type must be MP3 or TL3'},422);
-  const price=Number(body.price_tl||0);
-  if(!Number.isSafeInteger(price)||price<0||(type==='MP3'&&price!==0)||(type==='TL3'&&price<=0)) return c.json({ok:false,error:'MP3 price must be zero; TL3 price must be a positive integer'},422);
+  if(type!=='TL3') return c.json({ok:false,error:'The initial commercial Release type is TL3'},422);
+  const price=Number(body.price_tl);
+  if(!Number.isSafeInteger(price)||price<=0) return c.json({ok:false,error:'TL3 price must be a positive integer'},422);
   const assetId=String(body.asset_id||'');
   const asset=await c.env.DB.prepare('SELECT id,asset_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?').bind(assetId,trackId).first<any>();
-  const expected=type==='MP3'?'mp3_audio':'tl3_release_file';
-  if(!asset || asset.asset_type!==expected || asset.availability_status!=='available') return c.json({ok:false,error:'A matching available asset is required before creating a release'},422);
+  if(!asset || asset.asset_type!=='tl3_release_file' || asset.availability_status!=='available') return c.json({ok:false,error:'A matching available TL3 conversion Asset is required before creating a Release'},422);
   const latest=await c.env.DB.prepare('SELECT COALESCE(MAX(version),0) AS version FROM v3_track_releases WHERE track_id=? AND release_type=?').bind(trackId,type).first<any>();
   const version=Number(latest?.version||0)+1,id=ID();
   const rights=await c.env.DB.prepare("SELECT id,claimant_user_id,rights_role,ownership_share_bps,verification_status,terms_version,attested_at FROM v3_track_rights WHERE track_id=? ORDER BY created_at").bind(trackId).all();

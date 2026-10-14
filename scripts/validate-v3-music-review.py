@@ -11,23 +11,26 @@ CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, role TEXT);
 INSERT INTO users VALUES (1,'creator','user');
 INSERT INTO users VALUES (2,'reviewer','admin');
 """)
-db.executescript((ROOT / "migrations/0004_v3_music_core.sql").read_text(encoding="utf-8"))
+migration = (ROOT / "migrations/0004_v3_music_core.sql").read_text(encoding="utf-8")
+assert "release_type IN ('TL3')" in migration
+assert "release_type IN ('MP3','TL3')" not in migration
+db.executescript(migration)
 db.executescript((ROOT / "migrations/0005_v3_music_review_audit.sql").read_text(encoding="utf-8"))
 
-# A declaration alone is not enough to publish.
+# A rights declaration alone is not enough to publish a TL3 Release.
 db.execute("INSERT INTO v3_tracks(id,owner_user_id) VALUES ('track-a',1)")
 db.execute("""INSERT INTO v3_track_metadata_versions
 (id,track_id,version,original_filename,display_title,metadata_source)
 VALUES ('meta-a','track-a',1,'song.mp3','Song','manual')""")
 db.execute("""INSERT INTO v3_track_assets
-(id,track_id,asset_type,storage_provider,storage_uri_ref,size_bytes,mime_type,availability_status,created_by)
-VALUES ('asset-a','track-a','mp3_audio','local_agent','https://agent.timelink.digital/local/0123456789abcdef0123456789abcdef0123',1024,'audio/mpeg','available',1)""")
+(id,track_id,asset_type,storage_provider,storage_object_id,content_hash,size_bytes,mime_type,availability_status,created_by)
+VALUES ('asset-a','track-a','tl3_release_file','local_agent','tl3-object','sha256:' || printf('%064d',1),1024,'application/octet-stream','available',1)""")
 db.execute("""INSERT INTO v3_track_rights
 (id,track_id,claimant_user_id,rights_role,terms_version,attested_at,verification_status)
 VALUES ('rights-a','track-a',1,'composer','creator-attestation-v1',datetime('now'),'declared')""")
 db.execute("""INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('release-a','track-a','MP3',1,'ready_for_review','asset-a',0)""")
+VALUES ('release-a','track-a','TL3',1,'ready_for_review','asset-a',120)""")
 
 def fails(statement, params=()):
     try:
@@ -39,7 +42,7 @@ def fails(statement, params=()):
 fails("UPDATE v3_track_releases SET status='published' WHERE id='release-a'")
 assert db.execute("SELECT status FROM v3_track_releases WHERE id='release-a'").fetchone()[0] == "ready_for_review"
 
-# Human reviewer decision is recorded, then publication passes trigger gates.
+# Human reviewer decision is recorded, then publication passes the rights gate.
 db.execute("UPDATE v3_track_rights SET verification_status='verified',updated_at=datetime('now') WHERE id='rights-a'")
 db.execute("""INSERT INTO v3_rights_review_events
 (id,rights_id,track_id,reviewer_user_id,decision,review_note)
@@ -82,7 +85,7 @@ db.execute("""INSERT INTO v3_track_assets
 VALUES ('asset-b','track-b','mp3_audio','local_agent','local_only',1)""")
 db.execute("""INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('release-b','track-b','MP3',1,'ready_for_review','asset-b',0)""")
+VALUES ('release-b','track-b','TL3',1,'ready_for_review','asset-b',120)""")
 fails("UPDATE v3_track_releases SET status='published' WHERE id='release-b'")
 
-print("V3 review validation passed: unverified claims cannot publish; verified rights + matching available asset permit approval; rights snapshot, SharePlace state, and immutable review audit are enforced.")
+print("V3 review validation passed: unverified rights cannot publish; verified rights plus a matching available TL3 Asset permit approval; rights snapshots, SharePlace state, and immutable review audit are enforced.")
