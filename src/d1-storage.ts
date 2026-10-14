@@ -86,7 +86,7 @@ export async function completeD1UploadSession(
     total+=expectedSize;
   }
   if(total!==Number(session.expected_size)||Number(counts?.total||0)!==Number(session.expected_size)) throw new Error('전체 파일 크기 검증에 실패했습니다.');
-  const manifestHash=await sha256Hex(new TextEncoder().encode(manifest.join('\\n')));
+  const manifestHash=await sha256Hex(new TextEncoder().encode(manifest.join('\n')));
   await db.batch([
     db.prepare("UPDATE tl_d1_objects SET part_count=?,status='complete',updated_at=datetime('now') WHERE object_key=? AND status='uploading'")
       .bind(Number(session.expected_parts),session.object_key),
