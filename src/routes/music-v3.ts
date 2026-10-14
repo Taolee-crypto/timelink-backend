@@ -142,12 +142,28 @@ router.post('/tracks/:id/assets/local', async (c) => {
   if(hash && !/^(sha256:)?[a-f0-9]{64}$/i.test(hash)) return c.json({ok:false,error:'content_hash must be a SHA-256 hex digest'},422);
   const size=Number(body.size_bytes||0);
   if(!Number.isSafeInteger(size)||size<0) return c.json({ok:false,error:'size_bytes must be a non-negative integer'},422);
+  // Local Agent URLs are accepted only over HTTPS from the configured TimeLink agent
+  // host or Cloudflare quick tunnels. Arbitrary URLs are rejected to prevent SSRF/open redirects.
+  let streamUri:string|null=null;
+  if(body.public_url) {
+    try {
+      const u=new URL(String(body.public_url));
+      const host=u.hostname.toLowerCase();
+      const trustedHost=host==='agent.timelink.digital' || host.endsWith('.trycloudflare.com');
+      const tokenPath=/^\\/local\\/[a-f0-9]{36}$/i.test(u.pathname);
+      if(u.protocol!=='https:' || !trustedHost || !tokenPath || u.username || u.password || u.search || u.hash) {
+        return c.json({ok:false,error:'public_url must be an HTTPS TimeLink Local Agent file URL'},422);
+      }
+      streamUri=u.toString();
+    } catch { return c.json({ok:false,error:'Invalid public_url'},422); }
+  }
   const assetId=ID();
+  const availability=streamUri?'available':'local_only';
   await c.env.DB.prepare(`
-    INSERT INTO v3_track_assets(id,track_id,asset_type,storage_provider,content_hash,size_bytes,mime_type,availability_status,created_by)
-    VALUES(?,?,?,'local_agent',?,?,?,'local_only',?)
-  `).bind(assetId,trackId,type,hash||null,size,String(body.mime_type||'').slice(0,120)||null,user.id).run();
-  return c.json({ok:true,asset_id:assetId,asset_type:type,availability_status:'local_only',streamable:false},201);
+    INSERT INTO v3_track_assets(id,track_id,asset_type,storage_provider,storage_uri_ref,content_hash,size_bytes,mime_type,availability_status,created_by)
+    VALUES(?,?,?,'local_agent',?,?,?,?,?,?)
+  `).bind(assetId,trackId,streamUri,hash||null,size,String(body.mime_type||'').slice(0,120)||null,availability,user.id).run();
+  return c.json({ok:true,asset_id:assetId,asset_type:type,availability_status:availability,streamable:!!streamUri},201);
 });
 
 // POST /tracks/:id/rights — creator's rights declaration; never self-verifies
