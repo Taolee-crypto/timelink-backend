@@ -11,7 +11,7 @@ router.use('*', async (c, next) => {
     return c.json({ ok: false, error: 'Administrator role required' }, 403);
   }
   const ready = await c.env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('v3_tracks','v3_track_rights_review_events','v3_rights_review_events','v3_release_review_events')"
+    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('v3_tracks','v3_rights_review_events','v3_release_review_events')"
   ).first<{ n: number }>();
   if (Number(ready?.n || 0) < 3) {
     return c.json({ ok: false, code: 'V3_REVIEW_NOT_INITIALIZED', error: 'V3 review audit migration has not been applied' }, 503);
@@ -52,12 +52,13 @@ router.get('/releases/:releaseId', async (c) => {
     WHERE r.id=?
   `).bind(releaseId).first<any>();
   if (!release) return c.json({ ok: false, error: 'Release not found' }, 404);
-  const [rights, asset, history] = await Promise.all([
+  const [rights, asset, history, rightsHistory] = await Promise.all([
     c.env.DB.prepare('SELECT id,claimant_user_id,rights_role,ownership_share_bps,territory,evidence_ref,verification_status,terms_version,attested_at,created_at FROM v3_track_rights WHERE track_id=? ORDER BY created_at').bind(release.track_id).all(),
     c.env.DB.prepare('SELECT id,asset_type,storage_provider,storage_uri_ref,content_hash,size_bytes,mime_type,availability_status FROM v3_track_assets WHERE id=?').bind(release.asset_id).first(),
-    c.env.DB.prepare('SELECT decision,review_note,reviewer_user_id,created_at FROM v3_release_review_events WHERE release_id=? ORDER BY created_at DESC').bind(releaseId).all()
+    c.env.DB.prepare('SELECT decision,review_note,reviewer_user_id,created_at FROM v3_release_review_events WHERE release_id=? ORDER BY created_at DESC').bind(releaseId).all(),
+    c.env.DB.prepare('SELECT decision,review_note,reviewer_user_id,created_at FROM v3_rights_review_events WHERE track_id=? ORDER BY created_at DESC').bind(release.track_id).all()
   ]);
-  return c.json({ ok: true, release, rights: rights.results || [], asset: asset || null, review_history: history.results || [] });
+  return c.json({ ok: true, release, rights: rights.results || [], asset: asset || null, review_history: history.results || [], rights_review_history: rightsHistory.results || [] });
 });
 
 // POST /rights/:rightsId/decision — explicit human verification/rejection with immutable audit event
@@ -68,8 +69,9 @@ router.post('/rights/:rightsId/decision', async (c) => {
   if (decision !== 'verified' && decision !== 'rejected') return c.json({ ok: false, error: 'decision must be verified or rejected' }, 422);
   const reviewNote = note(body.review_note);
   if (!reviewNote) return c.json({ ok: false, error: 'A review_note is required for the audit trail' }, 422);
-  const claim = await c.env.DB.prepare("SELECT id,track_id,verification_status FROM v3_track_rights WHERE id=?").bind(rightsId).first<any>();
+  const claim = await c.env.DB.prepare("SELECT id,track_id,verification_status,attested_at,terms_version FROM v3_track_rights WHERE id=?").bind(rightsId).first<any>();
   if (!claim) return c.json({ ok: false, error: 'Rights declaration not found' }, 404);
+  if (!claim.attested_at || !claim.terms_version) return c.json({ ok: false, error: 'Rights declaration has no valid attestation record' }, 422);
   if (claim.verification_status === 'verified' || claim.verification_status === 'rejected') return c.json({ ok: false, error: 'Rights declaration has already received a final decision' }, 409);
   const eventId = id(), reviewer = c.get('user');
   await c.env.DB.batch([
@@ -91,7 +93,7 @@ router.post('/releases/:releaseId/approve', async (c) => {
   const reviewer = c.get('user'), eventId = id();
   try {
     const results = await c.env.DB.batch([
-      c.env.DB.prepare("UPDATE v3_track_releases SET status='published',published_at=datetime('now'),updated_at=datetime('now') WHERE id=? AND status='ready_for_review'").bind(releaseId),
+      c.env.DB.prepare("UPDATE v3_track_releases SET status='published',published_at=datetime('now'),updated_at=datetime('now'),rights_snapshot_json=json_object('captured_at',datetime('now'),'rights',json((SELECT json_group_array(json_object('id',x.id,'claimant_user_id',x.claimant_user_id,'rights_role',x.rights_role,'ownership_share_bps',x.ownership_share_bps,'territory',x.territory,'verification_status',x.verification_status,'terms_version',x.terms_version,'attested_at',x.attested_at)) FROM v3_track_rights x WHERE x.track_id=v3_track_releases.track_id))) WHERE id=? AND status='ready_for_review'").bind(releaseId),
       c.env.DB.prepare("UPDATE v3_tracks SET status='active',visibility='public',updated_at=datetime('now') WHERE id=? AND EXISTS(SELECT 1 FROM v3_track_releases WHERE id=? AND status='published')").bind(release.track_id,releaseId),
       c.env.DB.prepare("INSERT INTO v3_shareplace_entries(id,track_id,owner_user_id,category,visibility,published_at) SELECT ?,t.id,t.owner_user_id,'Music','public',datetime('now') FROM v3_tracks t WHERE t.id=? AND EXISTS(SELECT 1 FROM v3_track_releases WHERE id=? AND status='published') ON CONFLICT(track_id) DO UPDATE SET visibility='public',published_at=datetime('now'),updated_at=datetime('now')").bind(id(),release.track_id,releaseId),
       c.env.DB.prepare("INSERT INTO v3_release_review_events(id,release_id,track_id,reviewer_user_id,decision,review_note) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM v3_track_releases WHERE id=? AND status='published')").bind(eventId,releaseId,release.track_id,reviewer.id,'approved',reviewNote,releaseId)
