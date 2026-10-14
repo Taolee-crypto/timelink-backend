@@ -22,7 +22,7 @@ export async function createD1UploadSession(
   if(!Number.isSafeInteger(ownerId)||ownerId<=0) throw new Error('인증 사용자 오류');
   if(!/^[A-Za-z0-9_-]{20,80}$/.test(uploadId)) throw new Error('잘못된 업로드 세션 ID');
   if(!key||key.length>300||!key.startsWith(`tracks/u${ownerId}/`)) throw new Error('업로드 저장 키 소유권 오류');
-  if(!Number.isSafeInteger(totalSize)||totalSize<=0||totalSize>D1_MAX_OBJECT_SIZE) throw new Error('파일 크기가 올바르지 않습니다.');
+  if(!Number.isSafeInteger(totalSize)||totalSize<=7||totalSize>D1_MAX_OBJECT_SIZE) throw new Error('TL3 파일 크기가 올바르지 않습니다.');
   if(contentType!=='application/octet-stream') throw new Error('TL3 업로드는 application/octet-stream만 허용됩니다.');
   const safeName=String(fileName||'asset.tl3').replace(/[\\/\\\\\x00-\x1f]/g,'_').slice(0,180);
   const totalParts=Math.ceil(totalSize/D1_OBJECT_CHUNK_SIZE);
@@ -80,6 +80,14 @@ export async function completeD1UploadSession(
     const bytes=part.data instanceof Uint8Array?part.data:new Uint8Array(part.data as ArrayBuffer);
     const expectedSize=Math.min(D1_OBJECT_CHUNK_SIZE,Number(session.expected_size)-index*D1_OBJECT_CHUNK_SIZE);
     if(bytes.byteLength!==expectedSize||Number(part.size)!==expectedSize) throw new Error('청크 크기 검증에 실패했습니다.');
+    if(index===0){
+      if(bytes.byteLength<7||bytes[0]!==0x54||bytes[1]!==0x4c||bytes[2]!==0x4e||bytes[3]!==0x4b||bytes[4]!==0x02) throw new Error('TL3 v2 파일 헤더가 아닙니다.');
+      const headerLength=(bytes[5]<<8)|bytes[6];
+      if(headerLength<=0||7+headerLength>bytes.byteLength) throw new Error('TL3 메타데이터 헤더가 손상되었습니다.');
+      let header:any;
+      try{header=JSON.parse(new TextDecoder().decode(bytes.slice(7,7+headerLength)));}catch{throw new Error('TL3 메타데이터 JSON이 올바르지 않습니다.');}
+      if(String(header.cid||'')!==String(ownerId)) throw new Error('TL3 창작자 ID가 업로드 사용자와 일치하지 않습니다.');
+    }
     const actualHash=await sha256Hex(bytes);
     if(!actualHash||actualHash!==String(part.sha256||'')) throw new Error(`청크 해시 검증 실패: part ${pn}`);
     manifest.push(`${pn}:${expectedSize}:${actualHash}`);
