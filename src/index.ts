@@ -34,6 +34,7 @@ import contactRouter from './routes/contact';
 import uploadPdfRouter from './routes/upload-pdf';
 import { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, finalizeUpload, registerObject, externalStream, disconnectStorage } from './storage';
 import { buildTL3V3, buildTL3V3FromMp3, parseTL3V3, decryptSegmentV3, decryptSingleSegment, deriveLicenseBytes, computeNextToken, unhex, initialToken, hex } from './tl3v3';
+import { parseMp3Segments } from './mp3-segments';
 
 
 const app = new Hono<{ Bindings: Env }>();
@@ -507,47 +508,6 @@ app.post('/api/upload',async(c)=>{try{await ensureD1Storage(c.env.DB);const f=aw
 // (TL3_XOR_KEY 제거됨 — v3에서 마스터 시크릿 사용)
 
 // (tl3Xor 제거됨 — v3에서 AES-256-GCM 사용)
-
-function parseMp3Segments(data: Uint8Array, targetMs=5000): Array<{offset:number,length:number,durationMs:number}> {
-  const bitrateV1 = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
-  const bitrateV2 = [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0];
-  const sampleBase = [44100,48000,32000,0];
-  const frames: Array<{offset:number,length:number,durationMs:number}> = [];
-  let p = 0;
-  if (data.length >= 10 && data[0]===0x49 && data[1]===0x44 && data[2]===0x33) {
-    const sz = ((data[6]&0x7f)<<21)|((data[7]&0x7f)<<14)|((data[8]&0x7f)<<7)|(data[9]&0x7f);
-    p = 10 + sz + ((data[5]&0x10) ? 10 : 0);
-  }
-  while (p + 4 <= data.length) {
-    if (data[p]!==0xff || (data[p+1]&0xe0)!==0xe0) { p++; continue; }
-    const version = (data[p+1]>>3)&3;
-    const layer = (data[p+1]>>1)&3;
-    const bi = (data[p+2]>>4)&15;
-    const si = (data[p+2]>>2)&3;
-    const padding = (data[p+2]>>1)&1;
-    if (layer!==1 || version===1 || bi===0 || bi===15 || si===3) { p++; continue; }
-    const sr0 = sampleBase[si];
-    const sampleRate = version===3 ? sr0 : Math.floor(sr0/(version===2?2:4));
-    const kbps = version===3 ? bitrateV1[bi] : bitrateV2[bi];
-    const frameLength = Math.floor((version===3 ? 144000 : 72000) * kbps / sampleRate) + padding;
-    if (frameLength < 24 || p + frameLength > data.length) { p++; continue; }
-    const samples = version===3 ? 1152 : 576;
-    frames.push({offset:p,length:frameLength,durationMs:(samples*1000)/sampleRate});
-    p += frameLength;
-  }
-  if (!frames.length) throw new Error('지원되는 MP3 프레임을 찾지 못했습니다.');
-  const out:Array<{offset:number,length:number,durationMs:number}> = [];
-  let start = frames[0].offset, length = 0, durationMs = 0;
-  for (const fr of frames) {
-    if (durationMs > 0 && durationMs + fr.durationMs > targetMs) {
-      out.push({offset:start,length,durationMs:Math.round(durationMs)});
-      start = fr.offset; length = 0; durationMs = 0;
-    }
-    length += fr.length; durationMs += fr.durationMs;
-  }
-  if (length > 0) out.push({offset:start,length,durationMs:Math.round(durationMs)});
-  return out;
-}
 
 // (buildTL3V2 제거됨 — v3에서 buildTL3V3 사용)
 
