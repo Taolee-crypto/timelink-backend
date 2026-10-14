@@ -2,7 +2,7 @@ name: V3 TL3 conversion pipeline validation
 
 on:
   pull_request:
-    branches: [v3/music-shareplace-social]
+    branches: [main, v3/music-shareplace-social]
     paths:
       - "src/routes/music-v3.ts"
       - "src/tl3v3.ts"
