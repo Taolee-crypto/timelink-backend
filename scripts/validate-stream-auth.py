@@ -53,4 +53,8 @@ upload_routes=part("app.post('/api/upload/init'","app.get('/api/storage/:key{.+}
 check("uploadId" in upload_routes and "c.req.query('key')" not in upload_routes,"chunk upload endpoints use server-issued session IDs, not caller keys")
 check("playbackUserId(c,false)" in upload_routes,"chunk upload endpoints require active JWT header authentication")
 check("bodyLimit({ maxSize: D1_OBJECT_CHUNK_SIZE })" in source,"chunk request body limit is enforced before reading")
+wrangler=Path("wrangler.toml").read_text(encoding="utf-8")
+types=Path("src/types.ts").read_text(encoding="utf-8")
+check("TON_API_KEY =" not in wrangler,"TON API key is not stored in tracked Wrangler vars")
+check("TON_API_KEY?: string;" in types,"TON API key is typed as a Worker secret binding")
 print("Stream authorization regression checks passed.")
