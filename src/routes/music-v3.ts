@@ -150,7 +150,7 @@ router.post('/tracks/:id/assets/local', async (c) => {
       const u=new URL(String(body.public_url));
       const host=u.hostname.toLowerCase();
       const trustedHost=host==='agent.timelink.digital' || host.endsWith('.trycloudflare.com');
-      const tokenPath=/^\\/local\\/[a-f0-9]{36}$/i.test(u.pathname);
+      const tokenPath=/^\/local\/[a-f0-9]{36}$/i.test(u.pathname);
       if(u.protocol!=='https:' || !trustedHost || !tokenPath || u.username || u.password || u.search || u.hash) {
         return c.json({ok:false,error:'public_url must be an HTTPS TimeLink Local Agent file URL'},422);
       }
