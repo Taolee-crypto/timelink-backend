@@ -1485,12 +1485,26 @@ app.get('/api/shares', async (c) => {
       WHERE f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
       ORDER BY created_at DESC LIMIT 200
     `).all();
-    const _o = new URL(c.req.url).origin;
-    return c.json({ shares: (results || []).map((r:any)=>({
-      ...r,
-      content_kind: r.content_kind || shareKind(r),
-      stream_url: (typeof r.stream_url==='string' && r.stream_url.startsWith('/')) ? _o + r.stream_url : r.stream_url
-    })) });
+    const origin=new URL(c.req.url).origin;
+    const shares=(results||[]).map((r:any)=>{
+      const isLegacy=r.source_table==='tl_file';
+      const id=String(r.id);
+      const contentKind=isLegacy?(Number(r.file_tl||0)>0?'tl3':'mp3'):(r.content_kind||shareKind(r));
+      return {
+        id,user_id:Number(r.user_id||0),username:String(r.username||'User'),
+        title:String(r.title||''),artist:String(r.artist||''),album:String(r.album||''),
+        duration:Number(r.duration||0),file_tl:Number(r.file_tl||0),
+        category:String(r.category||'Music'),file_type:String(r.file_type||''),
+        category_type:String(r.category_type||''),description:String(r.description||''),
+        plan:String(r.plan||'FREE'),spotify_id:r.spotify_id||null,spotify_url:r.spotify_url||null,
+        cover_url:r.cover_url||null,country:String(r.country||'KR'),content_lang:String(r.content_lang||'ko'),
+        pulse:Number(r.pulse||0),play_count:Number(r.play_count||0),created_at:r.created_at,
+        content_kind:contentKind,shared:1,auth_status:'verified',revenue_held:0,
+        source_table:isLegacy?'tl_file':'share',
+        stream_url:origin+(isLegacy?'/api/legacy-stream/':'/api/stream/')+encodeURIComponent(id)
+      };
+    });
+    return c.json({shares});
   } catch (e: any) {
     return c.json({ shares: [], _note: e.message });
   }
@@ -1790,12 +1804,38 @@ app.post('/api/shares/:id/consume', async (c) => {
 
 // ── 단일 share 조회 ──
 app.get('/api/shares/:id', async (c) => {
-  const id = c.req.param('id');
-  const row = await c.env.DB.prepare(
-    'SELECT * FROM tl_shares WHERE id=?'
-  ).bind(id).first();
-  if (!row) return c.json({ error: 'not found' }, 404);
-  { const _o = new URL(c.req.url).origin, _r:any = row; return c.json({ ..._r, content_kind: shareKind(_r), stream_url: (typeof _r.stream_url==='string' && _r.stream_url.startsWith('/')) ? _o + _r.stream_url : _r.stream_url }); }
+  const id=c.req.param('id'),origin=new URL(c.req.url).origin;
+  const row=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(id).first<any>();
+  const viewerId=await playbackUserId(c);
+  if(row){
+    const isOwner=viewerId>0&&Number(row.user_id)===viewerId;
+    const isPublic=await isPublicPlaybackShare(c.env.DB,row);
+    if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
+    return c.json({
+      id:String(row.id),user_id:Number(row.user_id||0),username:String(row.username||'User'),
+      title:String(row.title||''),artist:String(row.artist||''),album:String(row.album||''),
+      duration:Number(row.duration||0),file_tl:Number(row.file_tl||0),category:String(row.category||'Music'),
+      file_type:String(row.file_type||''),category_type:String(row.category_type||''),description:String(row.description||''),
+      plan:String(row.plan||'FREE'),spotify_id:row.spotify_id||null,spotify_url:row.spotify_url||null,
+      cover_url:row.cover_url||null,country:String(row.country||'KR'),content_lang:String(row.content_lang||'ko'),
+      pulse:Number(row.pulse||0),created_at:row.created_at,content_kind:shareKind(row),
+      stream_url:origin+'/api/stream/'+encodeURIComponent(String(row.id))
+    });
+  }
+  const file=await c.env.DB.prepare('SELECT * FROM tl_files WHERE CAST(id AS TEXT)=?').bind(id).first<any>();
+  if(!file)return c.json({error:'not found'},404);
+  const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
+  const isPublic=file.auth_status==='verified'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
+  if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
+  return c.json({
+    id:String(file.id),user_id:Number(file.user_id||0),username:String(file.username||'User'),
+    title:String(file.title||''),artist:String(file.artist||''),album:'',duration:Number(file.duration_seconds||0),
+    file_tl:Number(file.file_tl||0),category:String(file.genre||'Music'),file_type:String(file.file_type||''),
+    category_type:'',description:'',plan:'A',cover_url:null,pulse:Number(file.pulse||0),
+    play_count:Number(file.play_count||0),created_at:file.created_at,
+    content_kind:Number(file.file_tl||0)>0?'tl3':'mp3',
+    stream_url:origin+'/api/legacy-stream/'+encodeURIComponent(String(file.id))
+  });
 });
 
 
