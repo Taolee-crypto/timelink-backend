@@ -1,0 +1,35 @@
+name: Legacy storage security validation
+
+on:
+  pull_request:
+    branches: [v3/legacy-storage-compat]
+    paths:
+      - "src/index.ts"
+      - "scripts/validate-legacy-storage-auth.py"
+      - ".github/workflows/legacy-storage-security-check.yml"
+  push:
+    branches: [v3/legacy-storage-compat]
+    paths:
+      - "src/index.ts"
+      - "scripts/validate-legacy-storage-auth.py"
+      - ".github/workflows/legacy-storage-security-check.yml"
+
+jobs:
+  legacy-storage-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Compile Worker without deployment
+        run: npx wrangler deploy --dry-run
+      - name: Validate V3 and legacy upload security invariants
+        run: |
+          python scripts/validate-legacy-storage-auth.py
+          python scripts/validate-v3-music.py
+          python scripts/validate-v3-music-review.py
+          python scripts/validate-v3-music-social.py
