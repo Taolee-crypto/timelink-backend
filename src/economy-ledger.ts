@@ -72,7 +72,9 @@ export async function postLedgerTransaction(
     const key = line.accountId + ':' + line.assetCode;
     if (accountIds.has(key)) throw new Error('Duplicate account line; aggregate it before posting');
     accountIds.add(key);
-    totals.set(line.assetCode, (totals.get(line.assetCode) || 0) + line.amountAtoms);
+    const nextTotal = (totals.get(line.assetCode) || 0) + line.amountAtoms;
+    if (!Number.isSafeInteger(nextTotal)) throw new Error('Ledger total exceeds safe integer range');
+    totals.set(line.assetCode, nextTotal);
   }
   for (const [asset, total] of totals) {
     if (total !== 0) throw new Error(`Unbalanced ${asset} transaction`);
@@ -83,6 +85,9 @@ export async function postLedgerTransaction(
     source: input.source,
     referenceType: input.referenceType || null,
     referenceId: input.referenceId || null,
+    actorUserId: input.actorUserId || null,
+    description: input.description || null,
+    metadata: input.metadata || {},
     lines: [...input.lines].sort((a,b) => a.accountId.localeCompare(b.accountId))
   });
 
