@@ -77,6 +77,18 @@ const LEGACY_PREVIEW_TABLES = {
     fields: ['id', 'title', 'artist', 'file_tl', 'creator_earned', 'pulse', 'plan', 'release_mode', 'content_kind', 'created_at'],
     interpretation: 'SharePlace content metadata and file balance; this table is not a creator settlement ledger.'
   },
+  tl_user_files: {
+    fields: ['id', 'share_id', 'tl_balance', 'total_charged', 'total_consumed', 'last_played', 'created_at', 'updated_at'],
+    interpretation: 'Per-user, per-SharePlace TL allocation and consumption record; it is separate from the global wallet balance.'
+  },
+  tl_exchanges: {
+    fields: ['id', 'tl_amount', 'fee_pct', 'fee_tl', 'net_tl', 'status', 'created_at'],
+    interpretation: 'Legacy TL exchange request evidence; status determines whether the request completed.'
+  },
+  tl_payments: {
+    fields: ['id', 'method', 'amount_krw', 'tl_granted', 'bonus_tl', 'status', 'created_at'],
+    interpretation: 'Legacy recharge/payment evidence; provider payment identifiers are intentionally excluded.'
+  },
   tl3_releases: {
     fields: ['id', 'file_id', 'user_id', 'title', 'artist', 'price_tl', 'status', 'duration_ms', 'segment_count', 'created_at', 'updated_at', 'share_id'],
     interpretation: 'TL3 release metadata and publication state; cryptographic keys, salts, token roots, and private payload fields are deliberately excluded.'
@@ -92,6 +104,10 @@ const LEGACY_PREVIEW_TABLES = {
   poc_events: {
     fields: ['id', 'delta', 'poc_after', 'reason', 'created_at'],
     interpretation: 'Legacy POC evidence; POC is not TL or TLC.'
+  },
+  tlc_mining_logs: {
+    fields: ['id', 'tlc_mined', 'poc_index', 'created_at'],
+    interpretation: 'Legacy TLC mining log; a local record is not proof of a confirmed on-chain mint.'
   },
   poc_logs: {
     fields: ['id', 'mode', 'seconds', 'tl_spent', 'poc_gained', 'created_at'],
@@ -170,7 +186,7 @@ router.get('/reconciliation/preview', async (c) => {
   const schema = await c.env.DB.prepare('PRAGMA table_info(users)').all<{ name: string }>();
   const available = new Set((schema.results || []).map((column) => column.name));
   const candidates = [
-    'tl', 'tl_balance', 'tl_p', 'tl_a', 'tl_b', 'tlc', 'tlc_balance',
+    'tl', 'tl_balance', 'tl_locked', 'tl_p', 'tl_a', 'tl_b', 'tlc', 'tlc_balance',
     'tl_p_lifetime', 'tl_p_exchanged', 'total_tl_spent',
     'total_tl_earned', 'total_tl_exchanged', 'poc_index'
   ];
