@@ -2189,7 +2189,7 @@ app.get('/api/legacy-stream/:fileId',async(c)=>{
 
     const source=String(file.file_url||'').trim();
     if(!source)return c.json({error:'원본 저장 위치가 없습니다.'},404);
-    if(/127\\.0\\.0\\.1|localhost/i.test(source))return c.json({error:'창작자 PC의 Local Agent에서 재생해야 하는 자산입니다.'},409);
+    if(/127\.0\.0\.1|localhost/i.test(source))return c.json({error:'창작자 PC의 Local Agent에서 재생해야 하는 자산입니다.'},409);
     let key='';
     if(source.startsWith('tracks/')||source.startsWith('tl/'))key=source;
     else if(source.includes('/api/storage/'))key=decodeURIComponent(source.split('/api/storage/')[1].split('?')[0]);
@@ -2202,13 +2202,13 @@ app.get('/api/legacy-stream/:fileId',async(c)=>{
     const cors:Record<string,string>={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length','Accept-Ranges':'bytes','Cache-Control':'private, no-store'};
     const range=c.req.header('Range')||'';
     if(key){
-      const scoped=key.match(/^(?:tracks|tl)\\/u(\\d+)\\//);
+      const scoped=key.match(/^(?:tracks|tl)\/u(\d+)\//);
       if(scoped&&Number(scoped[1])!==Number(file.user_id))return c.json({error:'파일 소유권 연결이 올바르지 않습니다.'},403);
       const meta=await getD1ObjectMeta(c.env.DB,key);
       if(!meta)return c.json({error:'저장된 원본을 찾을 수 없습니다.'},404);
       let start=0,end=meta.size-1,status=200;
       if(range){
-        const match=range.match(/bytes=(\\d+)-(\\d*)/);
+        const match=range.match(/bytes=(\d+)-(\d*)/);
         if(!match)return new Response('Invalid Range',{status:416,headers:cors});
         start=Number(match[1]);end=match[2]!==''?Math.min(Number(match[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;
       }
@@ -2218,7 +2218,7 @@ app.get('/api/legacy-stream/:fileId',async(c)=>{
       if(status===206)headers['Content-Range']=`bytes ${start}-${end}/${meta.size}`;
       return new Response(bytes,{status,headers});
     }
-    if(!/^https?:\\/\\//i.test(source))return c.json({error:'지원하지 않는 저장 위치입니다.'},400);
+    if(!/^https?:\/\//i.test(source))return c.json({error:'지원하지 않는 저장 위치입니다.'},400);
     const upstreamHeaders:Record<string,string>={};if(range)upstreamHeaders.Range=range;
     const upstream=await fetch(source,{headers:upstreamHeaders});
     const headers=new Headers(cors);
