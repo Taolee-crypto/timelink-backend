@@ -70,7 +70,7 @@ check("!await isPublicPlaybackShare(c.env.DB,share)" in social,"private tracks a
 check("target===userId" in social,"self-follow is rejected")
 check("UNIQUE(share_id,user_id)" in source and "INSERT OR IGNORE INTO social_likes" in social,"likes are unique and retry-safe")
 check("WHERE id=? AND user_id=?" in social,"playlist mutations are owner-scoped")
-check("UNIQUE(comment_id,reporter_id)" in social and "INSERT OR IGNORE INTO social_comment_reports" in social,"duplicate comment reports are idempotent")
+check("UNIQUE(comment_id,reporter_id)" in source and "INSERT OR IGNORE INTO social_comment_reports" in social,"duplicate comment reports are idempotent")
 wrangler=Path("wrangler.toml").read_text(encoding="utf-8")
 types=Path("src/types.ts").read_text(encoding="utf-8")
 check("TON_API_KEY =" not in wrangler,"TON API key is not stored in tracked Wrangler vars")
