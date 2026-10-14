@@ -35,6 +35,7 @@ import { buildTL3V3, buildTL3V3FromMp3, parseTL3V3, decryptSegmentV3, decryptSin
 const app = new Hono<{ Bindings: Env }>();
 app.use('/api/upload/*', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
 app.use('/api/upload', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
+app.use('/api/upload/part', bodyLimit({ maxSize: D1_OBJECT_CHUNK_SIZE }));
 
 app.use('*', cors({
   origin: '*',
@@ -742,7 +743,7 @@ app.post('/api/upload/complete',async(c)=>{
     if(!/^[A-Za-z0-9_-]{20,80}$/.test(uploadId))return c.json({ok:false,error:'유효하지 않은 업로드 세션 ID'},400);
     const meta=await completeD1UploadSession(c.env.DB,uid,uploadId);
     const url=`https://api.timelink.digital/api/storage/${encodeURIComponent(meta.key)}`;
-    const trackId=meta.file_name.replace(/\.tl3$/i,'').split('_').slice(0,-1).join('_');
+    const trackId=meta.key.split('/').pop()?.replace(/_[A-F0-9]{32}\.tl3$/i,'')||'';
     return c.json({ok:true,url,stream_url:url,key:meta.key,trackId,file_type:'audio/tl3',release_mode:'tl3',size:meta.size,manifest_sha256:meta.manifest_sha256,storage_mode:'d1'});
   }catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 완료 실패'},400);}
 }});
