@@ -192,3 +192,18 @@ BEFORE DELETE ON v3_tlc_mining_records
 BEGIN
   SELECT RAISE(ABORT, 'V3 TLC mining records are immutable');
 END;
+
+-- Keep cached balances non-negative and prevent cross-asset postings.
+CREATE TRIGGER IF NOT EXISTS trg_v3_balances_nonnegative
+BEFORE UPDATE ON v3_economy_balances
+WHEN NEW.available_atoms < 0 OR NEW.held_atoms < 0
+BEGIN
+  SELECT RAISE(ABORT, 'V3 account balance cannot be negative');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_v3_entries_asset_matches_account
+BEFORE INSERT ON v3_economy_entries
+WHEN (SELECT asset_code FROM v3_economy_accounts WHERE id = NEW.account_id) <> NEW.asset_code
+BEGIN
+  SELECT RAISE(ABORT, 'V3 entry asset does not match account asset');
+END;
