@@ -136,11 +136,12 @@ The following code-level remediations have since been applied to the renewal bra
 - **Completed in code:** `/api/storage/object/:id/stream` no longer treats the mere existence of a linked `tl_shares` row as authorization. It loads the active storage object, checks its owner, and evaluates publication/entitlement before streaming.
 - **Completed in code:** both SharePlace catalogue paths filter modern `tl_shares` to explicit legacy free-MP3 releases or rows backed by a verified, shared, non-held `tl_files` record.
 - **Completed in code:** SharePlace registration no longer creates POC log entries. Registration is not a verified contribution event.
-- **Validation:** on commit `a728565f`, the stream authorization regression script passed, the Cloudflare Worker dry-run passed, and strict TypeScript validation passed. No deployment or production D1 write was performed.
+- **Completed in code:** D1 chunk uploads use server-issued owner-bound sessions with expiry, expected size/type binding, exact chunk sizing, ordered-part completion, per-part SHA-256 revalidation, TL3 v2 header/creator validation, and atomic finalization.
+- **Validation:** on commit `37ee1823`, the stream/upload authorization regression script and Cloudflare Worker dry-run passed; strict TypeScript validation passed. A further POC-regression assertion is included in the current CI run. No deployment or production D1 write was performed.
 
 ### Remaining blockers — do not mark this PR ready yet
 
-1. **P0 upload-session hardening remains incomplete.** User-scoped keys prevent cross-user writes through the current API, but the storage layer still needs server-issued session IDs, expiry, expected content type/size binding, contiguous-part validation, and completion hash verification.
+1. **P0 upload-session hardening is implemented in code; staging verification remains.** The API now issues opaque session IDs, binds sessions to the authenticated owner and one-hour expiry, fixes expected size/content type, enforces exact chunk sizes and sequential parts, rejects conflicting retries, re-hashes each part at completion, validates the TL3 v2 header and creator ID, and atomically marks the object/session complete. The returned SHA-256 is a manifest hash over the verified chunk hashes, not a whole-file SHA-256.
 2. **P1 public SharePlace DTO allowlisting remains open.** The catalogue now filters unpublished releases, but it still needs an explicit response DTO that excludes source URLs, provider metadata and private moderation fields.
 3. **P1 TL economics policy remains open.** SharePlace registration no longer grants POC for either MP3 or TL3. Verified TL3 contribution must be connected to the canonical idempotent ledger after moderation.
 5. **P1 committed TON credential remains open.** Rotate the exposed value and remove plaintext configuration before any production deployment.
@@ -160,4 +161,4 @@ The P0 playback authorization paths have now been closed in code on the renewal 
 - The public catalogue filters out modern shares that do not satisfy the publication gate.
 - A static regression validator now runs in the Worker CI workflow and checks these authorization boundaries.
 
-The P0 upload-session hardening and the public response DTO allowlist remain open. These changes are code-level remediations; they have not yet been exercised against a staging D1 database with two real accounts. Do not mark the PR ready or deploy until those tests pass.
+The P0 stream authorization and upload-session controls are now implemented in code. The public response DTO allowlist, TON credential rotation, canonical TL3 contribution ledger integration, and social API integration tests remain open. These changes have not yet been exercised against a staging D1 database with two real accounts. Do not mark the PR ready or deploy until staging tests pass.
