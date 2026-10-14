@@ -105,14 +105,13 @@ CREATE TABLE IF NOT EXISTS v3_track_releases (
   asset_id TEXT REFERENCES v3_track_assets(id),
   rights_snapshot_json TEXT NOT NULL DEFAULT '{}'
     CHECK (length(rights_snapshot_json) <= 32768),
-  price_tl INTEGER NOT NULL DEFAULT 0 CHECK (price_tl >= 0),
+  price_tl INTEGER NOT NULL CHECK (price_tl > 0),
   duration_seconds INTEGER CHECK (duration_seconds IS NULL OR duration_seconds > 0),
   format_version TEXT,
   published_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(track_id, release_type, version),
-  CHECK (price_tl > 0)
+  UNIQUE(track_id, release_type, version)
 );
 CREATE INDEX IF NOT EXISTS idx_v3_track_releases_track_status
   ON v3_track_releases(track_id, release_type, status);
