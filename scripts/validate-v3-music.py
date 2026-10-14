@@ -85,7 +85,7 @@ VALUES ('bad-zero-price','track-1','TL3',2,'draft','asset-tl3','asset-mp3',0)
 fails("""
 INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
-VALUES ('bad-source','track-1','TL3',3,'draft','asset-tl3','asset-tl3',120)
+VALUES ('bad-source','track-1','TL3',3,'published','asset-tl3','asset-tl3',120)
 """)
 fails("""
 INSERT INTO v3_track_releases
