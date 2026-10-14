@@ -24,13 +24,16 @@ db.execute("""INSERT INTO v3_track_metadata_versions
 VALUES ('meta-a','track-a',1,'song.mp3','Song','manual')""")
 db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,content_hash,size_bytes,mime_type,availability_status,created_by)
+VALUES ('asset-a-source','track-a','mp3_audio','local_agent','source-object','sha256:' || printf('%064d',2),1024,'audio/mpeg','available',1)""")
+db.execute("""INSERT INTO v3_track_assets
+(id,track_id,asset_type,storage_provider,storage_object_id,content_hash,size_bytes,mime_type,availability_status,created_by)
 VALUES ('asset-a','track-a','tl3_release_file','local_agent','tl3-object','sha256:' || printf('%064d',1),1024,'application/octet-stream','available',1)""")
 db.execute("""INSERT INTO v3_track_rights
 (id,track_id,claimant_user_id,rights_role,terms_version,attested_at,verification_status)
 VALUES ('rights-a','track-a',1,'composer','creator-attestation-v1',datetime('now'),'declared')""")
 db.execute("""INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('release-a','track-a','TL3',1,'ready_for_review','asset-a',120)""")
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('release-a','track-a','TL3',1,'ready_for_review','asset-a','asset-a-source',120)""")
 
 def fails(statement, params=()):
     try:
@@ -82,10 +85,13 @@ db.execute("""INSERT INTO v3_track_rights
 VALUES ('rights-b','track-b',1,'composer','creator-attestation-v1',datetime('now'),'verified')""")
 db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,availability_status,created_by)
-VALUES ('asset-b','track-b','mp3_audio','local_agent','local_only',1)""")
+VALUES ('asset-b-source','track-b','mp3_audio','local_agent','available',1)""")
+db.execute("""INSERT INTO v3_track_assets
+(id,track_id,asset_type,storage_provider,availability_status,created_by)
+VALUES ('asset-b','track-b','tl3_release_file','local_agent','local_only',1)""")
 db.execute("""INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('release-b','track-b','TL3',1,'ready_for_review','asset-b',120)""")
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('release-b','track-b','TL3',1,'ready_for_review','asset-b','asset-b-source',120)""")
 fails("UPDATE v3_track_releases SET status='published' WHERE id='release-b'")
 
 print("V3 review validation passed: unverified rights cannot publish; verified rights plus a matching available TL3 Asset permit approval; rights snapshots, SharePlace state, and immutable review audit are enforced.")
