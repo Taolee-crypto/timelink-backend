@@ -25,7 +25,7 @@ async function publicTrack(db: D1Database, trackId: string) {
     JOIN v3_shareplace_entries s ON s.track_id=t.id AND s.owner_user_id=t.owner_user_id AND s.visibility='public'
     JOIN v3_track_releases r ON r.track_id=t.id AND r.release_type='TL3' AND r.status='published'
     JOIN v3_track_assets a ON a.id=r.asset_id AND a.track_id=t.id
-      AND a.asset_type='tl3_release_file' AND a.availability_status='available' AND a.storage_uri_ref IS NOT NULL
+      AND a.asset_type='tl3_release_file' AND a.availability_status='available' 
     LEFT JOIN v3_track_metadata_versions m ON m.track_id=t.id
       AND m.version=(SELECT MAX(mx.version) FROM v3_track_metadata_versions mx WHERE mx.track_id=t.id)
     WHERE t.id=? AND t.status='active' AND t.visibility='public'
@@ -39,7 +39,7 @@ router.get('/tracks', async (c) => {
   const rows = await c.env.DB.prepare(`
     SELECT t.id,u.username AS creator_name,
       m.display_title,COALESCE(m.verified_artist,m.extracted_artist) AS artist,
-      r.id AS mp3_release_id,r.duration_seconds,a.storage_uri_ref AS stream_url,
+      r.id AS release_id,r.duration_seconds,r.price_tl,
       (SELECT ca.storage_uri_ref FROM v3_track_assets ca
         WHERE ca.track_id=t.id AND ca.asset_type='cover_art'
           AND ca.availability_status='available' AND ca.storage_uri_ref IS NOT NULL
@@ -50,9 +50,9 @@ router.get('/tracks', async (c) => {
     FROM v3_tracks t
     JOIN users u ON u.id=t.owner_user_id
     JOIN v3_shareplace_entries s ON s.track_id=t.id AND s.owner_user_id=t.owner_user_id AND s.visibility='public'
-    JOIN v3_track_releases r ON r.track_id=t.id AND r.release_type='MP3' AND r.status='published'
+    JOIN v3_track_releases r ON r.track_id=t.id AND r.release_type='TL3' AND r.status='published'
     JOIN v3_track_assets a ON a.id=r.asset_id AND a.track_id=t.id
-      AND a.asset_type='mp3_audio' AND a.availability_status='available' AND a.storage_uri_ref IS NOT NULL
+      AND a.asset_type='tl3_release_file' AND a.availability_status='available' 
     LEFT JOIN v3_track_metadata_versions m ON m.track_id=t.id
       AND m.version=(SELECT MAX(mx.version) FROM v3_track_metadata_versions mx WHERE mx.track_id=t.id)
     WHERE t.status='active' AND t.visibility='public'
