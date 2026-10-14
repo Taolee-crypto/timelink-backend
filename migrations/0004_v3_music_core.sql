@@ -1,7 +1,8 @@
 -- TimeLink V3 music core: canonical Track, metadata, assets, rights and releases.
 -- Additive only. Legacy tl_files/tl_shares/tl3_releases are not modified or backfilled.
--- MP3 is a free-to-listen product; TL3 is a separately prepared paid encrypted release.
+-- MP3 is a Track source asset. TL3 is the only music release product.
 -- Audio bytes are never stored in D1. Assets contain approved storage references only.
+-- POC conversion events begin when a source MP3 is converted into a TL3 release.
 
 CREATE TABLE IF NOT EXISTS v3_tracks (
   id TEXT PRIMARY KEY,
@@ -98,11 +99,12 @@ CREATE INDEX IF NOT EXISTS idx_v3_track_rights_track_status
 CREATE TABLE IF NOT EXISTS v3_track_releases (
   id TEXT PRIMARY KEY,
   track_id TEXT NOT NULL REFERENCES v3_tracks(id),
-  release_type TEXT NOT NULL CHECK (release_type IN ('MP3','TL3')),
+  release_type TEXT NOT NULL CHECK (release_type = 'TL3'),
   version INTEGER NOT NULL CHECK (version > 0),
   status TEXT NOT NULL DEFAULT 'draft'
     CHECK (status IN ('draft','preparing','ready_for_review','published','suspended','withdrawn')),
   asset_id TEXT REFERENCES v3_track_assets(id),
+  source_asset_id TEXT NOT NULL REFERENCES v3_track_assets(id),
   rights_snapshot_json TEXT NOT NULL DEFAULT '{}'
     CHECK (length(rights_snapshot_json) <= 32768),
   price_tl INTEGER NOT NULL DEFAULT 0 CHECK (price_tl >= 0),
@@ -112,12 +114,12 @@ CREATE TABLE IF NOT EXISTS v3_track_releases (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(track_id, release_type, version),
-  CHECK (release_type <> 'MP3' OR price_tl = 0)
+  CHECK (price_tl > 0)
 );
 CREATE INDEX IF NOT EXISTS idx_v3_track_releases_track_status
   ON v3_track_releases(track_id, release_type, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_v3_track_one_published_release
-  ON v3_track_releases(track_id, release_type)
+  ON v3_track_releases(track_id)
   WHERE status = 'published';
 
 CREATE TABLE IF NOT EXISTS v3_shareplace_entries (
@@ -152,7 +154,7 @@ CREATE TABLE IF NOT EXISTS v3_legacy_track_links (
 CREATE INDEX IF NOT EXISTS idx_v3_legacy_track_links_track
   ON v3_legacy_track_links(track_id);
 
--- A published release must point to an available asset of the matching product type.
+-- A published TL3 release must point to an available TL3 file and its source MP3 asset.
 CREATE TRIGGER IF NOT EXISTS trg_v3_release_asset_insert
 BEFORE INSERT ON v3_track_releases
 WHEN NEW.status = 'published'
@@ -164,9 +166,15 @@ BEGIN
     WHERE a.id = NEW.asset_id
       AND a.track_id = NEW.track_id
       AND a.availability_status = 'available'
-      AND ((NEW.release_type = 'MP3' AND a.asset_type = 'mp3_audio')
-        OR (NEW.release_type = 'TL3' AND a.asset_type = 'tl3_release_file'))
+      AND a.asset_type = 'tl3_release_file'
   ) THEN RAISE(ABORT, 'Published release requires a matching available asset') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM v3_track_assets source
+    WHERE source.id = NEW.source_asset_id
+      AND source.track_id = NEW.track_id
+      AND source.asset_type = 'mp3_audio'
+      AND source.availability_status IN ('available','local_only')
+  ) THEN RAISE(ABORT, 'TL3 conversion requires a source MP3 asset') END;
   SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM v3_track_rights r
     WHERE r.track_id = NEW.track_id
@@ -175,7 +183,7 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_v3_release_asset_update
-BEFORE UPDATE OF status, asset_id, track_id, release_type ON v3_track_releases
+BEFORE UPDATE OF status, asset_id, source_asset_id, track_id, release_type ON v3_track_releases
 WHEN NEW.status = 'published'
 BEGIN
   SELECT CASE WHEN NEW.asset_id IS NULL
