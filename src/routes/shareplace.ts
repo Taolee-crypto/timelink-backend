@@ -111,7 +111,7 @@ router.post('/', async (c) => {
   }
 });
 
-// Public catalogue: expose only verified TL3 releases; never return provider/source URLs.
+// GET / - SharePlace catalogue: expose only verified TL3 releases; never return provider/source URLs.
 router.get('/', async (c) => {
   const genre = c.req.query('genre');
   const sort = c.req.query('sort') || 'pulse';
