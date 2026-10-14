@@ -90,7 +90,7 @@ VALUES ('bad-source','track-1','TL3',3,'published','asset-tl3','asset-tl3',120)
 fails("""
 INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
-VALUES ('bad-release-asset','track-1','TL3',4,'draft','asset-mp3','asset-mp3',120)
+VALUES ('bad-release-asset','track-1','TL3',4,'published','asset-mp3','asset-mp3',120)
 """)
 
 # Publication requires both the available TL3 file and verified rights.
