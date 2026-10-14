@@ -72,13 +72,9 @@ async function playbackUserId(c:any,allowQueryToken=true):Promise<number>{
 }
 
 async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
-  const kind=shareKind(share);
-  const mode=String(share?.release_mode||'').toLowerCase();
-  const contentKind=String(share?.content_kind||'').toLowerCase();
   const fileType=String(share?.file_type||'').toLowerCase();
   // MP3 source assets are never public releases; only verified TL3 files pass below.
-  // A raw MP3 must never become public merely because a caller labels it TL3.
-  if(fileType==='audio/mpeg'||fileType==='audio/mp3') return false;
+  if(fileType!=='audio/tl3') return false;
   // Never trust release_check here: legacy clients can submit it themselves.
   // TL3 becomes public only when a matching server-verified TL3 file is shared.
   const streamUrl=String(share?.stream_url||'').trim();
