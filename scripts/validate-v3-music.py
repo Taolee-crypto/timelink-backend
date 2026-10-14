@@ -103,6 +103,32 @@ before = db.execute("SELECT * FROM tl_shares").fetchall()
 db.executescript(sql)
 assert db.execute("SELECT * FROM tl_shares").fetchall() == before
 
+# Local Agent asset registration must bind the asset type before the storage URI.
+local_asset_sql = """
+INSERT INTO v3_track_assets
+(id,track_id,asset_type,storage_provider,storage_uri_ref,content_hash,size_bytes,mime_type,availability_status,created_by)
+VALUES(?,?,?,'local_agent',?,?,?,?,?,?)
+"""
+db.execute(local_asset_sql, (
+    "asset-local", "track-1", "mp3_audio",
+    "https://agent.timelink.digital/local/" + "a" * 36,
+    "sha256:" + "b" * 64, 2048, "audio/mpeg", "available", 1
+))
+local_row = db.execute("""
+SELECT asset_type,storage_provider,storage_uri_ref,content_hash,size_bytes,mime_type,availability_status,created_by
+FROM v3_track_assets WHERE id='asset-local'
+""").fetchone()
+assert local_row == (
+    "mp3_audio", "local_agent",
+    "https://agent.timelink.digital/local/" + "a" * 36,
+    "sha256:" + "b" * 64, 2048, "audio/mpeg", "available", 1
+), f"Local Agent asset columns were mis-bound: {local_row}"
+
+route_source = (ROOT / "src" / "routes" / "music-v3.ts").read_text(encoding="utf-8")
+assert ".bind(assetId,trackId,type,streamUri,hash||null,size," in route_source, (
+    "Local Agent asset INSERT must bind asset_type before storage_uri_ref"
+)
+
 print("V3 music validation passed: additive/idempotent schema, INTEGER user FKs, metadata provenance, "
       "free MP3 vs paid TL3 separation, available-asset and verified-rights publication gates, "
       "single published release, and untouched legacy data.")
