@@ -62,7 +62,7 @@ WHERE t.id=? AND t.status='active' AND t.visibility='public'
 assert visible and visible["display_title"] == "Public Song"
 assert visible["asset_type"] == "tl3_release_file"
 
-# MP3 with only a private storage object cannot be published as free public audio.
+# A source MP3 is not itself a public release.
 db.execute("INSERT INTO v3_tracks(id,owner_user_id) VALUES('track-private',1)")
 db.execute("""INSERT INTO v3_track_rights
 (id,track_id,claimant_user_id,rights_role,terms_version,attested_at,verification_status)
