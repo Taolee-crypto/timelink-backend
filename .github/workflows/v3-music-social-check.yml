@@ -6,6 +6,7 @@ on:
     paths:
       - "src/routes/music-v3-public.ts"
       - "src/routes/music-v3-social.ts"
+      - "src/routes/music-v3-admin.ts"
       - "src/index.ts"
       - "migrations/0006_v3_music_social.sql"
       - "scripts/validate-v3-music-social.py"
