@@ -757,11 +757,6 @@ app.post('/api/files/sync', async (c) => {
   const userId = Number(session?.sub || 0);
   if (!Number.isSafeInteger(userId) || userId <= 0) return c.json({ ok: false, error: '인증 필요' }, 401);
 
-  const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '').trim();
-  const principal = token ? await verifyToken(token, c.env.JWT_SECRET).catch(() => null) : null;
-  const userId = Number(principal?.sub || 0);
-  if (!userId) return c.json({ ok: false, error: '인증 필요' }, 401);
-
   try {
     const owner = await c.env.DB.prepare('SELECT id FROM users WHERE id = ?')
       .bind(userId).first<{ id: number }>();
@@ -1369,10 +1364,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-?,total_tl_spent=total_tl_spent+? WHERE id=? AND tl_balance>=?').bind(cost,cost,u.id,cost).run();
     if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:cost,balance:u.tl_balance},402);
 
-    const shareIdKey = `tl3_${fileId}`;
-    const licN = await deriveLicenseBytes(masterSecret, shareIdKey);
-
-    // ⭐ 파일 생성 시 쓴 share_id와 동일하게 맞춤 (lic 불일치 방지)
+    // 파일 생성 시 사용한 share_id와 동일한 키로 라이선스를 계산한다.
     const releaseRow = await c.env.DB.prepare(
       "SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'"
     ).bind(fileId).first<any>();
