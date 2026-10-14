@@ -1,5 +1,6 @@
 from pathlib import Path
 source=Path("src/index.ts").read_text(encoding="utf-8")
+shareplace=Path("src/routes/shareplace.ts").read_text(encoding="utf-8")
 def part(a,b):
     i=source.index(a); j=source.index(b,i+len(a)); return source[i:j]
 def check(ok,msg):
@@ -9,7 +10,7 @@ auth=part("async function playbackUserId","async function isPublicPlaybackShare"
 check("verifyToken(token,c.env.JWT_SECRET)" in auth,"JWT signature verified")
 check("COALESCE(is_active,1)=1" in auth,"active account required")
 pub=part("async function isPublicPlaybackShare","async function hasPlaybackBalance")
-check("contentKind==='mp3'||mode.startsWith('free_mp3')" in pub,"only explicit legacy MP3 is public")
+check("fileType!=='audio/tl3'" in pub,"only verified TL3 assets are public")
 check("releaseCheck" not in pub,"client-controlled release_check is never trusted")
 check("releaseMode!=='tl3'||fileType!=='audio/tl3'" in shareplace,"SharePlace registration rejects MP3 source assets")
 check("ownedKey" in shareplace and "getD1ObjectMeta" in shareplace,"SharePlace publication requires an existing creator-owned TL3 container")
@@ -37,10 +38,9 @@ check("!isOwner&&!isPublic" in stream,"stream requires owner or public release")
 check("shareKind(share)==='tl3'" in stream and "hasPlaybackBalance" in stream,"TL3 listener balance gate")
 check("Number(object.user_id)!==ownerId" in stream,"external object ownership matches creator")
 check("scoped&&Number(scoped[1])!==ownerId" in stream,"D1 key ownership matches creator")
-shareplace=Path("src/routes/shareplace.ts").read_text(encoding="utf-8")
 check("f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0" in shareplace,"SharePlace modern catalogue filters unpublished releases")
 check("LOWER(f.file_type)='audio/tl3'" in shareplace and "f.stream_url=s.stream_url" in shareplace,"public SharePlace exposes only verified TL3 streams")
-check("free_mp3" not in public_gate,"MP3 source assets are never public playback releases")
+check("free_mp3" not in pub,"MP3 source assets are never public playback releases")
 share_create=shareplace[shareplace.index("router.post('/', async"):shareplace.index("// GET / - SharePlace")]
 check("poc_logs" not in share_create and "poc_gained" not in share_create,"registration does not grant POC before verification")
 legacy=part("app.get('/api/shares', async (c) => {","// 🔥 POST /api/shares")
