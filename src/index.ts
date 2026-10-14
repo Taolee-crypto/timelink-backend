@@ -3622,9 +3622,9 @@ app.options('/api/stream/:shareId', async (c) => new Response(null, {
   },
 }));
 
-app.get('/api/stream/:shareId', async (c) => {
+app.get('/api/stream/:shareId',async(c)=>{
   const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '').trim() || c.req.query('tk') || '';
-  const userId = parseTokenUserId(token);
+  const userId=await playbackUserId(c);
   const shareId = c.req.param('shareId');
   const cors: Record<string, string> = {
     'Access-Control-Allow-Origin': '*',
@@ -3644,10 +3644,10 @@ app.get('/api/stream/:shareId', async (c) => {
     const ownerId = Number(share.user_id || 0);
     const isOwner = userId > 0 && userId === ownerId;
     const isPublic = await isPublicPlaybackShare(c.env.DB, share);
-    if (!isOwner && !isPublic) {
+    if(!isOwner&&!isPublic){
       return new Response(JSON.stringify({ error: '공개 승인되지 않았거나 접근 권한이 없습니다.' }), { status: 403, headers: cors });
     }
-    if (!isOwner && shareKind(share) === 'tl3') {
+    if(!isOwner&&shareKind(share)==='tl3'){
       if (!userId) return new Response(JSON.stringify({ error: 'TL3 재생은 로그인이 필요합니다.' }), { status: 401, headers: cors });
       if (!await hasPlaybackBalance(c.env.DB, userId)) {
         return new Response(JSON.stringify({ error: '재생에 필요한 TL 잔액이 없습니다.' }), { status: 402, headers: cors });
@@ -3684,7 +3684,7 @@ app.get('/api/stream/:shareId', async (c) => {
       const object = await c.env.DB.prepare(
         "SELECT id, user_id FROM storage_objects WHERE id = ? AND status = 'active'"
       ).bind(Number(share.storage_object_id)).first<any>();
-      if (!object || Number(object.user_id) !== ownerId) {
+      if(!object||Number(object.user_id)!==ownerId){
         return new Response(JSON.stringify({ error: '저장소 소유권 연결이 올바르지 않습니다.' }), { status: 403, headers: cors });
       }
       const upstream = await externalStream(c.env.DB, c.env, Number(share.storage_object_id), c.req.header('Range') || '');
@@ -3705,7 +3705,7 @@ app.get('/api/stream/:shareId', async (c) => {
     if (!key) return new Response(JSON.stringify({ error: '스트림 없음' }), { status: 404, headers: cors });
 
     const scoped = key.match(/^(?:tracks|tl)\/u(\d+)\//);
-    if (scoped && Number(scoped[1]) !== ownerId) {
+    if(scoped&&Number(scoped[1])!==ownerId){
       return new Response(JSON.stringify({ error: '저장소 소유권 연결이 올바르지 않습니다.' }), { status: 403, headers: cors });
     }
     const meta = await getD1ObjectMeta(c.env.DB, key);
