@@ -1569,6 +1569,10 @@ app.post('/api/shares', async (c) => {
   let header:any;
   try{header=JSON.parse(new TextDecoder().decode(headerBytes));}catch{return c.json({error:'TL3 메타데이터 JSON이 올바르지 않습니다.'},400);}
   if(String(header.cid||'')!==String(userId))return c.json({error:'TL3 창작자 ID가 로그인 사용자와 일치하지 않습니다.'},403);
+  const approvedFile=await c.env.DB.prepare(
+    "SELECT id FROM tl_files WHERE user_id=? AND LOWER(file_type)='audio/tl3' AND (stream_url=? OR file_url=?) AND auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0 LIMIT 1"
+  ).bind(userId,streamUrl,streamUrl).first();
+  if(!approvedFile)return c.json({error:'관리자 권리 검증과 창작자 공개 승인이 완료된 TL3만 공유할 수 있습니다.'},403);
   const originHash=String(body.origin_hash||'').trim().toLowerCase();
   if(originHash){
     const same=await c.env.DB.prepare("SELECT id,title,artist FROM tl_shares WHERE lower(COALESCE(origin_hash,''))=? LIMIT 1").bind(originHash).first<any>().catch(()=>null);
