@@ -2171,6 +2171,63 @@ app.post('/api/auth/signup', async (c) => {
 });
 
 // 오디오 프록시
+app.get('/api/legacy-stream/:fileId',async(c)=>{
+  try{
+    const fileId=c.req.param('fileId');
+    const file=await c.env.DB.prepare(
+      'SELECT f.*,u.username FROM tl_files f LEFT JOIN users u ON u.id=f.user_id WHERE CAST(f.id AS TEXT)=?'
+    ).bind(fileId).first<any>();
+    if(!file)return c.json({error:'파일 없음'},404);
+    const viewerId=await playbackUserId(c);
+    const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
+    const isPublic=file.auth_status==='verified'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
+    if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
+    if(!isOwner&&Number(file.file_tl||0)>0){
+      if(!viewerId)return c.json({error:'TL3 재생은 로그인이 필요합니다.'},401);
+      if(!await hasPlaybackBalance(c.env.DB,viewerId))return c.json({error:'재생에 필요한 TL 잔액이 없습니다.'},402);
+    }
+
+    const source=String(file.file_url||'').trim();
+    if(!source)return c.json({error:'원본 저장 위치가 없습니다.'},404);
+    if(/127\\.0\\.0\\.1|localhost/i.test(source))return c.json({error:'창작자 PC의 Local Agent에서 재생해야 하는 자산입니다.'},409);
+    let key='';
+    if(source.startsWith('tracks/')||source.startsWith('tl/'))key=source;
+    else if(source.includes('/api/storage/'))key=decodeURIComponent(source.split('/api/storage/')[1].split('?')[0]);
+    else if(source.includes('/api/audio/')){
+      const parsed=new URL(source,c.req.url);
+      const filename=parsed.pathname.split('/').pop()||'';
+      if(!/^[A-Za-z0-9._-]{1,180}$/.test(filename))return c.json({error:'잘못된 저장 파일 경로'},400);
+      key='tracks/'+filename;
+    }
+    const cors:Record<string,string>={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length','Accept-Ranges':'bytes','Cache-Control':'private, no-store'};
+    const range=c.req.header('Range')||'';
+    if(key){
+      const scoped=key.match(/^(?:tracks|tl)\\/u(\\d+)\\//);
+      if(scoped&&Number(scoped[1])!==Number(file.user_id))return c.json({error:'파일 소유권 연결이 올바르지 않습니다.'},403);
+      const meta=await getD1ObjectMeta(c.env.DB,key);
+      if(!meta)return c.json({error:'저장된 원본을 찾을 수 없습니다.'},404);
+      let start=0,end=meta.size-1,status=200;
+      if(range){
+        const match=range.match(/bytes=(\\d+)-(\\d*)/);
+        if(!match)return new Response('Invalid Range',{status:416,headers:cors});
+        start=Number(match[1]);end=match[2]!==''?Math.min(Number(match[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;
+      }
+      if(start<0||start>=meta.size||end<start)return new Response('Range Not Satisfiable',{status:416,headers:cors});
+      const bytes=await readD1Range(c.env.DB,key,start,end-start+1);
+      const headers:Record<string,string>={...cors,'Content-Type':meta.content_type||file.file_type||'application/octet-stream','Content-Length':String(bytes.byteLength)};
+      if(status===206)headers['Content-Range']=`bytes ${start}-${end}/${meta.size}`;
+      return new Response(bytes,{status,headers});
+    }
+    if(!/^https?:\\/\\//i.test(source))return c.json({error:'지원하지 않는 저장 위치입니다.'},400);
+    const upstreamHeaders:Record<string,string>={};if(range)upstreamHeaders.Range=range;
+    const upstream=await fetch(source,{headers:upstreamHeaders});
+    const headers=new Headers(cors);
+    for(const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges']){
+      const value=upstream.headers.get(name);if(value)headers.set(name,value);
+    }
+    return new Response(upstream.body,{status:upstream.status,headers});
+  }catch(e:any){return c.json({error:e?.message||'재생 스트림 처리 실패'},500);}
+});
 app.options('/api/audio/:filename', (c) => new Response(null, { headers: {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
