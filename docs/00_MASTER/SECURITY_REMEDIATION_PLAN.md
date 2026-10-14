@@ -116,8 +116,31 @@ Scope: read-only audit of `feature/renewal-private-library-api` source. No produ
 ## Validation state
 
 - GitHub Actions Worker bundle validation: **passed** using `npx wrangler deploy --dry-run`; this is a compile/bundle check only, not a deployment.
-- Existing strict TypeScript workflow: **failed**. The output contains numerous errors across existing modules, including missing Env bindings/types (`R2`, `UNSPLASH_ACCESS_KEY`, `TL3_MASTER_SECRET`, `KAKAO_REST_API_KEY`), Hono request/body typing, auth typings, and nullability. These must be triaged against the base branch to separate pre-existing errors from renewal-branch regressions.
+- At the initial audit commit, strict TypeScript validation **failed** with multiple type errors. These were corrected on the current renewal branch; the latest strict TypeScript workflow and Worker dry-run both pass. This is a compile/bundle result, not a security or D1 integration test.
 - `npm ci` reported 10 dependency vulnerabilities (1 low, 3 moderate, 6 high) at the time of this run. Do not run `npm audit fix --force` blindly; review advisories and dependency compatibility first.
 - No D1 integration tests, browser tests, cross-user penetration tests or production deployment were performed.
 
 This document is based on source inspection and CI output. It is not a penetration test and does not prove exploitability against a deployed environment. No merge or deployment is represented as complete.
+
+
+## Implementation update — 2026-10-14
+
+The following code-level remediations have since been applied to the renewal branch:
+
+- **Completed in code:** `POST /api/files/sync` now requires a verified JWT and derives the owner ID from the session. Caller-supplied email/username no longer selects or creates the owner, and the user-ID-1 fallback is removed.
+- **Completed in code:** chunked upload init/part/complete routes require a verified JWT and use/check user-scoped `tracks/u{userId}/...` keys.
+- **Completed in code:** generic multipart upload and legacy TL upload require a verified JWT; new object keys are user-scoped. The legacy TL upload fails closed if `TL_SECRET` is absent.
+- **Completed in code:** raw D1 object reads enforce owner checks for newly user-scoped keys. Explicitly shared legacy audio/cover objects retain compatibility access; old non-user-prefixed object keys remain a migration risk and require inventory before being treated as private.
+- **Already present and retained:** private file details are owner/admin-only; file approval checks the administrator role and only grants the POC bonus on the first transition to verified.
+- **Validation:** strict TypeScript check passed and Cloudflare Worker dry-run passed on the updated branch. No deployment or production D1 write was performed.
+
+### Remaining blockers — do not mark this PR ready yet
+
+1. **P0 external stream authorization remains open.** `GET /api/storage/object/:id/stream` still treats any linked `tl_shares` row as sufficient authorization. The legacy `GET /api/stream/:shareId` path also needs a release/visibility and listener-entitlement gate before it returns raw stream bytes. Fixing this requires a playback regression test so authorized playback is preserved.
+2. **P0 upload-session hardening remains incomplete.** User scoping now prevents cross-user key writes through the API, but the storage layer still needs server-issued session IDs, expiry, expected content type/size binding, contiguous-part validation, and completion hash verification.
+3. **P1 public SharePlace response allowlisting remains open.** The public catalogue still needs an explicit DTO that excludes source URLs and private metadata and selects only eligible releases.
+4. **P1 free-MP3 POC policy remains open.** Verify that free MP3 intake does not create POC contribution and route authorized TL3 contribution through the canonical idempotent ledger.
+5. **P1 committed TON credential remains open.** Rotate the exposed value and remove plaintext configuration before any production deployment.
+6. Cross-user D1 integration tests, upload-abuse tests, playback entitlement tests, and Track Page social isolation tests are still required.
+
+The PR remains a Draft. Do not merge or deploy until the remaining P0 findings are closed and the acceptance tests above pass.
