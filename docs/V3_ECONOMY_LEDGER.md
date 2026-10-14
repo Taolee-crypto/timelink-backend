@@ -56,8 +56,8 @@ Migration 0003 was executed against an in-memory SQLite database during authorin
 
 1. Add a server-only ledger service that creates accounts, validates balanced postings, enforces idempotency, and updates balance projections atomically.
 2. Add read-only wallet/history endpoints backed by V3 projections and entries.
-3. Provide an authenticated, read-only user balance preview at `GET /api/v3/economy/reconciliation/preview`. It reports only legacy user columns that actually exist in the deployed schema; it does not sum, convert, or import them.
-4. Build a separate file/creator-balance reconciliation after the live `tl_shares` and settlement schemas have been verified.
+3. Provide an authenticated, read-only per-user reconciliation preview at `GET /api/v3/economy/reconciliation/preview`. It reports only columns and rows that exist in the deployed schema across users, TL files, SharePlace shares, TL3 releases, per-user SharePlace allocations, payments, exchanges, transactions, playback events, POC records, and TLC mining records. Each source remains separate; no values are summed, converted, imported, or credited. Provider payment identifiers and TL3 cryptographic keys/salts/token roots are excluded.
+4. Extend reconciliation to any remaining settlement/escrow sources only after their live schema and write paths have been verified; never infer creator payable amounts from SharePlace counters or playback logs alone.
 5. Migrate one low-risk workflow behind a feature flag, then reconcile.
 6. Migrate payment, playback, advertising, broadcast, creator settlement, and TLC minting individually with idempotency and failure recovery.
 7. Retire legacy writes only after all workflows have passed reconciliation and production verification.
