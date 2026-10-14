@@ -76,7 +76,7 @@ db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,availability_status,created_by,mime_type)
 VALUES('asset-private','track-private','tl3_release_file','onedrive','private-object','available',1,'application/octet-stream')""")
 db.execute("""INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
 VALUES('release-private','track-private','TL3',1,'published','asset-private','asset-private-source',120)""")
 not_public = db.execute("""
 SELECT t.id FROM v3_tracks t
