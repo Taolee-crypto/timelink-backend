@@ -22,7 +22,7 @@ function trustedLocalAgentUrl(value: unknown): URL | null {
     const host = url.hostname.toLowerCase();
     const trustedHost = host === 'agent.timelink.digital' || host.endsWith('.trycloudflare.com');
     const trustedPath = url.pathname.startsWith('/local/') && /^[a-f0-9]{36}$/i.test(url.pathname.slice(7));
-    if (url.protocol !== 'https:' || !trustedHost || !trustedPath
+    if (url.protocol !== 'https:' || !trustedHost || !trustedPath || url.port
       || url.username || url.password || url.search || url.hash) return null;
     return url;
   } catch {
@@ -248,6 +248,8 @@ router.post('/tracks/:id/conversions/tl3/build', async (c) => {
   if(!source||source.asset_type!=='mp3_audio'||source.availability_status!=='available') {
     return c.json({ok:false,error:'An available MP3 source Asset belonging to this Track is required'},422);
   }
+  const sourceMime=String(source.mime_type||'').toLowerCase();
+  if(!sourceMime.includes('audio')&&!sourceMime.includes('octet-stream')) return c.json({ok:false,error:'The source Asset must contain MP3 audio'},422);
   if(source.storage_provider!=='local_agent') {
     return c.json({ok:false,code:'STORAGE_PROVIDER_NOT_READY',error:'TL3 conversion currently requires a source stored through the TimeLink Local Agent'},409);
   }
@@ -394,7 +396,9 @@ router.post('/tracks/:id/conversions/tl3/complete', async (c) => {
 
   if(header.v!==3||header.aead!=='AES-256-GCM'||header.kdf!=='HKDF-SHA-256'
     ||header.share_id!==job.license_reference
+    ||normalizedHash(source.content_hash)!==normalizedHash(job.source_content_hash)
     ||normalizedHash(header.hash_mp3)!==normalizedHash(job.source_content_hash)
+    ||header.rights?.license!=='TL3-v3'||header.rights?.ownership!=='creator'
     ||Number(header.rights?.creator_id)!==Number(user.id)
     ||Number(header.dur_sec)!==Number(job.duration_seconds)
     ||Number(header.mp3?.N)!==Number(job.segment_count)) {
