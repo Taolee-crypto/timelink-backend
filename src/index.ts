@@ -76,8 +76,7 @@ async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   const mode=String(share?.release_mode||'').toLowerCase();
   const contentKind=String(share?.content_kind||'').toLowerCase();
   const fileType=String(share?.file_type||'').toLowerCase();
-  // Preserve only explicitly marked legacy free-MP3 releases during migration.
-  if(kind==='mp3'&&contentKind==='mp3'&&mode.startsWith('free_mp3')) return true;
+  // MP3 source assets are never public releases; only verified TL3 files pass below.
   // A raw MP3 must never become public merely because a caller labels it TL3.
   if(fileType==='audio/mpeg'||fileType==='audio/mp3') return false;
   // Never trust release_check here: legacy clients can submit it themselves.
@@ -784,7 +783,7 @@ app.get('/api/storage/:key{.+}', async (c) => {
     }
 
     const fileRows=await c.env.DB.prepare(
-      'SELECT id,user_id,auth_status,shared,revenue_held,file_url,cover_image FROM tl_files WHERE LOWER(file_type)='audio/tl3' AND (file_url IN (?,?) OR cover_image IN (?,?))'
+      "SELECT id,user_id,auth_status,shared,revenue_held,file_url,cover_image FROM tl_files WHERE LOWER(file_type)='audio/tl3' AND (file_url IN (?,?) OR cover_image IN (?,?))"
     ).bind(canonical,'/api/storage/'+encodeURIComponent(key),canonical,'/api/storage/'+encodeURIComponent(key)).all<any>().catch(()=>({results:[]}));
     for(const file of (fileRows.results||[])){
       const uid=Number(file.user_id||0);if(uid>0) ownerIds.add(uid);
@@ -1480,7 +1479,7 @@ app.get('/api/shares', async (c) => {
         'share' as source_table
       FROM tl_shares s
       LEFT JOIN users u ON CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT)
-      WHERE ((LOWER(COALESCE(s.content_kind,''))='mp3' AND LOWER(COALESCE(s.release_mode,'')) LIKE 'free_mp3%') OR EXISTS (SELECT 1 FROM tl_files f WHERE f.file_url=s.stream_url AND LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0))
+      WHERE EXISTS (SELECT 1 FROM tl_files f WHERE f.file_url=s.stream_url AND LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0)
       UNION ALL
       SELECT
         CAST(f.id AS TEXT) as id, f.user_id, u.username as username,
