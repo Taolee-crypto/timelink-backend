@@ -3,6 +3,11 @@ import { authMiddleware } from '../middleware';
 import type { Env, User } from '../types';
 
 const router = new Hono<{ Bindings: Env; Variables: { user: User } }>();
+router.use('*', async (c,next) => {
+  const ready=await c.env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('v3_track_likes','v3_track_comments','v3_track_comment_reports','v3_track_follows')").first<any>();
+  if(Number(ready?.n||0)<4) return c.json({ok:false,code:'V3_SOCIAL_NOT_INITIALIZED',error:'V3 social migration has not been applied'},503);
+  await next();
+});
 const makeId = () => crypto.randomUUID();
 const clean = (v: unknown, max: number) => String(v || '').trim().slice(0,max);
 
