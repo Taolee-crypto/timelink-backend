@@ -471,6 +471,7 @@ app.post('/api/playlist/:id/add',async(c)=>{
     await c.env.DB.prepare('INSERT OR IGNORE INTO tl_playlist_items(playlist_id,share_id) VALUES(?,?)').bind(playlistId,shareId).run();
     return c.json({ok:true,added:true});
   }catch(e:any){return c.json({error:e?.message||'곡 추가 실패'},500);}
+});
 
 // ── Track Social / Playlist: existing D1 tables, real persistence ──
 app.get('/api/social/stats/:id', async (c) => {
