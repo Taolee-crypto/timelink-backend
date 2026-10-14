@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 
 const router = new Hono<{ Bindings: Env }>();
 
 // ── 인증 헬퍼 ──
-async function authUser(c: any): Promise<{id: number, user: any} | null> {
+async function authUser(c: Context<{ Bindings: Env }>): Promise<{id: number, user: any} | null> {
   const auth = (c.req.header('Authorization') || '').replace(/^Bearer\s+/, '').trim();
   if (!auth) return null;
   const payload = await verifyToken(auth, c.env.JWT_SECRET).catch(() => null);
