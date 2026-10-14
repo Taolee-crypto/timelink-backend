@@ -102,7 +102,7 @@ router.post('/:id/approve', async (c) => {
   await c.env.DB.prepare('UPDATE tl_files SET auth_status = ? WHERE id = ?')
     .bind(newStatus, file.id).run();
 
-  if (body.approved && file.auth_status !== 'verified') {
+  if (body.approved && file.auth_status !== 'verified' && String(file.file_type||'').toLowerCase()==='audio/tl3') {
     // POC +0.3 is awarded only on the first transition to verified.
     const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?')
       .bind(file.user_id).first<User>();
