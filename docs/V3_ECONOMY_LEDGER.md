@@ -56,10 +56,11 @@ Migration 0003 was executed against an in-memory SQLite database during authorin
 
 1. Add a server-only ledger service that creates accounts, validates balanced postings, enforces idempotency, and updates balance projections atomically.
 2. Add read-only wallet/history endpoints backed by V3 projections and entries.
-3. Add a reconciliation report comparing legacy user and file balances to proposed V3 accounts without moving funds.
-4. Migrate one low-risk workflow behind a feature flag, then reconcile.
-5. Migrate payment, playback, advertising, broadcast, creator settlement, and TLC minting individually with idempotency and failure recovery.
-6. Retire legacy writes only after all workflows have passed reconciliation and production verification.
+3. Provide an authenticated, read-only user balance preview at `GET /api/v3/economy/reconciliation/preview`. It reports only legacy user columns that actually exist in the deployed schema; it does not sum, convert, or import them.
+4. Build a separate file/creator-balance reconciliation after the live `tl_shares` and settlement schemas have been verified.
+5. Migrate one low-risk workflow behind a feature flag, then reconcile.
+6. Migrate payment, playback, advertising, broadcast, creator settlement, and TLC minting individually with idempotency and failure recovery.
+7. Retire legacy writes only after all workflows have passed reconciliation and production verification.
 
 ## Explicit exclusions
 
