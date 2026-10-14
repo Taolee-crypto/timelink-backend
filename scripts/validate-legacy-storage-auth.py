@@ -17,7 +17,7 @@ checks = {
     "legacy TL key is creator-namespaced": "key=`tl/u${uid}/${shareId}.tl`" in source,
     "namespaced storage stream resolves owner": "const ownerMatch=key.match(/^(?:tracks|tl)\\/u(\\d+)\\//)" in source,
     "protected TL files are owner-only": "if(key.startsWith('tl/')||/\\.(tl3|tl)$/i.test(key))" in source,
-    "public stream requires a published legacy MP3 link": "isPublic=!!legacyFile||!!legacyShare" in source,
+    "public stream requires a published legacy MP3 link": "isPublic=!!legacyFile||!!legacyShare||!!publicCover" in source,
     "private stream is not cached publicly": "isPublic?'public, max-age=3600':'private, no-store'" in source,
     "sync no longer creates fallback user": "VALUES (?, ?, 'local_sync', 1000) RETURNING id" not in source,
 }
