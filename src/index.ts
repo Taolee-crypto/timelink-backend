@@ -368,26 +368,12 @@ app.get('/api/tracks', async (c) => {
 
 // POST /api/files/sync
 app.post('/api/files/sync', async (c) => {
+  const session=await storageUser(c);
+  const userId=Number(session?.sub||0);
+  if(!Number.isSafeInteger(userId)||userId<=0) return c.json({ok:false,error:'인증 필요'},401);
   try {
     const body = await c.req.json<any>();
-    if (!body.title) return c.json({ error: 'title required' }, 422);
-    let userId: number = 1;
-    if (body.user_email) {
-      let user = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?')
-        .bind(body.user_email).first<{ id: number }>();
-      if (!user && body.username) {
-        const ins = await c.env.DB.prepare(
-          `INSERT OR IGNORE INTO users (email, username, password_hash, tl_balance)
-           VALUES (?, ?, 'local_sync', 1000) RETURNING id`
-        ).bind(body.user_email, body.username).first<{ id: number }>();
-        user = ins || null;
-        if (!user) {
-          user = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?')
-            .bind(body.user_email).first<{ id: number }>();
-        }
-      }
-      if (user) userId = user.id;
-    }
+    if (!String(body.title||'').trim()) return c.json({ error: 'title required' }, 422);
     const existing = await c.env.DB.prepare(
       'SELECT id FROM tl_files WHERE title = ? AND user_id = ?'
     ).bind(body.title, userId).first<{ id: number }>();
