@@ -59,6 +59,44 @@ async function storageUser(c:any){
   if(!token) return null;
   return await verifyToken(token,c.env.JWT_SECRET);
 }
+async function playbackUserId(c:any):Promise<number>{
+  const header=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
+  const token=header||String(c.req.query('tk')||'').trim();
+  if(!token) return 0;
+  const payload=await verifyToken(token,c.env.JWT_SECRET);
+  const id=Number(payload?.sub||0);
+  if(!Number.isSafeInteger(id)||id<=0) return 0;
+  const user=await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0').bind(id).first();
+  return user?id:0;
+}
+
+async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
+  const kind=shareKind(share);
+  const mode=String(share?.release_mode||'').toLowerCase();
+  const contentKind=String(share?.content_kind||'').toLowerCase();
+  // Preserve explicitly declared legacy free-MP3 releases only.
+  if(kind==='mp3'&&(contentKind==='mp3'||mode.startsWith('free_mp3'))) return true;
+  // TL3 is public only after an explicit rights/release verification state.
+  const releaseCheck=String(share?.release_check||'').toLowerCase();
+  if(['verified','approved','released','rights_verified'].includes(releaseCheck)) return true;
+  const streamUrl=String(share?.stream_url||'').trim();
+  if(streamUrl){
+    const file=await db.prepare(
+      "SELECT id FROM tl_files WHERE auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0 AND (file_url=? OR file_url LIKE ?) LIMIT 1"
+    ).bind(streamUrl, '%'+streamUrl).first().catch(()=>null);
+    if(file) return true;
+  }
+  return false;
+}
+
+async function hasPlaybackBalance(db:D1Database,userId:number):Promise<boolean>{
+  if(!userId) return false;
+  const row=await db.prepare(
+    'SELECT COALESCE(tl_p,tl,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) AS total FROM users WHERE id=?'
+  ).bind(userId).first<any>();
+  return Number(row?.total||0)>0;
+}
+
 app.get('/api/storage/providers', async (c) => {
   return c.json({
     providers:[
@@ -150,17 +188,36 @@ app.post('/api/storage/object/register', async (c) => {
 app.get('/api/storage/object/:id/stream', async (c) => {
   try {
     const objectId=Number(c.req.param('id'));
+    if(!Number.isSafeInteger(objectId)||objectId<=0) return c.json({error:'잘못된 저장소 객체 ID'},400);
     await ensureStorageTables(c.env.DB);
-    const linked=await c.env.DB.prepare('SELECT id FROM tl_shares WHERE storage_object_id=? LIMIT 1').bind(objectId).first();
-    if(!linked){
-      const u=await storageUser(c);
-      const own= u ? await c.env.DB.prepare('SELECT id FROM storage_objects WHERE id=? AND user_id=?').bind(objectId,Number(u.sub)).first() : null;
-      if(!own) return c.json({error:'접근 권한 없음'},403);
+    const object=await c.env.DB.prepare(
+      "SELECT id,user_id FROM storage_objects WHERE id=? AND status='active'"
+    ).bind(objectId).first<any>();
+    if(!object) return c.json({error:'저장소 객체 없음'},404);
+
+    const viewerId=await playbackUserId(c);
+    const ownerId=Number(object.user_id);
+    const linked=await c.env.DB.prepare(
+      'SELECT * FROM tl_shares WHERE storage_object_id=? AND CAST(user_id AS INTEGER)=?'
+    ).bind(objectId,ownerId).all<any>();
+    const publicRelease=(linked.results||[]).some((row:any)=>false);
+    let isPublic=false;
+    for(const row of (linked.results||[])){
+      if(await isPublicPlaybackShare(c.env.DB,row)){isPublic=true;break;}
     }
+    const isOwner=viewerId===ownerId;
+    if(!isOwner&&!isPublic) return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
+    if(!isOwner && (linked.results||[]).some((row:any)=>shareKind(row)==='tl3') && !await hasPlaybackBalance(c.env.DB,viewerId)){
+      return c.json({error:'재생에 필요한 TL 잔액이 없습니다.'},402);
+    }
+
     const r=await externalStream(c.env.DB,c.env,objectId,c.req.header('Range')||'');
-    const h=new Headers(r.headers);h.set('Access-Control-Allow-Origin','*');h.set('Access-Control-Expose-Headers','Content-Range,Accept-Ranges,Content-Length');
+    const h=new Headers(r.headers);
+    h.set('Access-Control-Allow-Origin','*');
+    h.set('Access-Control-Expose-Headers','Content-Range,Accept-Ranges,Content-Length');
+    h.set('Cache-Control',isPublic?'no-store':'private, no-store');
     return new Response(r.body,{status:r.status,headers:h});
-  } catch(e:any){return c.json({error:e.message},404);}
+  } catch(e:any){return c.json({error:e.message||'외부 스트림 접근 실패'},404);}
 });
 
 
@@ -2059,28 +2116,25 @@ app.options('/api/audio/:filename',(c)=>new Response(null,{status:204}));
 var API_STREAM_BASE = 'https://api.timelink.digital/api/stream/';
 
 app.get('/api/stream/:shareId/info', async (c) => {
-  const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-  const userId = parseTokenUserId(token);
-  const shareId = c.req.param('shareId');
+  const shareId=c.req.param('shareId');
   try {
-    const share = await c.env.DB.prepare(
-      'SELECT id, title, artist, duration, file_tl, stream_url, plan FROM tl_shares WHERE id=?'
-    ).bind(shareId).first() as any;
-    if (!share) return c.json({ error: '파일 없음' }, 404);
-    const user = userId
-      ? await c.env.DB.prepare(
-          'SELECT tl, COALESCE(tl_p,tl,0) as tl_p, COALESCE(tl_a,0) as tl_a, COALESCE(tl_b,0) as tl_b FROM users WHERE id=?'
-        ).bind(userId).first() as any
-      : null;
-    const totalTL = user ? (Number(user.tl_p||0) + Number(user.tl_a||0) + Number(user.tl_b||0)) : 0;
+    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    if(!share) return c.json({error:'파일 없음'},404);
+    const userId=await playbackUserId(c);
+    const isOwner=userId>0&&Number(share.user_id)===userId;
+    const isPublic=await isPublicPlaybackShare(c.env.DB,share);
+    if(!isOwner&&!isPublic) return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
+    const user=userId?await c.env.DB.prepare(
+      'SELECT COALESCE(tl_p,tl,0) as tl_p,COALESCE(tl_a,0) as tl_a,COALESCE(tl_b,0) as tl_b FROM users WHERE id=?'
+    ).bind(userId).first<any>():null;
+    const totalTL=Number(user?.tl_p||0)+Number(user?.tl_a||0)+Number(user?.tl_b||0);
+    const canPlay=isOwner||shareKind(share)==='mp3'||totalTL>0;
     return c.json({
-      share: { id: share.id, title: share.title, artist: share.artist, duration: share.duration },
-      tl: { total: totalTL, tl_p: user?.tl_p||0, tl_a: user?.tl_a||0, tl_b: user?.tl_b||0 },
-      can_play: totalTL > 0 || !userId,
+      share:{id:share.id,title:share.title,artist:share.artist,duration:share.duration},
+      tl:{total:totalTL,tl_p:user?.tl_p||0,tl_a:user?.tl_a||0,tl_b:user?.tl_b||0},
+      can_play:canPlay
     });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
+  }catch(e:any){return c.json({error:e.message||'재생 정보 조회 실패'},500);}
 });
 
 app.options('/api/stream/:shareId', async (c) => new Response(null, {
@@ -2092,30 +2146,90 @@ app.options('/api/stream/:shareId', async (c) => new Response(null, {
   },
 }));
 
-app.get('/api/stream/:shareId',async(c)=>{const token=(c.req.header('Authorization')||'').replace('Bearer ','')||c.req.query('tk')||'',userId=parseTokenUserId(token),shareId=c.req.param('shareId'),cors:any={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance','Accept-Ranges':'bytes'};try{await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_object_id INTEGER").run().catch(()=>{});
-await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_provider TEXT DEFAULT ''").run().catch(()=>{});
-const share=await c.env.DB.prepare('SELECT id,stream_url,storage_object_id,storage_provider FROM tl_shares WHERE id=?').bind(shareId).first() as any;if(!share)return new Response(JSON.stringify({error:'파일 없음'}),{status:404,headers:cors});
-const _su0=String(share.stream_url||'');
-if(/^https?:\/\//i.test(_su0)&&!_su0.includes('/api/storage/')){
+app.get('/api/stream/:shareId',async(c)=>{
+  const shareId=c.req.param('shareId');
+  const cors:Record<string,string>={
+    'Access-Control-Allow-Origin':'*',
+    'Access-Control-Allow-Methods':'GET, HEAD, OPTIONS',
+    'Access-Control-Allow-Headers':'Range, Content-Type, Authorization',
+    'Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance',
+    'Accept-Ranges':'bytes',
+    'Cache-Control':'private, no-store'
+  };
   try{
-    const _uh:Record<string,string>={}; const _rg=c.req.header('Range')||''; if(_rg)_uh['Range']=_rg;
-    const _up=await fetch(_su0,{headers:_uh});
-    const _h=new Headers(); _h.set('Access-Control-Allow-Origin','*'); _h.set('Access-Control-Expose-Headers','Content-Range, Accept-Ranges, Content-Length');
-    _h.set('Accept-Ranges',_up.headers.get('Accept-Ranges')||'bytes');
-    _h.set('Content-Type',_up.headers.get('Content-Type')||'audio/mpeg');
-    const _cl=_up.headers.get('Content-Length'); if(_cl)_h.set('Content-Length',_cl);
-    const _cr=_up.headers.get('Content-Range'); if(_cr)_h.set('Content-Range',_cr);
-    return new Response(_up.body,{status:_up.status,headers:_h});
-  }catch(e:any){return new Response(JSON.stringify({error:'외부 스트림 실패: '+(e?.message||e)}),{status:502,headers:cors});}
-}
-if(share.storage_object_id){
-  try{
-    const r=await externalStream(c.env.DB,c.env,Number(share.storage_object_id),c.req.header('Range')||'');
-    const h=new Headers(r.headers);h.set('Access-Control-Allow-Origin','*');h.set('Access-Control-Expose-Headers','Content-Range,Accept-Ranges,Content-Length');
-    return new Response(r.body,{status:r.status,headers:h});
-  }catch(e:any){return new Response(JSON.stringify({error:e.message}),{status:502,headers:cors});}
-}
-const su=String(share.stream_url||'');let key='';if(su.includes('/api/storage/'))key=decodeURIComponent(su.split('/api/storage/')[1].split('?')[0]);else if(su.startsWith('tracks/')||su.startsWith('tl/'))key=su;else if(su.startsWith('http')){const fn=su.split('/').pop()?.split('?')[0]||'';key=fn.endsWith('.tl')?'tl/'+fn:'tracks/'+fn;}else key=su;if(!key)return new Response(JSON.stringify({error:'스트림 없음'}),{status:404,headers:cors});const meta=await getD1ObjectMeta(c.env.DB,key);if(!meta)return new Response(JSON.stringify({error:'D1 파일 없음'}),{status:404,headers:cors});const rh=c.req.header('Range')||'';let start=0,end=meta.size-1,status=200;if(rh){const m=rh.match(/bytes=(\\d+)-(\\d*)/);if(!m)return new Response('Invalid Range',{status:416,headers:cors});start=Number(m[1]);end=m[2]!==''?Math.min(Number(m[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;}const bytes=await readD1Range(c.env.DB,key,start,end-start+1),h:any={...cors,'Content-Type':meta.content_type||'audio/mpeg','Content-Length':String(bytes.byteLength),'Cache-Control':'no-store'};if(status===206)h['Content-Range']=`bytes ${start}-${end}/${meta.size}`;return new Response(bytes,{status,headers:h});}catch(e:any){return new Response(JSON.stringify({error:e.message}),{status:500,headers:cors});}});
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_object_id INTEGER").run().catch(()=>{});
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_provider TEXT DEFAULT ''").run().catch(()=>{});
+    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    if(!share) return new Response(JSON.stringify({error:'파일 없음'}),{status:404,headers:cors});
+
+    const userId=await playbackUserId(c);
+    const ownerId=Number(share.user_id||0);
+    const isOwner=userId>0&&userId===ownerId;
+    const isPublic=await isPublicPlaybackShare(c.env.DB,share);
+    if(!isOwner&&!isPublic) return new Response(JSON.stringify({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'}),{status:403,headers:cors});
+    if(!isOwner&&shareKind(share)==='tl3'){
+      if(!userId) return new Response(JSON.stringify({error:'TL3 재생은 로그인이 필요합니다.'}),{status:401,headers:cors});
+      if(!await hasPlaybackBalance(c.env.DB,userId)) return new Response(JSON.stringify({error:'재생에 필요한 TL 잔액이 없습니다.'}),{status:402,headers:cors});
+    }
+
+    const source=String(share.stream_url||'');
+    if(/^https?:\/\//i.test(source)&&!source.includes('/api/storage/')){
+      const headers:Record<string,string>={};
+      const range=c.req.header('Range')||'';
+      if(range) headers.Range=range;
+      const upstream=await fetch(source,{headers});
+      const responseHeaders=new Headers(cors);
+      for(const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges']){
+        const value=upstream.headers.get(name);if(value)responseHeaders.set(name,value);
+      }
+      return new Response(upstream.body,{status:upstream.status,headers:responseHeaders});
+    }
+
+    if(share.storage_object_id){
+      const object=await c.env.DB.prepare(
+        "SELECT id,user_id FROM storage_objects WHERE id=? AND status='active'"
+      ).bind(Number(share.storage_object_id)).first<any>();
+      if(!object||Number(object.user_id)!==ownerId) return new Response(JSON.stringify({error:'저장소 소유권 연결이 올바르지 않습니다.'}),{status:403,headers:cors});
+      const upstream=await externalStream(c.env.DB,c.env,Number(share.storage_object_id),c.req.header('Range')||'');
+      const headers=new Headers(upstream.headers);
+      headers.set('Access-Control-Allow-Origin','*');
+      headers.set('Access-Control-Expose-Headers','Content-Range,Accept-Ranges,Content-Length');
+      headers.set('Cache-Control','private, no-store');
+      return new Response(upstream.body,{status:upstream.status,headers});
+    }
+
+    let key='';
+    if(source.includes('/api/storage/')) key=decodeURIComponent(source.split('/api/storage/')[1].split('?')[0]);
+    else if(source.startsWith('tracks/')||source.startsWith('tl/')) key=source;
+    else if(/^https?:\/\//i.test(source)){
+      const filename=source.split('/').pop()?.split('?')[0]||'';
+      key=filename.endsWith('.tl')?'tl/'+filename:'tracks/'+filename;
+    }else key=source;
+    if(!key) return new Response(JSON.stringify({error:'스트림 없음'}),{status:404,headers:cors});
+
+    const scoped=key.match(/^(?:tracks|tl)\/u(\d+)\//);
+    if(scoped&&Number(scoped[1])!==ownerId) return new Response(JSON.stringify({error:'저장소 소유권 연결이 올바르지 않습니다.'}),{status:403,headers:cors});
+    const meta=await getD1ObjectMeta(c.env.DB,key);
+    if(!meta) return new Response(JSON.stringify({error:'D1 파일 없음'}),{status:404,headers:cors});
+    const range=c.req.header('Range')||'';
+    let start=0,end=meta.size-1,status=200;
+    if(range){
+      const match=range.match(/bytes=(\d+)-(\d*)/);
+      if(!match) return new Response('Invalid Range',{status:416,headers:cors});
+      start=Number(match[1]);
+      end=match[2]!==''?Math.min(Number(match[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);
+      status=206;
+    }
+    if(start<0||start>=meta.size||end<start) return new Response('Range Not Satisfiable',{status:416,headers:cors});
+    const bytes=await readD1Range(c.env.DB,key,start,end-start+1);
+    const headers:Record<string,string>={...cors,'Content-Type':meta.content_type||'audio/mpeg','Content-Length':String(bytes.byteLength)};
+    if(status===206) headers['Content-Range']=`bytes ${start}-${end}/${meta.size}`;
+    return new Response(bytes,{status,headers});
+  }catch(e:any){
+    return new Response(JSON.stringify({error:e?.message||'스트림 처리 실패'}),{status:500,headers:cors});
+  }
+});
+
 // TL 차감 tick
 app.post('/api/stream/:shareId/tick', async (c) => {
   const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
