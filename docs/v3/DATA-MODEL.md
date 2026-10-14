@@ -120,7 +120,7 @@ Constraints: unique `(track_id, version)`; never overwrite extraction provenance
 | created_by | INTEGER FK | |
 | created_at | TEXT | UTC |
 
-Critical invariant: MP3 is a free-to-listen product. A public MP3 Track must reference an available `mp3_audio` asset uploaded only after explicit creator action to an approved storage adapter. D1 stores the reference and metadata, not audio bytes or credentials. A local-only source reference must not be marked streamable. Free MP3 playback does not deduct TL and does not directly issue TL, bonus TL, or TLC.
+Critical invariant: MP3 is a source Asset only, never a free-to-listen Release. `mp3_audio` may be private source material for a Track and is not directly exposed as a public stream. A Track may exist without a source Asset or any Release. The only initial commercial Release type is TL3.
 
 #### `track_rights`
 | Column | Type | Rule |
