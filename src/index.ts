@@ -1533,8 +1533,9 @@ app.post('/api/shares', async (c) => {
   if(!userId) return c.json({error:'인증 사용자 확인 불가'},401);
   const body=await c.req.json<any>().catch(()=>({}));
   if(!body.title) return c.json({error:'title 필요'},400);
-  const userRow=await c.env.DB.prepare('SELECT id,username,email FROM users WHERE id=?').bind(userId).first<any>();
+  const userRow=await c.env.DB.prepare('SELECT id,username,email,is_active,account_forfeited FROM users WHERE id=?').bind(userId).first<any>();
   if(!userRow) return c.json({error:'유저 없음'},404);
+  if(Number(userRow.is_active)===0||Number(userRow.account_forfeited||0)===1)return c.json({error:'비활성 계정은 공유할 수 없습니다.'},403);
 
   await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_shares (
     id TEXT PRIMARY KEY, user_id TEXT, username TEXT, title TEXT NOT NULL, artist TEXT DEFAULT '', album TEXT DEFAULT '',
@@ -1553,17 +1554,26 @@ app.post('/api/shares', async (c) => {
   await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN lyricist TEXT DEFAULT ''").run().catch(()=>{});
   await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN lyrics TEXT DEFAULT ''").run().catch(()=>{});
 
-  const isFreeMp3=String(body.release_mode||'').startsWith('free_mp3');
-  if(isFreeMp3){
-    if(String(body.file_type||'').toLowerCase()!=='audio/mp3') return c.json({error:'무료 공개는 MP3만 가능합니다.'},400);
-    if(body.rights_confirmed!==true) return c.json({error:'창작자 권리 확인이 필요합니다.'},400);
-    if(String(body.release_check||'')==='spotify_match') return c.json({error:'기출시 곡으로 확인되어 무료 공개할 수 없습니다.'},409);
-    const originHash=String(body.origin_hash||'').trim().toLowerCase();
-    if(originHash){
-      const same=await c.env.DB.prepare("SELECT id,title,artist FROM tl_shares WHERE lower(COALESCE(origin_hash,''))=? LIMIT 1").bind(originHash).first<any>().catch(()=>null);
-      if(same) return c.json({error:'동일한 원본 파일이 이미 등록되어 있습니다.',existing:same},409);
-    }
+  const releaseMode=String(body.release_mode||'').toLowerCase();
+  const fileType=String(body.file_type||'').toLowerCase();
+  if(releaseMode.startsWith('free_mp3')||fileType==='audio/mp3'||fileType==='audio/mpeg')
+    return c.json({error:'MP3 원본은 비공개 소스 자산입니다. TL3로 변환한 뒤 공유해 주세요.'},400);
+  if(releaseMode!=='tl3'||fileType!=='audio/tl3')
+    return c.json({error:'정식 TL3 디지털 자산만 공유할 수 있습니다.'},400);
+  if(body.rights_confirmed!==true)return c.json({error:'창작자 권리 확인이 필요합니다.'},400);
+  const streamUrl=String(body.stream_url||'').trim();
+  let storageKey=streamUrl;
+  if(streamUrl.includes('/api/storage/'))storageKey=decodeURIComponent(streamUrl.split('/api/storage/')[1].split('?')[0]);
+  const ownedKey=storageKey.match(/^tracks\\/u(\\d+)\\/[A-Za-z0-9_-]{1,160}\\.tl3$/i);
+  if(!ownedKey||Number(ownedKey[1])!==userId)return c.json({error:'TL3 저장 자산의 소유권을 확인할 수 없습니다.'},403);
+  const stored=await getD1ObjectMeta(c.env.DB,storageKey);
+  if(!stored)return c.json({error:'완료된 TL3 저장 자산을 찾을 수 없습니다.'},404);
+  const originHash=String(body.origin_hash||'').trim().toLowerCase();
+  if(originHash){
+    const same=await c.env.DB.prepare("SELECT id,title,artist FROM tl_shares WHERE lower(COALESCE(origin_hash,''))=? LIMIT 1").bind(originHash).first<any>().catch(()=>null);
+    if(same)return c.json({error:'동일한 원본 자산이 이미 등록되어 있습니다.',existing:same},409);
   }
+  const isFreeMp3=false;
 
   const tlP=Number((await c.env.DB.prepare('SELECT COALESCE(tl_p,tl,0) v FROM users WHERE id=?').bind(userId).first<any>())?.v||0);
   const tlA=Number((await c.env.DB.prepare('SELECT COALESCE(tl_a,0) v FROM users WHERE id=?').bind(userId).first<any>())?.v||0);
