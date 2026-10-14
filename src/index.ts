@@ -75,14 +75,17 @@ async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   const kind=shareKind(share);
   const mode=String(share?.release_mode||'').toLowerCase();
   const contentKind=String(share?.content_kind||'').toLowerCase();
-  // Preserve explicitly declared legacy free-MP3 releases only.
-  if(kind==='mp3'&&(contentKind==='mp3'||mode.startsWith('free_mp3'))) return true;
+  const fileType=String(share?.file_type||'').toLowerCase();
+  // Preserve only explicitly marked legacy free-MP3 releases during migration.
+  if(kind==='mp3'&&contentKind==='mp3'&&mode.startsWith('free_mp3')) return true;
+  // A raw MP3 must never become public merely because a caller labels it TL3.
+  if(fileType==='audio/mpeg'||fileType==='audio/mp3') return false;
   // Never trust release_check here: legacy clients can submit it themselves.
-  // TL3 becomes public only when a matching legacy file has server-side verified/shared state.
+  // TL3 becomes public only when a matching server-verified TL3 file is shared.
   const streamUrl=String(share?.stream_url||'').trim();
   if(streamUrl){
     const file=await db.prepare(
-      "SELECT id FROM tl_files WHERE auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0 AND (file_url=? OR file_url LIKE ?) LIMIT 1"
+      "SELECT id FROM tl_files WHERE LOWER(file_type)='audio/tl3' AND auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0 AND (file_url=? OR file_url LIKE ?) LIMIT 1"
     ).bind(streamUrl, '%'+streamUrl).first().catch(()=>null);
     if(file) return true;
   }
@@ -781,7 +784,7 @@ app.get('/api/storage/:key{.+}', async (c) => {
     }
 
     const fileRows=await c.env.DB.prepare(
-      'SELECT id,user_id,auth_status,shared,revenue_held,file_url,cover_image FROM tl_files WHERE file_url IN (?,?) OR cover_image IN (?,?)'
+      'SELECT id,user_id,auth_status,shared,revenue_held,file_url,cover_image FROM tl_files WHERE LOWER(file_type)='audio/tl3' AND (file_url IN (?,?) OR cover_image IN (?,?))'
     ).bind(canonical,'/api/storage/'+encodeURIComponent(key),canonical,'/api/storage/'+encodeURIComponent(key)).all<any>().catch(()=>({results:[]}));
     for(const file of (fileRows.results||[])){
       const uid=Number(file.user_id||0);if(uid>0) ownerIds.add(uid);
@@ -1603,7 +1606,7 @@ function shareKind(r:any):'mp3'|'tl3'{
   const ck=String(r?.content_kind||'').toLowerCase();
   const rm=String(r?.release_mode||'').toLowerCase();
   const su=String(r?.stream_url||'').toLowerCase();
-  if(rm.startsWith('free_mp3')||ck==='mp3'||ft==='audio/mp3') return 'mp3';
+  if(ft==='audio/mpeg'||ft==='audio/mp3'||rm.startsWith('free_mp3')||ck==='mp3') return 'mp3';
   if(rm==='tl3'||ck==='tl3'||ft==='audio/tl3'||/\.(tl3|tl4|tlg|tlf)(\?|$)/.test(su)) return 'tl3';
   // 표시 없는 옛 곡: TL 가격(file_tl)이 붙어 있으면 TL 콘텐츠, 없으면 무료
   return Number(r?.file_tl||0)>0 ? 'tl3' : 'mp3';
@@ -1835,7 +1838,7 @@ app.get('/api/shares/:id', async (c) => {
   const file=await c.env.DB.prepare('SELECT * FROM tl_files WHERE CAST(id AS TEXT)=?').bind(id).first<any>();
   if(!file)return c.json({error:'not found'},404);
   const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-  const isPublic=file.auth_status==='verified'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
+  const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&file.auth_status==='verified'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
   if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
   return c.json({
     id:String(file.id),user_id:Number(file.user_id||0),username:String(file.username||'User'),
@@ -2265,7 +2268,7 @@ app.get('/api/audio/:filename',async(c)=>{
       if(await isPublicPlaybackShare(c.env.DB,share))isPublic=true;
     }
     const files=await c.env.DB.prepare(
-      "SELECT user_id FROM tl_files WHERE file_url IN (?,?) AND auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0"
+      "SELECT user_id FROM tl_files WHERE file_url IN (?,?) AND LOWER(file_type)='audio/tl3' AND auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0"
     ).bind(canonical,key).all<any>().catch(()=>({results:[]}));
     for(const file of (files.results||[])){owners.add(Number(file.user_id));isPublic=true;}
     const isOwner=viewerId>0&&owners.has(viewerId);
