@@ -34,3 +34,10 @@ TON_*_BACKUP.json
 *.bak-*
 src/*.bak-*
 src/*.broken-*
+
+# Local development credentials and temporary identifiers
+_d1id.txt
+_login.json
+_shareid.txt
+_trackid.txt
+_upload_url.txt
