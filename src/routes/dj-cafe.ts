@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 
 const router = new Hono<{ Bindings: Env }>();
 
 // ── 인증 헬퍼 ──
-async function authUser(c: any): Promise<{id: number, user: any} | null> {
+async function authUser(c: Context<{ Bindings: Env }>): Promise<{id: number, user: any} | null> {
   const auth = (c.req.header('Authorization') || '').replace(/^Bearer\s+/, '').trim();
   if (!auth) return null;
   const payload = await verifyToken(auth, c.env.JWT_SECRET).catch(() => null);
@@ -18,7 +19,7 @@ async function authUser(c: any): Promise<{id: number, user: any} | null> {
 }
 
 // ── 테이블 보장 ──
-async function ensureDJCafeTables(db: any) {
+async function ensureDJCafeTables(db: D1Database) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS dj_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER UNIQUE NOT NULL,
@@ -129,7 +130,7 @@ const DEFAULT_DJ_BONUSES = {
   monthly_30: 5000
 };
 
-async function getDJBonuses(db: any): Promise<any> {
+async function getDJBonuses(db: D1Database): Promise<any> {
   try {
     await db.prepare(`CREATE TABLE IF NOT EXISTS tl_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime('now')))`).run().catch(()=>{});
     const row = await db.prepare("SELECT value FROM tl_settings WHERE key='dj_bonuses'").first<any>();
@@ -535,7 +536,7 @@ router.get('/my-bonuses', async (c) => {
 });
 
 // ── 보너스 지급 헬퍼 ──
-async function grantBonus(env: any, djId: number, sessionId: number, bonusType: string, amount: number, metadata: any): Promise<any> {
+async function grantBonus(env: { DB: D1Database }, djId: number, sessionId: number, bonusType: string, amount: number, metadata: any): Promise<any> {
   try {
     const now = Date.now();
 
@@ -698,8 +699,8 @@ router.get('/broadcast-set', async (c) => {
   await ensureDJCafeTables(c.env.DB);
   const row = await c.env.DB.prepare('SELECT broadcast_set FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
   if (!row) return c.json({ ok: true, set: null });
-  let set = null;
-  try { set = JSON.parse(row.broadcast_set || 'null'); } catch(e) {}
+  let set: { tracks?: string[]; [key: string]: any } | null = null;
+  try { set = JSON.parse(row.broadcast_set || 'null') as { tracks?: string[]; [key: string]: any } | null; } catch(e) {}
   
   // ⭐ tracks 문자열 배열 → track_details 객체 배열로 enrich
   if (set && Array.isArray(set.tracks) && set.tracks.length > 0) {
@@ -707,8 +708,8 @@ router.get('/broadcast-set', async (c) => {
       const placeholders = set.tracks.map(() => '?').join(',');
       const { results } = await c.env.DB.prepare(
         'SELECT id, title, artist, duration, cover_url, stream_url, file_tl, content_kind FROM tl_shares WHERE id IN (' + placeholders + ')'
-      ).bind(...set.tracks).all();
-      const map = {};
+      ).bind(...set.tracks).all<{ id: string; title: string; artist: string; duration: number; cover_url: string | null; stream_url: string | null; file_tl: number; content_kind: string }>();
+      const map: Record<string, any> = {};
       for (const t of (results || [])) map[t.id] = t;
       set.track_details = set.tracks.map(id => map[id] || { id: id, title: id, missing: true });
     } catch(e) {
@@ -902,7 +903,7 @@ const DEFAULT_RATES = {
   dj_self: 0        // DJ 본인
 };
 
-async function getRates(db: any): Promise<any> {
+async function getRates(db: D1Database): Promise<any> {
   try {
     await db.prepare(`CREATE TABLE IF NOT EXISTS tl_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime('now')))`).run().catch(()=>{});
     const row = await db.prepare("SELECT value FROM tl_settings WHERE key='rate_multipliers'").first<any>();
