@@ -23,6 +23,9 @@ db.execute("""INSERT INTO v3_track_metadata_versions
 (id,track_id,version,original_filename,display_title,metadata_source)
 VALUES ('meta-a','track-a',1,'song.mp3','Song','manual')""")
 db.execute("""INSERT INTO v3_track_assets
+(id,track_id,asset_type,storage_provider,storage_object_id,availability_status,created_by,mime_type)
+VALUES ('source-a','track-a','mp3_audio','local_agent','source-object','available',1,'audio/mpeg')""")
+db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,content_hash,size_bytes,mime_type,availability_status,created_by)
 VALUES ('asset-a-source','track-a','mp3_audio','local_agent','source-object','sha256:' || printf('%064d',2),1024,'audio/mpeg','available',1)""")
 db.execute("""INSERT INTO v3_track_assets
@@ -31,9 +34,22 @@ VALUES ('asset-a','track-a','tl3_release_file','local_agent','tl3-object','sha25
 db.execute("""INSERT INTO v3_track_rights
 (id,track_id,claimant_user_id,rights_role,terms_version,attested_at,verification_status)
 VALUES ('rights-a','track-a',1,'composer','creator-attestation-v1',datetime('now'),'declared')""")
+
 db.execute("""INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
 VALUES ('release-a','track-a','TL3',1,'ready_for_review','asset-a','asset-a-source',120)""")
+
+release_columns = ["id","track_id","release_type","version","status","asset_id","price_tl"]
+release_values = ["release-a","track-a","TL3",1,"ready_for_review","asset-a",120]
+release_info = {row["name"] for row in db.execute("PRAGMA table_info(v3_track_releases)")}
+if "source_asset_id" in release_info:
+    release_columns.append("source_asset_id")
+    release_values.append("source-a")
+db.execute(
+    "INSERT INTO v3_track_releases (" + ",".join(release_columns) + ") VALUES (" +
+    ",".join("?" for _ in release_values) + ")",
+    release_values,
+)
 
 def fails(statement, params=()):
     try:
@@ -58,7 +74,7 @@ rights_snapshot_json=json_object('captured_at',datetime('now'),'rights',
  'terms_version',x.terms_version,'attested_at',x.attested_at))
  FROM v3_track_rights x WHERE x.track_id=v3_track_releases.track_id)))
 WHERE id='release-a' AND status='ready_for_review'
-"""
+
 db.execute(snapshot_sql)
 db.execute("UPDATE v3_tracks SET status='active',visibility='public' WHERE id='track-a'")
 db.execute("""INSERT INTO v3_shareplace_entries
@@ -84,6 +100,7 @@ db.execute("""INSERT INTO v3_track_rights
 (id,track_id,claimant_user_id,rights_role,terms_version,attested_at,verification_status)
 VALUES ('rights-b','track-b',1,'composer','creator-attestation-v1',datetime('now'),'verified')""")
 db.execute("""INSERT INTO v3_track_assets
+
 (id,track_id,asset_type,storage_provider,availability_status,created_by)
 VALUES ('asset-b-source','track-b','mp3_audio','local_agent','local_only',1)""")
 db.execute("""INSERT INTO v3_track_assets
@@ -92,6 +109,20 @@ VALUES ('asset-b','track-b','tl3_release_file','local_agent','local_only',1)""")
 db.execute("""INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
 VALUES ('release-b','track-b','TL3',1,'ready_for_review','asset-b','asset-b-source',120)""")
+=======
+(id,track_id,asset_type,storage_provider,availability_status,created_by,mime_type)
+VALUES ('source-b','track-b','mp3_audio','local_agent','local_only',1,'audio/mpeg')""")
+db.execute("""INSERT INTO v3_track_assets
+(id,track_id,asset_type,storage_provider,availability_status,created_by,mime_type)
+VALUES ('asset-b','track-b','tl3_release_file','local_agent','local_only',1,'application/octet-stream')""")
+release_values_b = ["release-b","track-b","TL3",1,"ready_for_review","asset-b",120]
+if "source_asset_id" in release_info:
+    release_values_b.append("source-b")
+db.execute(
+    "INSERT INTO v3_track_releases (" + ",".join(release_columns) + ") VALUES (" +
+    ",".join("?" for _ in release_values_b) + ")",
+    release_values_b,
+)
 fails("UPDATE v3_track_releases SET status='published' WHERE id='release-b'")
 
 print("V3 review validation passed: unverified rights cannot publish; verified rights plus a matching available TL3 Asset permit approval; rights snapshots, SharePlace state, and immutable review audit are enforced.")
