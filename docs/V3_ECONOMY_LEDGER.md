@@ -50,7 +50,7 @@ The asset registry stores precision. Ledger amounts are integer atoms to avoid f
 
 ## Initial migration validation
 
-Migration 0003 was executed against an in-memory SQLite database during authoring. All 9 V3 tables and 7 append-only triggers were created successfully. This is a syntax/schema smoke test only; it is not a live Cloudflare D1 migration and does not prove compatibility with the production database.
+Migration 0003 was executed against an in-memory SQLite database during authoring. All 9 V3 tables and 12 safety triggers were created successfully (10 immutable-record guards and 2 ledger integrity guards). This is a syntax/schema smoke test only; it is not a live Cloudflare D1 migration and does not prove compatibility with the production database.
 
 ## Next implementation sequence
 
