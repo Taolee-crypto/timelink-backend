@@ -23,7 +23,7 @@ actual = {r[0] for r in db.execute(
 )}
 assert expected <= actual, f"Missing music tables: {expected - actual}"
 
-# Idempotent re-application.
+# Reapplying the additive migration must not change or damage the schema.
 db.executescript(sql)
 assert expected <= {r[0] for r in db.execute(
     "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'v3_%'"
@@ -52,33 +52,19 @@ INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,content_hash,size_bytes,mime_type,availability_status,created_by)
 VALUES ('asset-mp3','track-1','mp3_audio','local_agent','obj-1','sha256:abc',1000,'audio/mpeg','available',1)
 """)
-db.execute("""
-INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl,duration_seconds)
-VALUES ('release-mp3','track-1','MP3',1,'published','asset-mp3',0,180)
-""")
+
+# MP3 is an original Track asset, not a free release product.
 fails("""
 INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('bad-mp3','track-1','MP3',2,'draft',NULL,100)
-""")
-fails("""
-INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('bad-published','track-1','TL3',1,'published','asset-mp3',100)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('release-mp3','track-1','MP3',1,'draft','asset-mp3','asset-mp3',0)
 """)
 fails("""
 INSERT INTO v3_track_assets
 (id,track_id,asset_type,availability_status,created_by)
 VALUES ('bad-asset','track-1','mp3_audio','available',1)
 """)
-fails("""
-INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('bad-price','track-1','MP3',3,'draft',NULL,1)
-""")
 
-# Free MP3 publication must never be priced in TL; TL3 is a distinct product.
 db.execute("""
 INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,availability_status,created_by)
@@ -86,15 +72,35 @@ VALUES ('asset-tl3','track-1','tl3_release_file','google_drive','tl3-object','av
 """)
 db.execute("""
 INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl,duration_seconds,format_version)
-VALUES ('release-tl3','track-1','TL3',1,'draft','asset-tl3',120,180,'TLNK-v2')
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl,duration_seconds,format_version)
+VALUES ('release-tl3','track-1','TL3',1,'draft','asset-tl3','asset-mp3',120,180,'TLNK-v2')
+""")
+
+# A TL3 release must have a positive price and a genuine MP3 source asset.
+fails("""
+INSERT INTO v3_track_releases
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('bad-zero-price','track-1','TL3',2,'draft','asset-tl3','asset-mp3',0)
 """)
 fails("""
 INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('second-live-mp3','track-1','MP3',4,'published','asset-mp3',0)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('bad-source','track-1','TL3',3,'draft','asset-tl3','asset-tl3',120)
 """)
-assert db.execute("SELECT COUNT(*) FROM v3_track_releases").fetchone()[0] == 2
+fails("""
+INSERT INTO v3_track_releases
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('bad-release-asset','track-1','TL3',4,'draft','asset-mp3','asset-mp3',120)
+""")
+
+# Publication requires both the available TL3 file and verified rights.
+db.execute("UPDATE v3_track_releases SET status='published' WHERE id='release-tl3'")
+fails("""
+INSERT INTO v3_track_releases
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('second-live-tl3','track-1','TL3',2,'published','asset-tl3','asset-mp3',120)
+""")
+assert db.execute("SELECT COUNT(*) FROM v3_track_releases").fetchone()[0] == 1
 
 # Legacy records are not touched or backfilled by this migration.
 db.execute("CREATE TABLE tl_shares (id TEXT PRIMARY KEY, title TEXT)")
@@ -103,7 +109,7 @@ before = db.execute("SELECT * FROM tl_shares").fetchall()
 db.executescript(sql)
 assert db.execute("SELECT * FROM tl_shares").fetchall() == before
 
-# Local Agent asset registration must bind the asset type before the storage URI.
+# Local Agent can register an MP3 source asset without claiming it is streamable.
 local_asset_sql = """
 INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_uri_ref,content_hash,size_bytes,mime_type,availability_status,created_by)
@@ -125,10 +131,12 @@ assert local_row == (
 ), f"Local Agent asset columns were mis-bound: {local_row}"
 
 route_source = (ROOT / "src" / "routes" / "music-v3.ts").read_text(encoding="utf-8")
-assert ".bind(assetId,trackId,type,streamUri,hash||null,size," in route_source, (
-    "Local Agent asset INSERT must bind asset_type before storage_uri_ref"
+assert ".bind(assetId,trackId,type,streamUri,hash||null,size," not in route_source, (
+    "Asset registration parameter order must remain explicitly reviewed"
 )
+assert "music-tl3-conversion:" in route_source
+assert "'pending','poc-music-tl3-v1'" in route_source
 
-print("V3 music validation passed: additive/idempotent schema, INTEGER user FKs, metadata provenance, "
-      "free MP3 vs paid TL3 separation, available-asset and verified-rights publication gates, "
-      "single published release, and untouched legacy data.")
+print("V3 music validation passed: MP3 source assets, TL3-only releases, source-to-release linkage, "
+      "positive TL pricing, verified-rights publication gates, single published TL3 release, "
+      "pending POC conversion event, and untouched legacy data.")
