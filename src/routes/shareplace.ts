@@ -126,7 +126,7 @@ router.get('/', async (c) => {
       JOIN tl_assets a ON a.asset_id = c.asset_id
       WHERE a.file_id = f.id AND c.status = 'active' LIMIT 1) AS cert_no
     FROM tl_files f JOIN users u ON f.user_id = u.id
-    WHERE LOWER(f.file_type) = 'audio/tl3'
+    WHERE LOWER(f.file_type)='audio/tl3'
       AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0`;
   const params: (string | number)[] = [];
   if (genre) { query += ' AND f.genre = ?'; params.push(genre); }
@@ -159,7 +159,7 @@ router.get('/', async (c) => {
       WHERE EXISTS (
         SELECT 1 FROM tl_files f
         WHERE (f.stream_url=s.stream_url OR f.file_url=s.stream_url)
-          AND LOWER(f.file_type) = 'audio/tl3'
+          AND LOWER(f.file_type)='audio/tl3'
           AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
       )
       ORDER BY s.pulse DESC, s.created_at DESC
@@ -200,7 +200,7 @@ router.get('/contributor-ranking', async (c) => {
       SUM(f.pulse) AS total_pulse, SUM(f.play_count) AS total_plays,
       COUNT(f.id) AS verified_tracks
     FROM tl_files f JOIN users u ON f.user_id = u.id
-    WHERE LOWER(f.file_type) = 'audio/tl3'
+    WHERE LOWER(f.file_type)='audio/tl3'
       AND f.auth_status = 'verified' AND f.shared = 1
       AND COALESCE(f.revenue_held, 0) = 0 ${dateFilter}
     GROUP BY f.user_id ORDER BY total_pulse DESC LIMIT ?`;
