@@ -32,14 +32,7 @@ router.post('/', async (c) => {
     const id='sh_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
     const fileTl=isFree?0:Number(body.file_tl||5000);
     await c.env.DB.prepare("INSERT INTO tl_shares (id,user_id,username,title,artist,album,duration,file_tl,category,file_type,category_type,description,plan,spotify_id,spotify_url,cover_url,preview_url,stream_url,country,content_lang,pulse,created_at,price_per_sec,composer,lyricist,lyrics,release_mode,storage_mode,origin_hash,release_check,content_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(id,String(userId),String(user.username||'User'),title,String(body.artist||''),String(body.album||''),Number(body.duration||0),fileTl,String(body.category||'Music'),String(body.file_type||''),String(body.category_type||''),String(body.description||''),String(body.plan||'FREE'),body.spotify_id||null,body.spotify_url||null,body.cover_url||null,body.preview_url||null,String(body.stream_url||''),String(body.country||'KR'),String(body.content_lang||'ko'),0,Date.now(),Number(body.price_per_sec||1),String(body.composer||''),String(body.lyricist||''),String(body.lyrics||''),String(body.release_mode||''),String(body.storage_mode||''),String(body.origin_hash||''),String(body.release_check||''),isFree?'mp3':'tl3').run();
-    // ⭐ 업로드 POC 기록 (MP3 = 1, TL3 = 3)
-    try {
-      const pocMode = isFree ? 'upload_mp3' : 'upload_tl3';
-      const pocGained = isFree ? 1 : 3;
-      await c.env.DB.prepare(
-        'INSERT INTO poc_logs (user_id, mode, seconds, tl_spent, poc_gained) VALUES (?, ?, 0, 0, ?)'
-      ).bind(userId, pocMode, pocGained).run();
-    } catch(e) { /* POC 실패는 무시 */ }
+    // Registration alone never grants POC. Only verified contribution events may reach the canonical ledger.
     return c.json({ok:true,id,content_kind:isFree?'mp3':'tl3'});
   } catch(e:any) { console.error('SharePlace POST error:',e); return c.json({ok:false,error:e?.message||'?�록 ?�패'},500); }
 });
