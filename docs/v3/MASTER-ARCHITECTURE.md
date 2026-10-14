@@ -26,7 +26,7 @@ The initial authenticated experience is preceded by a branded login/sign-up scre
 6. The original Track identity persists when a TL3 release is added. Track, Asset, and Release are distinct domain concepts.
 7. The creator sets the TL3 price. Listening is charged against actual verified listening time, not button presses, elapsed wall-clock time, or a fixed five-second timer.
 8. **TL is the internal accounting unit. Current policy: 1 second = 1 TL = ₩1.** TL balance, charge, consumption, refunds, creator proceeds, and platform fees are ledgered. Do not revive the obsolete ₩5-per-TL draft.
-9. TL accounting and TLC issuance/mining are separate ledgers and services. MP3 registration alone does not grant TL, TL bonuses, or POC credit.
+9. TL accounting, POC contribution measurement, and TLC issuance/mining are separate accounting domains. A qualifying accepted free-MP3 metadata registration may create one deduplicated POC contribution event under the versioned validation policy, but it never grants TL, TL bonuses, or TLC directly.
 10. POC rewards only validated contribution events under a versioned scoring policy. TLC is a separate TON Jetton-related reward/issuance system; do not couple token issuance to unverified UI events.
 11. Existing user data and functionality must be preserved. V3 migrations are additive and reversible where practical. No destructive table reset or blanket rewrite.
 12. No production deployment, PR merge, destructive migration, or secret rotation is implied by architecture approval. These remain separately controlled operations.
@@ -173,7 +173,7 @@ The existing five-second polling/advance timer is legacy behavior, not the V3 bi
 
 ### POC and TLC
 - POC is a contribution measurement and validation mechanism, not a currency balance.
-- MP3 registration alone has zero POC/TL/TLC reward.
+- A qualifying accepted free-MP3 metadata registration may contribute to POC only under a versioned validation policy; it never grants TL, TL bonuses, or TLC directly. Duplicate, unverified, or rejected registrations do not count.
 - POC policy is versioned; source events are deduplicated and auditable.
 - TLC issuance is a separate process, gated by validated POC batches and token policy.
 - TON transaction submission, confirmation, failure, and reconciliation are separate states.
