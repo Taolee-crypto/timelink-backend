@@ -58,6 +58,7 @@ export interface TL3Header {
   fid: string;
   salt: string;
   lic_id: string;
+  share_id?: string;
   token_latest: string;
   mp3_tokens?: string[];   // 스파인 코드: T_0 ~ T_N 전체
   ts: string;
@@ -202,7 +203,8 @@ export interface BuildFromMp3Result {
 
 export async function buildTL3V3FromMp3(input: BuildFromMp3Input): Promise<BuildFromMp3Result> {
   const { mp3Raw, segments } = input;
-  const totalSec = segments.length;
+  const segmentCount = segments.length;
+  const durationSeconds = Math.max(1, Math.round(segments.reduce((total, segment) => total + segment.durationMs, 0) / 1000));
 
   // 라이선스 (서버 유도)
   const lic = await deriveLicenseBytes(input.masterSecret, input.shareId);
@@ -222,7 +224,7 @@ export async function buildTL3V3FromMp3(input: BuildFromMp3Input): Promise<Build
   const mp3Tokens: string[] = [hex(mp3T0)];
   let T_mp3 = mp3T0;
 
-  for (let n = 1; n <= totalSec; n++) {
+  for (let n = 1; n <= segmentCount; n++) {
     const seg = segments[n - 1];
     const segBytes = mp3Raw.subarray(seg.offset, seg.offset + seg.length);
 
@@ -248,16 +250,17 @@ export async function buildTL3V3FromMp3(input: BuildFromMp3Input): Promise<Build
     name: input.name,
     genre: input.genre,
     bpm: input.bpm,
-    dur_sec: totalSec,
+    dur_sec: durationSeconds,
     fs: 0,         // mp3 프레임 방식이라 fs/ch는 참고용
     ch: 0,
-    mp3: { N: totalSec, seg_bytes: 0, last_bytes: mp3Enc[mp3Enc.length - 1].length, first_offset: 0 },
+    mp3: { N: segmentCount, seg_bytes: 0, last_bytes: mp3Enc[mp3Enc.length - 1].length, first_offset: 0 },
     lp: null,
     hash_mp3: hex(hashMp3),
     hash_lp: null,
     fid: hex(fid),
     salt: hex(salt),
     lic_id: input.licId || 'k_2026_01',
+    share_id: input.shareId,
     token_latest: hex(T_mp3),
     mp3_tokens: mp3Tokens,   // 스파인 코드 전체
     ts: new Date().toISOString(),
