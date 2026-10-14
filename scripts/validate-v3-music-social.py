@@ -42,21 +42,22 @@ VALUES('asset-public','track-public','mp3_audio','local_agent',
 'available',1,'audio/mpeg')""")
 db.execute("""INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES('release-public','track-public','MP3',1,'published','asset-public',0)""")
+VALUES('release-public','track-public','TL3',1,'published','asset-tl3','asset-public',120)""")
 db.execute("""INSERT INTO v3_shareplace_entries
 (id,track_id,owner_user_id,category,visibility,published_at)
 VALUES('share-public','track-public',1,'Music','public',datetime('now'))""")
 visible = db.execute("""
-SELECT t.id,m.display_title,a.storage_uri_ref
+SELECT t.id,m.display_title,a.asset_type
 FROM v3_tracks t
 JOIN v3_shareplace_entries s ON s.track_id=t.id AND s.visibility='public'
-JOIN v3_track_releases r ON r.track_id=t.id AND r.release_type='MP3' AND r.status='published'
+JOIN v3_track_releases r ON r.track_id=t.id AND r.release_type='TL3' AND r.status='published'
 JOIN v3_track_assets a ON a.id=r.asset_id AND a.availability_status='available'
- AND a.asset_type='mp3_audio' AND a.storage_uri_ref IS NOT NULL
+ AND a.asset_type='tl3_release_file'
 JOIN v3_track_metadata_versions m ON m.track_id=t.id
 WHERE t.id=? AND t.status='active' AND t.visibility='public'
 """,('track-public',)).fetchone()
 assert visible and visible["display_title"] == "Public Song"
+assert visible["asset_type"] == "tl3_release_file"
 
 # MP3 with only a private storage object cannot be published as free public audio.
 db.execute("INSERT INTO v3_tracks(id,owner_user_id) VALUES('track-private',1)")
