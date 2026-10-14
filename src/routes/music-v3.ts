@@ -80,7 +80,7 @@ router.get('/tracks/:id', async (c) => {
     c.env.DB.prepare('SELECT id,version,original_filename,extracted_title,extracted_artist,extracted_album,verified_title,verified_artist,verified_album,display_title,metadata_source,metadata_status,confirmed_at,created_at FROM v3_track_metadata_versions WHERE track_id=? ORDER BY version DESC LIMIT 20').bind(trackId).all(),
     c.env.DB.prepare('SELECT id,asset_type,storage_provider,content_hash,size_bytes,mime_type,availability_status,created_at FROM v3_track_assets WHERE track_id=? ORDER BY created_at DESC').bind(trackId).all(),
     c.env.DB.prepare('SELECT id,claimant_user_id,rights_role,ownership_share_bps,territory,verification_status,terms_version,attested_at,created_at FROM v3_track_rights WHERE track_id=? ORDER BY created_at').bind(trackId).all(),
-    c.env.DB.prepare('SELECT id,release_type,version,status,asset_id,price_tl,duration_seconds,format_version,published_at,created_at FROM v3_track_releases WHERE track_id=? ORDER BY created_at DESC').bind(trackId).all(),
+    c.env.DB.prepare('SELECT id,release_type,version,status,asset_id,source_asset_id,price_tl,duration_seconds,format_version,published_at,created_at FROM v3_track_releases WHERE track_id=? ORDER BY created_at DESC').bind(trackId).all(),
     c.env.DB.prepare('SELECT id,category,visibility,featured_state,published_at FROM v3_shareplace_entries WHERE track_id=?').bind(trackId).first()
   ]);
   return c.json({ ok:true, track, metadata:metadata.results||[], assets:assets.results||[], rights:rights.results||[], releases:releases.results||[], shareplace:shareplace||null });
@@ -218,7 +218,7 @@ router.post('/tracks/:id/conversions/tl3/complete', async (c) => {
     c.env.DB.prepare("SELECT id,asset_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?").bind(sourceAssetId,trackId).first<any>(),
     c.env.DB.prepare("SELECT id,asset_type,storage_provider,content_hash,size_bytes,mime_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?").bind(outputAssetId,trackId).first<any>()
   ]);
-  if(!source||source.asset_type!=='mp3_audio') return c.json({ok:false,error:'The source must be an MP3 source Asset belonging to this Track'},422);
+  if(!source||source.asset_type!=='mp3_audio'||!['available','local_only'].includes(String(source.availability_status))) return c.json({ok:false,error:'The source must be an available MP3 source Asset belonging to this Track'},422);
   if(!output||output.asset_type!=='tl3_release_file'||output.availability_status!=='available') return c.json({ok:false,error:'The completed TL3 output must be an available TL3 Asset belonging to this Track'},422);
   const hash=String(output.content_hash||'');
   const size=Number(output.size_bytes||0);
@@ -262,17 +262,31 @@ router.post('/tracks/:id/releases', async (c) => {
   const price=Number(body.price_tl);
   if(!Number.isSafeInteger(price)||price<=0) return c.json({ok:false,error:'TL3 price must be a positive integer'},422);
   const assetId=String(body.asset_id||'');
-  const asset=await c.env.DB.prepare('SELECT id,asset_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?').bind(assetId,trackId).first<any>();
+  const sourceAssetId=String(body.source_asset_id||'');
+  const [asset,sourceAsset]=await Promise.all([
+    c.env.DB.prepare('SELECT id,asset_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?').bind(assetId,trackId).first<any>(),
+    c.env.DB.prepare('SELECT id,asset_type,availability_status FROM v3_track_assets WHERE id=? AND track_id=?').bind(sourceAssetId,trackId).first<any>()
+  ]);
   if(!asset || asset.asset_type!=='tl3_release_file' || asset.availability_status!=='available') return c.json({ok:false,error:'A matching available TL3 conversion Asset is required before creating a Release'},422);
+  if(!sourceAsset || sourceAsset.asset_type!=='mp3_audio' || !['available','local_only'].includes(String(sourceAsset.availability_status))) return c.json({ok:false,error:'The original MP3 source Asset is required'},422);
+  if(!await hasPocSchema(c.env.DB)) return c.json({ok:false,code:'V3_POC_NOT_INITIALIZED',error:'V3 POC migration must be applied before creating a TL3 Release'},503);
+  const conversion=await c.env.DB.prepare(`
+    SELECT id FROM v3_poc_events
+    WHERE source='music_v3' AND event_type='tl3_conversion_completed'
+      AND source_reference=? AND verification_status IN ('pending','verified')
+      AND json_extract(metadata_json,'$.source_asset_id')=?
+    LIMIT 1
+  `).bind(assetId,sourceAssetId).first();
+  if(!conversion) return c.json({ok:false,code:'TL3_CONVERSION_EVIDENCE_REQUIRED',error:'Confirm the MP3-to-TL3 conversion before creating a Release'},409);
   const latest=await c.env.DB.prepare('SELECT COALESCE(MAX(version),0) AS version FROM v3_track_releases WHERE track_id=? AND release_type=?').bind(trackId,type).first<any>();
   const version=Number(latest?.version||0)+1,id=ID();
   const rights=await c.env.DB.prepare("SELECT id,claimant_user_id,rights_role,ownership_share_bps,verification_status,terms_version,attested_at FROM v3_track_rights WHERE track_id=? ORDER BY created_at").bind(trackId).all();
   const snapshot=JSON.stringify({captured_at:new Date().toISOString(),rights:rights.results||[]});
   await c.env.DB.prepare(`
-    INSERT INTO v3_track_releases(id,track_id,release_type,version,status,asset_id,rights_snapshot_json,price_tl,duration_seconds,format_version)
-    VALUES(?,?,?,?,'draft',?,?,?,?,?)
-  `).bind(id,trackId,type,version,assetId,snapshot,price,Number(body.duration_seconds)||null,String(body.format_version||'').slice(0,32)||null).run();
-  return c.json({ok:true,release_id:id,release_type:type,version,status:'draft',rights_verified:(rights.results||[]).some((r:any)=>r.verification_status==='verified')},201);
+    INSERT INTO v3_track_releases(id,track_id,release_type,version,status,asset_id,source_asset_id,rights_snapshot_json,price_tl,duration_seconds,format_version)
+    VALUES(?,?,?,?,'draft',?,?,?,?,?,?)
+  `).bind(id,trackId,type,version,assetId,sourceAssetId,snapshot,price,Number(body.duration_seconds)||null,String(body.format_version||'').slice(0,32)||null).run();
+  return c.json({ok:true,release_id:id,release_type:type,version,status:'draft',source_asset_id:sourceAssetId,rights_verified:(rights.results||[]).some((r:any)=>r.verification_status==='verified')},201);
 });
 
 // POST /tracks/:id/releases/:releaseId/submit — queue for human rights/release review
