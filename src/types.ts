@@ -10,6 +10,7 @@ export interface Env {
   ONEDRIVE_CLIENT_SECRET?: string;
   ONEDRIVE_REDIRECT_URI?: string;
   STORAGE_ENCRYPTION_KEY?: string;
+  TL3_MASTER_SECRET?: string;
 }
 
 export interface JWTPayload {
