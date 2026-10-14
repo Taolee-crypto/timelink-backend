@@ -3622,81 +3622,118 @@ app.options('/api/stream/:shareId', async (c) => new Response(null, {
   },
 }));
 
-app.get('/api/stream/:shareId',async(c)=>{const token=(c.req.header('Authorization')||'').replace('Bearer ','')||c.req.query('tk')||'',userId=parseTokenUserId(token),shareId=c.req.param('shareId'),cors:any={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance','Accept-Ranges':'bytes'};try{const share=await c.env.DB.prepare('SELECT id,stream_url,storage_object_id,storage_provider FROM tl_shares WHERE id=?').bind(shareId).first() as any;if(!share)return new Response(JSON.stringify({error:'파일 없음'}),{status:404,headers:cors});
+app.get('/api/stream/:shareId', async (c) => {
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '').trim() || c.req.query('tk') || '';
+  const userId = parseTokenUserId(token);
+  const shareId = c.req.param('shareId');
+  const cors: Record<string, string> = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+    'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization',
+    'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, X-TL-Balance',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'private, no-store'
+  };
 
-if(share.storage_object_id){
+  try {
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_object_id INTEGER").run().catch(() => {});
+    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_provider TEXT DEFAULT ''").run().catch(() => {});
+    const share = await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id = ?').bind(shareId).first<any>();
+    if (!share) return new Response(JSON.stringify({ error: '파일 없음' }), { status: 404, headers: cors });
 
-  try{
-    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_object_id INTEGER").run().catch(()=>{});
-    await c.env.DB.prepare("ALTER TABLE tl_shares ADD COLUMN storage_provider TEXT DEFAULT ''").run().catch(()=>{});
-    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    if(!share) return new Response(JSON.stringify({error:'파일 없음'}),{status:404,headers:cors});
-
-    const userId=await playbackUserId(c);
-    const ownerId=Number(share.user_id||0);
-    const isOwner=userId>0&&userId===ownerId;
-    const isPublic=await isPublicPlaybackShare(c.env.DB,share);
-    if(!isOwner&&!isPublic) return new Response(JSON.stringify({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'}),{status:403,headers:cors});
-    if(!isOwner&&shareKind(share)==='tl3'){
-      if(!userId) return new Response(JSON.stringify({error:'TL3 재생은 로그인이 필요합니다.'}),{status:401,headers:cors});
-      if(!await hasPlaybackBalance(c.env.DB,userId)) return new Response(JSON.stringify({error:'재생에 필요한 TL 잔액이 없습니다.'}),{status:402,headers:cors});
+    const ownerId = Number(share.user_id || 0);
+    const isOwner = userId > 0 && userId === ownerId;
+    const isPublic = await isPublicPlaybackShare(c.env.DB, share);
+    if (!isOwner && !isPublic) {
+      return new Response(JSON.stringify({ error: '공개 승인되지 않았거나 접근 권한이 없습니다.' }), { status: 403, headers: cors });
     }
-
-    const source=String(share.stream_url||'');
-    if(/^https?:\/\//i.test(source)&&!source.includes('/api/storage/')){
-      const headers:Record<string,string>={};
-      const range=c.req.header('Range')||'';
-      if(range) headers.Range=range;
-      const upstream=await fetch(source,{headers});
-      const responseHeaders=new Headers(cors);
-      for(const name of ['Content-Type','Content-Length','Content-Range','Accept-Ranges']){
-        const value=upstream.headers.get(name);if(value)responseHeaders.set(name,value);
+    if (!isOwner && shareKind(share) === 'tl3') {
+      if (!userId) return new Response(JSON.stringify({ error: 'TL3 재생은 로그인이 필요합니다.' }), { status: 401, headers: cors });
+      if (!await hasPlaybackBalance(c.env.DB, userId)) {
+        return new Response(JSON.stringify({ error: '재생에 필요한 TL 잔액이 없습니다.' }), { status: 402, headers: cors });
       }
-      return new Response(upstream.body,{status:upstream.status,headers:responseHeaders});
     }
 
-    if(share.storage_object_id){
-      const object=await c.env.DB.prepare(
-        "SELECT id,user_id FROM storage_objects WHERE id=? AND status='active'"
+    const source = String(share.stream_url || '');
+    if (/^https?:\/\//i.test(source) && !source.includes('/api/storage/')) {
+      const headers: Record<string, string> = {};
+      const range = c.req.header('Range') || '';
+      if (range) headers.Range = range;
+      let isAgentHost = false;
+      try { isAgentHost = new URL(source).hostname.toLowerCase() === 'agent.timelink.digital'; } catch {}
+      if (isAgentHost && c.env.CF_ACCESS_CLIENT_ID && c.env.CF_ACCESS_CLIENT_SECRET) {
+        headers['CF-Access-Client-Id'] = c.env.CF_ACCESS_CLIENT_ID;
+        headers['CF-Access-Client-Secret'] = c.env.CF_ACCESS_CLIENT_SECRET;
+      }
+      const upstream = await fetch(source, { headers });
+      const contentType = upstream.headers.get('Content-Type') || '';
+      if (upstream.status === 302 || upstream.status === 401 || upstream.status === 403 || /text\/html/i.test(contentType)) {
+        return new Response(JSON.stringify({ error: '원본 파일 접근 인증 실패 (Cloudflare Access 확인 필요)' }), {
+          status: 502, headers: { ...cors, 'Content-Type': 'application/json' }
+        });
+      }
+      const responseHeaders = new Headers(cors);
+      for (const name of ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges']) {
+        const value = upstream.headers.get(name);
+        if (value) responseHeaders.set(name, value);
+      }
+      return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+    }
+
+    if (share.storage_object_id) {
+      const object = await c.env.DB.prepare(
+        "SELECT id, user_id FROM storage_objects WHERE id = ? AND status = 'active'"
       ).bind(Number(share.storage_object_id)).first<any>();
-      if(!object||Number(object.user_id)!==ownerId) return new Response(JSON.stringify({error:'저장소 소유권 연결이 올바르지 않습니다.'}),{status:403,headers:cors});
-      const upstream=await externalStream(c.env.DB,c.env,Number(share.storage_object_id),c.req.header('Range')||'');
-      const headers=new Headers(upstream.headers);
-      headers.set('Access-Control-Allow-Origin','*');
-      headers.set('Access-Control-Expose-Headers','Content-Range,Accept-Ranges,Content-Length');
-      headers.set('Cache-Control','private, no-store');
-      return new Response(upstream.body,{status:upstream.status,headers});
+      if (!object || Number(object.user_id) !== ownerId) {
+        return new Response(JSON.stringify({ error: '저장소 소유권 연결이 올바르지 않습니다.' }), { status: 403, headers: cors });
+      }
+      const upstream = await externalStream(c.env.DB, c.env, Number(share.storage_object_id), c.req.header('Range') || '');
+      const headers = new Headers(upstream.headers);
+      headers.set('Access-Control-Allow-Origin', '*');
+      headers.set('Access-Control-Expose-Headers', 'Content-Range,Accept-Ranges,Content-Length');
+      headers.set('Cache-Control', 'private, no-store');
+      return new Response(upstream.body, { status: upstream.status, headers });
     }
 
-    let key='';
-    if(source.includes('/api/storage/')) key=decodeURIComponent(source.split('/api/storage/')[1].split('?')[0]);
-    else if(source.startsWith('tracks/')||source.startsWith('tl/')) key=source;
-    else if(/^https?:\/\//i.test(source)){
-      const filename=source.split('/').pop()?.split('?')[0]||'';
-      key=filename.endsWith('.tl')?'tl/'+filename:'tracks/'+filename;
-    }else key=source;
-    if(!key) return new Response(JSON.stringify({error:'스트림 없음'}),{status:404,headers:cors});
+    let key = '';
+    if (source.includes('/api/storage/')) key = decodeURIComponent(source.split('/api/storage/')[1].split('?')[0]);
+    else if (source.startsWith('tracks/') || source.startsWith('tl/')) key = source;
+    else if (/^https?:\/\//i.test(source)) {
+      const filename = source.split('/').pop()?.split('?')[0] || '';
+      key = filename.endsWith('.tl') ? 'tl/' + filename : 'tracks/' + filename;
+    } else key = source;
+    if (!key) return new Response(JSON.stringify({ error: '스트림 없음' }), { status: 404, headers: cors });
 
-    const scoped=key.match(/^(?:tracks|tl)\/u(\d+)\//);
-    if(scoped&&Number(scoped[1])!==ownerId) return new Response(JSON.stringify({error:'저장소 소유권 연결이 올바르지 않습니다.'}),{status:403,headers:cors});
-    const meta=await getD1ObjectMeta(c.env.DB,key);
-    if(!meta) return new Response(JSON.stringify({error:'D1 파일 없음'}),{status:404,headers:cors});
-    const range=c.req.header('Range')||'';
-    let start=0,end=meta.size-1,status=200;
-    if(range){
-      const match=range.match(/bytes=(\d+)-(\d*)/);
-      if(!match) return new Response('Invalid Range',{status:416,headers:cors});
-      start=Number(match[1]);
-      end=match[2]!==''?Math.min(Number(match[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);
-      status=206;
+    const scoped = key.match(/^(?:tracks|tl)\/u(\d+)\//);
+    if (scoped && Number(scoped[1]) !== ownerId) {
+      return new Response(JSON.stringify({ error: '저장소 소유권 연결이 올바르지 않습니다.' }), { status: 403, headers: cors });
     }
-    if(start<0||start>=meta.size||end<start) return new Response('Range Not Satisfiable',{status:416,headers:cors});
-    const bytes=await readD1Range(c.env.DB,key,start,end-start+1);
-    const headers:Record<string,string>={...cors,'Content-Type':meta.content_type||'audio/mpeg','Content-Length':String(bytes.byteLength)};
-    if(status===206) headers['Content-Range']=`bytes ${start}-${end}/${meta.size}`;
-    return new Response(bytes,{status,headers});
-  }catch(e:any){
-    return new Response(JSON.stringify({error:e?.message||'스트림 처리 실패'}),{status:500,headers:cors});
+    const meta = await getD1ObjectMeta(c.env.DB, key);
+    if (!meta) return new Response(JSON.stringify({ error: 'D1 파일 없음' }), { status: 404, headers: cors });
+    const range = c.req.header('Range') || '';
+    let start = 0;
+    let end = meta.size - 1;
+    let status = 200;
+    if (range) {
+      const match = range.match(/bytes=(\d+)-(\d*)/);
+      if (!match) return new Response('Invalid Range', { status: 416, headers: cors });
+      start = Number(match[1]);
+      end = match[2] !== '' ? Math.min(Number(match[2]), meta.size - 1) : Math.min(start + D1_CHUNK_SIZE - 1, meta.size - 1);
+      status = 206;
+    }
+    if (start < 0 || start >= meta.size || end < start) {
+      return new Response('Range Not Satisfiable', { status: 416, headers: cors });
+    }
+    const bytes = await readD1Range(c.env.DB, key, start, end - start + 1);
+    const responseHeaders: Record<string, string> = {
+      ...cors,
+      'Content-Type': meta.content_type || 'audio/mpeg',
+      'Content-Length': String(bytes.byteLength)
+    };
+    if (status === 206) responseHeaders['Content-Range'] = 'bytes ' + start + '-' + end + '/' + meta.size;
+    return new Response(bytes, { status, headers: responseHeaders });
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e?.message || '스트림 처리 실패' }), { status: 500, headers: cors });
   }
 });
 
