@@ -69,7 +69,7 @@ router.post('/tracks', async (c) => {
 router.get('/tracks/:id', async (c) => {
   const unavailable = await ready(c); if (unavailable) return unavailable;
   const user = c.get('user'), trackId = c.req.param('id');
-  const track = await ownedTrack(c.env.DB,user.id,trackId);
+  const track = await ownedTrack(c.env.DB,trackId,user.id);
   if (!track) return c.json({ ok: false, error: 'Track not found' }, 404);
   const [metadata,assets,rights,releases,shareplace] = await Promise.all([
     c.env.DB.prepare('SELECT id,version,original_filename,extracted_title,extracted_artist,extracted_album,verified_title,verified_artist,verified_album,display_title,metadata_source,metadata_status,confirmed_at,created_at FROM v3_track_metadata_versions WHERE track_id=? ORDER BY version DESC LIMIT 20').bind(trackId).all(),
@@ -85,7 +85,7 @@ router.get('/tracks/:id', async (c) => {
 router.patch('/tracks/:id/metadata', async (c) => {
   const unavailable = await ready(c); if (unavailable) return unavailable;
   const user=c.get('user'), trackId=c.req.param('id');
-  if (!await ownedTrack(c.env.DB,user.id,trackId)) return c.json({ok:false,error:'Track not found'},404);
+  if (!await ownedTrack(c.env.DB,trackId,user.id)) return c.json({ok:false,error:'Track not found'},404);
   let body:any; try { body=await c.req.json(); } catch { return c.json({ok:false,error:'Invalid JSON body'},400); }
   const title=String(body.title||'').trim();
   if (!title || title.length>MAX_TITLE) return c.json({ok:false,error:'title is required (max 240 characters)'},422);
@@ -106,7 +106,7 @@ router.patch('/tracks/:id/metadata', async (c) => {
 router.post('/tracks/:id/assets', async (c) => {
   const unavailable=await ready(c); if(unavailable) return unavailable;
   const user=c.get('user'),trackId=c.req.param('id');
-  if(!await ownedTrack(c.env.DB,user.id,trackId)) return c.json({ok:false,error:'Track not found'},404);
+  if(!await ownedTrack(c.env.DB,trackId,user.id)) return c.json({ok:false,error:'Track not found'},404);
   let body:any; try {body=await c.req.json();} catch {return c.json({ok:false,error:'Invalid JSON body'},400);}
   const type=String(body.asset_type||'');
   if(!assetTypes.has(type)) return c.json({ok:false,error:'Unsupported asset_type'},422);
@@ -134,7 +134,7 @@ router.post('/tracks/:id/assets', async (c) => {
 router.post('/tracks/:id/assets/local', async (c) => {
   const unavailable=await ready(c); if(unavailable) return unavailable;
   const user=c.get('user'),trackId=c.req.param('id');
-  if(!await ownedTrack(c.env.DB,user.id,trackId)) return c.json({ok:false,error:'Track not found'},404);
+  if(!await ownedTrack(c.env.DB,trackId,user.id)) return c.json({ok:false,error:'Track not found'},404);
   let body:any; try {body=await c.req.json();} catch {return c.json({ok:false,error:'Invalid JSON body'},400);}
   const type=String(body.asset_type||'');
   if(!['mp3_audio','tl3_release_file','cover_art','other'].includes(type)) return c.json({ok:false,error:'Unsupported local asset_type'},422);
@@ -170,7 +170,7 @@ router.post('/tracks/:id/assets/local', async (c) => {
 router.post('/tracks/:id/rights', async (c) => {
   const unavailable=await ready(c); if(unavailable) return unavailable;
   const user=c.get('user'),trackId=c.req.param('id');
-  if(!await ownedTrack(c.env.DB,user.id,trackId)) return c.json({ok:false,error:'Track not found'},404);
+  if(!await ownedTrack(c.env.DB,trackId,user.id)) return c.json({ok:false,error:'Track not found'},404);
   let body:any; try {body=await c.req.json();} catch {return c.json({ok:false,error:'Invalid JSON body'},400);}
   const role=String(body.rights_role||'');
   const roles=new Set(['author','composer','lyricist','performer','producer','label','administrator','other']);
@@ -191,7 +191,7 @@ router.post('/tracks/:id/rights', async (c) => {
 router.post('/tracks/:id/releases', async (c) => {
   const unavailable=await ready(c); if(unavailable) return unavailable;
   const user=c.get('user'),trackId=c.req.param('id');
-  if(!await ownedTrack(c.env.DB,user.id,trackId)) return c.json({ok:false,error:'Track not found'},404);
+  if(!await ownedTrack(c.env.DB,trackId,user.id)) return c.json({ok:false,error:'Track not found'},404);
   let body:any; try {body=await c.req.json();} catch {return c.json({ok:false,error:'Invalid JSON body'},400);}
   const type=String(body.release_type||'');
   if(type!=='MP3' && type!=='TL3') return c.json({ok:false,error:'release_type must be MP3 or TL3'},422);
@@ -216,7 +216,7 @@ router.post('/tracks/:id/releases', async (c) => {
 router.post('/tracks/:id/releases/:releaseId/submit', async (c) => {
   const unavailable=await ready(c); if(unavailable) return unavailable;
   const user=c.get('user'),trackId=c.req.param('id'),releaseId=c.req.param('releaseId');
-  if(!await ownedTrack(c.env.DB,user.id,trackId)) return c.json({ok:false,error:'Track not found'},404);
+  if(!await ownedTrack(c.env.DB,trackId,user.id)) return c.json({ok:false,error:'Track not found'},404);
   const release=await c.env.DB.prepare("SELECT id,status FROM v3_track_releases WHERE id=? AND track_id=?").bind(releaseId,trackId).first<any>();
   if(!release) return c.json({ok:false,error:'Release not found'},404);
   if(release.status!=='draft') return c.json({ok:false,error:'Only draft releases can be submitted'},409);
