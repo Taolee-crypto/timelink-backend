@@ -130,6 +130,26 @@ router.post('/tracks/:id/assets', async (c) => {
   return c.json({ok:true,asset_id:assetId,asset_type:type,availability_status:'available'},201);
 });
 
+// POST /tracks/:id/assets/local — register a creator-PC source without claiming it is streamable
+router.post('/tracks/:id/assets/local', async (c) => {
+  const unavailable=await ready(c); if(unavailable) return unavailable;
+  const user=c.get('user'),trackId=c.req.param('id');
+  if(!await ownedTrack(c.env.DB,user.id,trackId)) return c.json({ok:false,error:'Track not found'},404);
+  let body:any; try {body=await c.req.json();} catch {return c.json({ok:false,error:'Invalid JSON body'},400);}
+  const type=String(body.asset_type||'');
+  if(!['mp3_audio','tl3_release_file','cover_art','other'].includes(type)) return c.json({ok:false,error:'Unsupported local asset_type'},422);
+  const hash=String(body.content_hash||'');
+  if(hash && !/^(sha256:)?[a-f0-9]{64}$/i.test(hash)) return c.json({ok:false,error:'content_hash must be a SHA-256 hex digest'},422);
+  const size=Number(body.size_bytes||0);
+  if(!Number.isSafeInteger(size)||size<0) return c.json({ok:false,error:'size_bytes must be a non-negative integer'},422);
+  const assetId=ID();
+  await c.env.DB.prepare(`
+    INSERT INTO v3_track_assets(id,track_id,asset_type,storage_provider,content_hash,size_bytes,mime_type,availability_status,created_by)
+    VALUES(?,?,?,'local_agent',?,?,?,'local_only',?)
+  `).bind(assetId,trackId,type,hash||null,size,String(body.mime_type||'').slice(0,120)||null,user.id).run();
+  return c.json({ok:true,asset_id:assetId,asset_type:type,availability_status:'local_only',streamable:false},201);
+});
+
 // POST /tracks/:id/rights — creator's rights declaration; never self-verifies
 router.post('/tracks/:id/rights', async (c) => {
   const unavailable=await ready(c); if(unavailable) return unavailable;
