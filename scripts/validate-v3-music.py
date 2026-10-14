@@ -131,8 +131,8 @@ assert local_row == (
 ), f"Local Agent asset columns were mis-bound: {local_row}"
 
 route_source = (ROOT / "src" / "routes" / "music-v3.ts").read_text(encoding="utf-8")
-assert ".bind(assetId,trackId,type,streamUri,hash||null,size," not in route_source, (
-    "Asset registration parameter order must remain explicitly reviewed"
+assert ".bind(assetId,trackId,type,streamUri,hash||null,size," in route_source, (
+    "Local Agent asset INSERT must bind asset_type before storage_uri_ref"
 )
 assert "music-tl3-conversion:" in route_source
 assert "'pending','poc-music-tl3-v1'" in route_source
