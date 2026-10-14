@@ -14,7 +14,7 @@ This document defines the normalized V3 relational model. It is a target design,
 - Soft-delete user content where moderation, financial history, or auditability requires it. Ledger and audit records are append-only.
 - Use foreign keys where D1's enforcement and migration strategy permit; also enforce relationships in service transactions.
 - JSON is for bounded snapshots/metadata payloads, not canonical many-to-many relationships or financial state.
-- Store only metadata and a content hash for MP3 source registration. No MP3 source bytes, source-file URL, or server-side audio object is created by registration.
+- Store metadata and content hash separately from MP3 audio bytes. A creator may explicitly upload MP3 audio to an approved storage adapter for free streaming; D1 stores only provider/object references, never audio bytes or provider credentials. Local-only registrations are not streamable.
 - Keep `Track`, `Asset`, and `Release` distinct.
 
 ## 2. Target entity relationship map
@@ -120,7 +120,7 @@ Constraints: unique `(track_id, version)`; never overwrite extraction provenance
 | created_by | INTEGER FK | |
 | created_at | TEXT | UTC |
 
-Critical invariant: an MP3 source registration may create a metadata/provenance record, but it must not create a server-hosted audio asset. If a `creator_source_reference` row is used, it records only a local-source registration fact and must have no retrievable server URI or object key. Prefer keeping source registration details in the metadata registration record to avoid implying remote availability.
+Critical invariant: MP3 is a free-to-listen product. A public MP3 Track must reference an available `mp3_audio` asset uploaded only after explicit creator action to an approved storage adapter. D1 stores the reference and metadata, not audio bytes or credentials. A local-only source reference must not be marked streamable. Free MP3 playback does not deduct TL and does not directly issue TL, bonus TL, or TLC.
 
 #### `track_rights`
 | Column | Type | Rule |
