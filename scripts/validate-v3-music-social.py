@@ -77,10 +77,10 @@ VALUES('release-private','track-private','MP3',1,'published','asset-private','as
 # TL3 remains a separate protected product and may reference a private object.
 db.execute("""INSERT INTO v3_track_assets
 (id,track_id,asset_type,storage_provider,storage_object_id,availability_status,created_by)
-VALUES('asset-tl3','track-private','tl3_release_file','google_drive','tl3-object','available',1)""")
+VALUES('asset-tl3-b','track-private','tl3_release_file','google_drive','tl3-object','available',1)""")
 db.execute("""INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
-VALUES('release-tl3','track-private','TL3',1,'published','asset-tl3','asset-private',120)""")
+VALUES('release-tl3','track-private','TL3',1,'published','asset-tl3-b','asset-private',120)""")
 
 # Likes, comments, reports and follows are deduplicated and foreign-key bound.
 db.execute("INSERT INTO v3_track_likes(id,track_id,user_id) VALUES('like-1','track-public',2)")
