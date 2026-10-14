@@ -15,9 +15,9 @@ async function visibleTrack(db: D1Database, trackId: string) {
   return db.prepare(`
     SELECT t.id,t.owner_user_id FROM v3_tracks t
     JOIN v3_shareplace_entries s ON s.track_id=t.id AND s.visibility='public'
-    JOIN v3_track_releases r ON r.track_id=t.id AND r.release_type='MP3' AND r.status='published'
-    JOIN v3_track_assets a ON a.id=r.asset_id AND a.asset_type='mp3_audio'
-      AND a.availability_status='available' AND a.storage_uri_ref IS NOT NULL
+    JOIN v3_track_releases r ON r.track_id=t.id AND r.release_type='TL3' AND r.status='published'
+    JOIN v3_track_assets a ON a.id=r.asset_id AND a.asset_type='tl3_release_file'
+      AND a.availability_status='available'
     WHERE t.id=? AND t.status='active' AND t.visibility='public'
   `).bind(trackId).first<any>();
 }
