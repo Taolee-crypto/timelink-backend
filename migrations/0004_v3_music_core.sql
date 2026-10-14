@@ -193,9 +193,15 @@ BEGIN
     WHERE a.id = NEW.asset_id
       AND a.track_id = NEW.track_id
       AND a.availability_status = 'available'
-      AND ((NEW.release_type = 'MP3' AND a.asset_type = 'mp3_audio')
-        OR (NEW.release_type = 'TL3' AND a.asset_type = 'tl3_release_file'))
-  ) THEN RAISE(ABORT, 'Published release requires a matching available asset') END;
+      AND a.asset_type = 'tl3_release_file'
+  ) THEN RAISE(ABORT, 'Published release requires a matching available TL3 asset') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM v3_track_assets source
+    WHERE source.id = NEW.source_asset_id
+      AND source.track_id = NEW.track_id
+      AND source.asset_type = 'mp3_audio'
+      AND source.availability_status IN ('available','local_only')
+  ) THEN RAISE(ABORT, 'TL3 conversion requires a source MP3 asset') END;
   SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM v3_track_rights r
     WHERE r.track_id = NEW.track_id
