@@ -708,7 +708,7 @@ router.get('/broadcast-set', async (c) => {
       const placeholders = set.tracks.map(() => '?').join(',');
       const { results } = await c.env.DB.prepare(
         'SELECT id, title, artist, duration, cover_url, stream_url, file_tl, content_kind FROM tl_shares WHERE id IN (' + placeholders + ')'
-      ).bind(...set.tracks).all();
+      ).bind(...set.tracks).all<{ id: string; title: string; artist: string; duration: number; cover_url: string | null; stream_url: string | null; file_tl: number; content_kind: string }>();
       const map: Record<string, any> = {};
       for (const t of (results || [])) map[t.id] = t;
       set.track_details = set.tracks.map(id => map[id] || { id: id, title: id, missing: true });
