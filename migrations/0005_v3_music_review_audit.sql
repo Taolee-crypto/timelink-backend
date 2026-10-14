@@ -22,3 +22,8 @@ CREATE TABLE IF NOT EXISTS v3_release_review_events (
 );
 CREATE INDEX IF NOT EXISTS idx_v3_release_review_track_time
   ON v3_release_review_events(track_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_v3_rights_one_final_review
+  ON v3_rights_review_events(rights_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_v3_release_one_review_decision
+  ON v3_release_review_events(release_id, decision);
