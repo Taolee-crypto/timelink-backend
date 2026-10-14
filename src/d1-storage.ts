@@ -87,10 +87,12 @@ export async function completeD1UploadSession(
   }
   if(total!==Number(session.expected_size)||Number(counts?.total||0)!==Number(session.expected_size)) throw new Error('전체 파일 크기 검증에 실패했습니다.');
   const manifestHash=await sha256Hex(new TextEncoder().encode(manifest.join('\\n')));
-  await db.prepare("UPDATE tl_d1_objects SET part_count=?,status='complete',updated_at=datetime('now') WHERE object_key=? AND status='uploading'")
-    .bind(parts.length,session.object_key).run();
-  await db.prepare("UPDATE tl_d1_upload_sessions SET status='complete',manifest_sha256=?,updated_at=datetime('now') WHERE upload_id=? AND owner_id=? AND status='active'")
-    .bind(manifestHash,uploadId,ownerId).run();
+  await db.batch([
+    db.prepare("UPDATE tl_d1_objects SET part_count=?,status='complete',updated_at=datetime('now') WHERE object_key=? AND status='uploading'")
+      .bind(Number(session.expected_parts),session.object_key),
+    db.prepare("UPDATE tl_d1_upload_sessions SET status='complete',manifest_sha256=?,updated_at=datetime('now') WHERE upload_id=? AND owner_id=? AND status='active'")
+      .bind(manifestHash,uploadId,ownerId)
+  ]);
   const meta=await getD1ObjectMeta(db,session.object_key);
   if(!meta) throw new Error('업로드 완료 처리에 실패했습니다.');
   return {...meta,manifest_sha256:manifestHash};
