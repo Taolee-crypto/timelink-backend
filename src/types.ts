@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  R2?: R2Bucket;
   JWT_SECRET: string;
   RESEND_API_KEY: string;
   ENVIRONMENT: string;
@@ -10,12 +11,19 @@ export interface Env {
   ONEDRIVE_CLIENT_SECRET?: string;
   ONEDRIVE_REDIRECT_URI?: string;
   STORAGE_ENCRYPTION_KEY?: string;
+  TL3_MASTER_SECRET?: string;
+  TL_SECRET?: string;
+  UNSPLASH_ACCESS_KEY?: string;
+  KAKAO_REST_API_KEY?: string;
+  TON_API_KEY?: string;
+
 
   // Cloudflare Access Service Token for Worker-to-Local-Agent streaming
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;
 
   TLD_SERVER_URL?: string;  // TimeLink TLD server (default: https://score.timelink.digital)
+
 
 }
 
