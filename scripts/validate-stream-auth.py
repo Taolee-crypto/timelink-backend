@@ -40,5 +40,6 @@ check("actualHash!==String(part.sha256||'')" in upload_source,"completion rechec
 check("writeD1UploadSessionPart" in source and "completeD1UploadSession" in source,"HTTP upload routes use session-bound storage functions")
 upload_routes=part("app.post('/api/upload/init'","app.get('/api/storage/:key{.+}'")
 check("uploadId" in upload_routes and "c.req.query('key')" not in upload_routes,"chunk upload endpoints use server-issued session IDs, not caller keys")
+check("playbackUserId(c,false)" in upload_routes,"chunk upload endpoints require active JWT header authentication")
 check("bodyLimit({ maxSize: D1_OBJECT_CHUNK_SIZE })" in source,"chunk request body limit is enforced before reading")
 print("Stream authorization regression checks passed.")
