@@ -69,14 +69,14 @@ export async function completeD1UploadSession(
     return {...meta,manifest_sha256:String(session.manifest_sha256||'')};
   }
   if(session.status!=='active'||Number(session.expires_at)<=Math.floor(Date.now()/1000)) throw new Error('업로드 세션이 만료되었거나 종료되었습니다.');
-  const rows=await db.prepare('SELECT part_number,data,size,sha256 FROM tl_d1_object_parts WHERE object_key=? ORDER BY part_number').bind(session.object_key).all<any>();
-  const parts=(rows.results||[]) as any[];
-  if(parts.length!==Number(session.expected_parts)) throw new Error('청크가 누락되었습니다.');
+  const counts=await db.prepare('SELECT COUNT(*) AS cnt,COALESCE(SUM(size),0) AS total FROM tl_d1_object_parts WHERE object_key=?').bind(session.object_key).first<any>();
+  if(Number(counts?.cnt||0)!==Number(session.expected_parts)) throw new Error('청크가 누락되었습니다.');
   const manifest:string[]=[];
   let total=0;
-  for(let index=0;index<parts.length;index++){
-    const part=parts[index],pn=Number(part.part_number);
-    if(pn!==index+1) throw new Error('청크 순서가 연속적이지 않습니다.');
+  for(let index=0;index<Number(session.expected_parts);index++){
+    const pn=index+1;
+    const part=await db.prepare('SELECT part_number,data,size,sha256 FROM tl_d1_object_parts WHERE object_key=? AND part_number=?').bind(session.object_key,pn).first<any>();
+    if(!part||Number(part.part_number)!==pn) throw new Error('청크 순서가 연속적이지 않습니다.');
     const bytes=part.data instanceof Uint8Array?part.data:new Uint8Array(part.data as ArrayBuffer);
     const expectedSize=Math.min(D1_OBJECT_CHUNK_SIZE,Number(session.expected_size)-index*D1_OBJECT_CHUNK_SIZE);
     if(bytes.byteLength!==expectedSize||Number(part.size)!==expectedSize) throw new Error('청크 크기 검증에 실패했습니다.');
@@ -85,7 +85,7 @@ export async function completeD1UploadSession(
     manifest.push(`${pn}:${expectedSize}:${actualHash}`);
     total+=expectedSize;
   }
-  if(total!==Number(session.expected_size)) throw new Error('전체 파일 크기 검증에 실패했습니다.');
+  if(total!==Number(session.expected_size)||Number(counts?.total||0)!==Number(session.expected_size)) throw new Error('전체 파일 크기 검증에 실패했습니다.');
   const manifestHash=await sha256Hex(new TextEncoder().encode(manifest.join('\\n')));
   await db.prepare("UPDATE tl_d1_objects SET part_count=?,status='complete',updated_at=datetime('now') WHERE object_key=? AND status='uploading'")
     .bind(parts.length,session.object_key).run();
