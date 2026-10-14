@@ -69,6 +69,25 @@ router.post('/:trackId/comments',authMiddleware,async (c) => {
   return c.json({ok:true,comment},201);
 });
 
+router.post('/:trackId/follow',authMiddleware,async (c) => {
+  const trackId=c.req.param('trackId'),user=c.get('user');
+  const track=await visibleTrack(c.env.DB,trackId);
+  if(!track) return c.json({ok:false,error:'Track not found'},404);
+  if(Number(track.owner_user_id)===Number(user.id)) return c.json({ok:false,error:'You cannot follow yourself'},409);
+  await c.env.DB.prepare('INSERT OR IGNORE INTO v3_track_follows(id,follower_user_id,followed_user_id) VALUES(?,?,?)').bind(makeId(),user.id,track.owner_user_id).run();
+  const count=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM v3_track_follows WHERE followed_user_id=?').bind(track.owner_user_id).first<any>();
+  return c.json({ok:true,following:true,followers:Number(count?.n||0)});
+});
+
+router.delete('/:trackId/follow',authMiddleware,async (c) => {
+  const trackId=c.req.param('trackId'),user=c.get('user');
+  const track=await visibleTrack(c.env.DB,trackId);
+  if(!track) return c.json({ok:false,error:'Track not found'},404);
+  await c.env.DB.prepare('DELETE FROM v3_track_follows WHERE follower_user_id=? AND followed_user_id=?').bind(user.id,track.owner_user_id).run();
+  const count=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM v3_track_follows WHERE followed_user_id=?').bind(track.owner_user_id).first<any>();
+  return c.json({ok:true,following:false,followers:Number(count?.n||0)});
+});
+
 router.post('/comments/:commentId/report',authMiddleware,async (c) => {
   const commentId=c.req.param('commentId'),user=c.get('user');
   let body:any;try{body=await c.req.json()}catch{return c.json({ok:false,error:'Invalid JSON body'},400);}
