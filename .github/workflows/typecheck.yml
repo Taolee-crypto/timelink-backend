@@ -26,8 +26,6 @@ jobs:
       - name: Install repository dependencies
         run: npm ci
 
-      - name: Install validation-only TypeScript definitions
-        run: npm install --no-save --package-lock=false typescript @cloudflare/workers-types
 
       - name: Run strict TypeScript check
         run: npx --no-install tsc --noEmit
