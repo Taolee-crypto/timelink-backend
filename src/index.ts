@@ -76,9 +76,8 @@ async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   const contentKind=String(share?.content_kind||'').toLowerCase();
   // Preserve explicitly declared legacy free-MP3 releases only.
   if(kind==='mp3'&&(contentKind==='mp3'||mode.startsWith('free_mp3'))) return true;
-  // TL3 is public only after an explicit rights/release verification state.
-  const releaseCheck=String(share?.release_check||'').toLowerCase();
-  if(['verified','approved','released','rights_verified'].includes(releaseCheck)) return true;
+  // Never trust release_check here: legacy clients can submit it themselves.
+  // TL3 becomes public only when a matching legacy file has server-side verified/shared state.
   const streamUrl=String(share?.stream_url||'').trim();
   if(streamUrl){
     const file=await db.prepare(
