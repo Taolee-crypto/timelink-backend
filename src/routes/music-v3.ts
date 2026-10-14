@@ -75,7 +75,7 @@ router.get('/tracks/:id', async (c) => {
     c.env.DB.prepare('SELECT id,version,original_filename,extracted_title,extracted_artist,extracted_album,verified_title,verified_artist,verified_album,display_title,metadata_source,metadata_status,confirmed_at,created_at FROM v3_track_metadata_versions WHERE track_id=? ORDER BY version DESC LIMIT 20').bind(trackId).all(),
     c.env.DB.prepare('SELECT id,asset_type,storage_provider,content_hash,size_bytes,mime_type,availability_status,created_at FROM v3_track_assets WHERE track_id=? ORDER BY created_at DESC').bind(trackId).all(),
     c.env.DB.prepare('SELECT id,claimant_user_id,rights_role,ownership_share_bps,territory,verification_status,terms_version,attested_at,created_at FROM v3_track_rights WHERE track_id=? ORDER BY created_at').bind(trackId).all(),
-    c.env.DB.prepare('SELECT id,release_type,version,status,asset_id,price_tl,duration_seconds,format_version,published_at,created_at FROM v3_track_releases WHERE track_id=? ORDER BY created_at DESC').bind(trackId).all(),
+    c.env.DB.prepare('SELECT id,release_type,version,status,asset_id,source_asset_id,price_tl,duration_seconds,format_version,published_at,created_at FROM v3_track_releases WHERE track_id=? ORDER BY created_at DESC').bind(trackId).all(),
     c.env.DB.prepare('SELECT id,category,visibility,featured_state,published_at FROM v3_shareplace_entries WHERE track_id=?').bind(trackId).first()
   ]);
   return c.json({ ok:true, track, metadata:metadata.results||[], assets:assets.results||[], rights:rights.results||[], releases:releases.results||[], shareplace:shareplace||null });
