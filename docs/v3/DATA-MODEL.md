@@ -163,7 +163,7 @@ Constraints: unique `(track_id, release_type, version)`; enforce one active publ
 |---|---|---|
 | id | TEXT PK | |
 | track_id | TEXT FK UNIQUE | one canonical Track placement initially |
-| owner_user_id | TEXT FK | |
+| owner_user_id | INTEGER FK | |
 | category | TEXT | controlled category |
 | visibility | TEXT | private/unlisted/public |
 | featured_state | TEXT | normal/featured/limited |
