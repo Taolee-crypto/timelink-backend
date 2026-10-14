@@ -69,6 +69,7 @@ export interface TL3Header {
 }
 
 export interface BuildInput {
+  fileId?: number;        // legacy wallet settlement reference (tl_files.id)
   title: string;
   artist: string;
   cid: string;
