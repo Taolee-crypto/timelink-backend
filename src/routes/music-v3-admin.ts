@@ -24,6 +24,8 @@ const note = (v: unknown) => String(v || '').trim().slice(0, 2000);
 
 // GET /comment-reports — admin-only comment moderation queue
 router.get('/comment-reports', async (c) => {
+  const socialReady=await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v3_track_comment_moderation_events'").first();
+  if(!socialReady) return c.json({ok:false,code:'V3_COMMENT_MODERATION_NOT_INITIALIZED',error:'V3 comment moderation migration has not been applied'},503);
   const status=String(c.req.query('status')||'open');
   if(!['open','reviewed','dismissed'].includes(status)) return c.json({ok:false,error:'Invalid report status'},422);
   const rows=await c.env.DB.prepare(`
@@ -40,6 +42,8 @@ router.get('/comment-reports', async (c) => {
 
 // POST /comments/:commentId/moderate — audited moderation decision
 router.post('/comments/:commentId/moderate', async (c) => {
+  const socialReady=await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v3_track_comment_moderation_events'").first();
+  if(!socialReady) return c.json({ok:false,code:'V3_COMMENT_MODERATION_NOT_INITIALIZED',error:'V3 comment moderation migration has not been applied'},503);
   const commentId=c.req.param('commentId');
   let body:any;try{body=await c.req.json()}catch{return c.json({ok:false,error:'Invalid JSON body'},400);}
   const action=String(body.action||''),reviewNote=note(body.moderation_note);
