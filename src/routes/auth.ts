@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { hashPassword, verifyPassword, makeAccessToken } from '../auth';
+import { hashPassword, verifyPassword, makeAccessToken, verifyToken } from '../auth';
 import type { Env, User } from '../types';
 
 const router = new Hono<{ Bindings: Env }>();
@@ -60,7 +60,6 @@ router.post('/login', async (c) => {
 router.get('/me', async (c) => {
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
   if(!token) return c.json({ok:false,error:'인증 필요'},401);
-  const { verifyToken } = await import('../auth');
   const payload=await verifyToken(token,c.env.JWT_SECRET);
   const userId=Number(payload?.sub||0);
   if(!userId) return c.json({ok:false,error:'인증 사용자 확인 불가'},401);

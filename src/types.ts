@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  R2?: R2Bucket;
   JWT_SECRET: string;
   RESEND_API_KEY: string;
   ENVIRONMENT: string;
@@ -10,6 +11,10 @@ export interface Env {
   ONEDRIVE_CLIENT_SECRET?: string;
   ONEDRIVE_REDIRECT_URI?: string;
   STORAGE_ENCRYPTION_KEY?: string;
+  TL3_MASTER_SECRET?: string;
+  TL_SECRET?: string;
+  UNSPLASH_ACCESS_KEY?: string;
+  KAKAO_REST_API_KEY?: string;
 }
 
 export interface JWTPayload {
