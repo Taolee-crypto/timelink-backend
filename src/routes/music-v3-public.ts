@@ -5,7 +5,7 @@ const router = new Hono<{ Bindings: Env }>();
 
 async function publicTrack(db: D1Database, trackId: string) {
   return db.prepare(`
-    SELECT t.id,t.owner_user_id,u.username AS creator_name,t.created_at,
+    SELECT t.id,u.username AS creator_name,t.created_at,
       m.display_title,
       COALESCE(m.verified_artist,m.extracted_artist) AS artist,
       m.verified_album,m.extracted_album,
@@ -32,7 +32,7 @@ router.get('/tracks', async (c) => {
   const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') || 20)));
   const offset = Math.max(0, Number(c.req.query('offset') || 0));
   const rows = await c.env.DB.prepare(`
-    SELECT t.id,t.owner_user_id,u.username AS creator_name,
+    SELECT t.id,u.username AS creator_name,
       m.display_title,COALESCE(m.verified_artist,m.extracted_artist) AS artist,
       r.id AS mp3_release_id,r.duration_seconds,a.storage_uri_ref AS stream_url,
       (SELECT ca.storage_uri_ref FROM v3_track_assets ca
@@ -59,11 +59,11 @@ router.get('/tracks', async (c) => {
 router.get('/tracks/:id', async (c) => {
   const track = await publicTrack(c.env.DB,c.req.param('id'));
   if (!track) return c.json({ ok:false,error:'Track not found' },404);
-  const [releases,rights] = await Promise.all([
+  const [releases,verified] = await Promise.all([
     c.env.DB.prepare("SELECT id,release_type,version,price_tl,duration_seconds,published_at FROM v3_track_releases WHERE track_id=? AND status='published' ORDER BY release_type").bind(track.id).all(),
-    c.env.DB.prepare("SELECT rights_role,ownership_share_bps,territory FROM v3_track_rights WHERE track_id=? AND verification_status='verified'").bind(track.id).all()
+    c.env.DB.prepare("SELECT 1 AS ok FROM v3_track_rights WHERE track_id=? AND verification_status='verified' LIMIT 1").bind(track.id).first()
   ]);
-  return c.json({ ok:true,track,releases:releases.results||[],verified_rights:rights.results||[] });
+  return c.json({ ok:true,track,releases:releases.results||[],rights_verified:!!verified });
 });
 
 export default router;
