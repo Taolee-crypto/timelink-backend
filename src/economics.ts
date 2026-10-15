@@ -117,6 +117,7 @@ eco.get('/wallet', async (c) => {
     await migrateDB(c.env.DB);
     const user = await c.env.DB.prepare(`
       SELECT id, username, tl, tl_p, tl_a, tl_b,
+      tl_balance, tl_locked,
              tl_p_lifetime, tl_p_exchanged,
              tlc_balance, poc_index, plan,
              total_tl_spent, total_tl_earned
@@ -134,7 +135,9 @@ eco.get('/wallet', async (c) => {
         tl_p: tlP,         // 구매 TL (교환 가능)
         tl_a: tlA,         // 광고 TL (사용만)
         tl_b: tlB,         // 보너스 TL (사용만)
-        tl_total: tlP + tlA + tlB,
+        tl_balance: Number(user.tl_balance ?? (tlP + tlA + tlB)) || 0,
+        tl_locked: Number(user.tl_locked || 0),
+        tl_total: Number(user.tl_balance ?? (tlP + tlA + tlB)) || 0,
         tlc: user.tlc_balance || 0,
         poc_index: Number((user.poc_index || 1.0).toFixed(3)),
         plan: user.plan || 'A',
