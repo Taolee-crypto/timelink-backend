@@ -3,6 +3,7 @@ name: V3 music API validation
 on:
   pull_request:
     branches: [v3/music-core-foundation]
+    branches: [main]
     paths:
       - "src/routes/music-v3.ts"
       - "src/index.ts"
@@ -10,7 +11,9 @@ on:
       - "scripts/validate-v3-music.py"
       - ".github/workflows/v3-music-api-check.yml"
   push:
+
     branches: [v3/music-core-foundation, v3/music-core-api]
+    branches: [main]
     paths:
       - "src/routes/music-v3.ts"
       - "src/index.ts"

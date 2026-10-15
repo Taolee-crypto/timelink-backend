@@ -71,6 +71,13 @@ fails("""
 INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
 VALUES ('invalid-zero-price','track-1','TL3',1,'draft',NULL,'asset-source',0)
+(id,track_id,release_type,version,status,asset_id,price_tl)
+VALUES ('invalid-mp3-release','track-1','MP3',1,'draft','asset-source',0)
+""")
+fails("""
+INSERT INTO v3_track_releases
+(id,track_id,release_type,version,status,asset_id,price_tl)
+VALUES ('invalid-zero-price','track-1','TL3',1,'draft',NULL,0)
 """)
 fails("""
 INSERT INTO v3_track_assets
@@ -91,6 +98,7 @@ INSERT INTO v3_poc_events
  verification_status,formula_version,metadata_json)
 VALUES ('poc-candidate-1','1','tl3-conversion:asset-tl3','tl3_conversion_completed',
  'music_v3','asset-tl3',0,0,'pending','poc-v1','{"track_id":"track-1","source_asset_id":"asset-source"}')
+ 'music_v3','asset-tl3',0,0,'pending','poc-v1','{"track_id":"track-1"}')
 """)
 candidate = db.execute("""
 SELECT event_type,verification_status,contribution_value
@@ -102,6 +110,8 @@ db.execute("""
 INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl,duration_seconds,format_version)
 VALUES ('release-tl3','track-1','TL3',1,'draft','asset-tl3','asset-source',120,180,'TLNK-v2')
+(id,track_id,release_type,version,status,asset_id,price_tl,duration_seconds,format_version)
+VALUES ('release-tl3','track-1','TL3',1,'draft','asset-tl3',120,180,'TLNK-v2')
 """)
 db.execute("UPDATE v3_track_releases SET status='published',published_at=datetime('now') WHERE id='release-tl3'")
 assert db.execute("SELECT status FROM v3_track_releases WHERE id='release-tl3'").fetchone()[0] == "published"
@@ -116,12 +126,16 @@ fails("""
 INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
 VALUES ('invalid-source-link','track-1','TL3',3,'published','asset-tl3','asset-tl3',120)
+(id,track_id,release_type,version,status,asset_id,price_tl)
+VALUES ('invalid-source-release','track-1','TL3',2,'published','asset-source',120)
 """)
 # Only one published TL3 release is allowed per Track.
 fails("""
 INSERT INTO v3_track_releases
 (id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
 VALUES ('second-published-tl3','track-1','TL3',2,'published','asset-tl3','asset-source',120)
+(id,track_id,release_type,version,status,asset_id,price_tl)
+VALUES ('second-published-tl3','track-1','TL3',2,'published','asset-tl3',120)
 """)
 
 # Legacy records are not touched or backfilled by the V3 migrations.

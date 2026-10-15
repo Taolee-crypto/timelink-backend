@@ -19,6 +19,7 @@ router.post('/', async (c) => {
     .bind(body.file_id).first<any>();
   if (!file) return c.json({ detail: 'File not found' }, 404);
   if (file.user_id === u.id) return c.json({ detail: 'Cannot dispute own file' }, 400);
+  if (file.revenue_held) return c.json({ detail: 'File is already under dispute' }, 409);
 
   // 이의제기 생성
   const result = await c.env.DB.prepare(
@@ -53,10 +54,21 @@ router.get('/:id', async (c) => {
 
 // POST /:id/resolve (admin)
 router.post('/:id/resolve', async (c) => {
+  const authUser = c.get('user');
+  const admin = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?')
+    .bind(authUser.id).first<{ role: string }>();
+  if (String(admin?.role || '').toLowerCase() !== 'admin') {
+    return c.json({ detail: 'Administrator role required' }, 403);
+  }
+
   const body = await c.req.json<{ upheld: boolean; note?: string }>();
+  if (typeof body.upheld !== 'boolean') {
+    return c.json({ detail: 'upheld must be a boolean' }, 400);
+  }
   const dispute = await c.env.DB.prepare('SELECT * FROM disputes WHERE id = ?')
     .bind(c.req.param('id')).first<any>();
   if (!dispute) return c.json({ detail: 'Not found' }, 404);
+  if (dispute.status !== 'pending') return c.json({ detail: 'Dispute already resolved' }, 409);
 
   const file = await c.env.DB.prepare('SELECT * FROM tl_files WHERE id = ?')
     .bind(dispute.file_id).first<any>();

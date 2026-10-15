@@ -2,13 +2,19 @@ name: V3 music core validation
 
 on:
   pull_request:
+
     branches: [v3/music-review-admin]
+
+    branches: [main]
+
     paths:
       - "migrations/0004_v3_music_core.sql"
       - "scripts/validate-v3-music.py"
       - ".github/workflows/v3-music-check.yml"
   push:
     branches: [v3/music-review-admin, v3/music-shareplace-social]
+
+    branches: [main]
     paths:
       - "migrations/0004_v3_music_core.sql"
       - "scripts/validate-v3-music.py"

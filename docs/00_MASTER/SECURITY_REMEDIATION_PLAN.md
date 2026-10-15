@@ -1,0 +1,167 @@
+# TimeLink Backend Security Remediation Plan
+
+Date: 2026-10-14
+Scope: read-only audit of `feature/renewal-private-library-api` source. No production request, deployment, D1 mutation, or live credential test was performed.
+
+## Executive decision
+
+**Do not merge or deploy the renewal backend PR until the P0 access-control findings below are resolved and regression-tested.** The renewal API additions are not the only concern: several legacy endpoints in the same Worker expose raw objects or accept unauthenticated writes.
+
+## Findings
+
+### P0 — Raw D1 object reads are public
+
+- `GET /api/storage/:key{.+}` returns a completed D1 object by key without authentication or an authorization decision.
+- The response sets `Cache-Control: public`.
+- The key is therefore acting as a bearer secret, but keys are predictable in several upload paths (for example `tracks/<trackId>.<ext>`) and are returned by upload APIs.
+- This is inconsistent with the product rule that source MP3/MP4/PDF/JPEG/PNG originals remain private and must not be exposed through raw URLs.
+
+**Required fix:** split private source-object storage from protected TL container delivery. Require owner authorization for source objects. For listener playback, use a separate entitlement-checked route that validates the share/release state and applicable TL/time authorization before streaming. Do not solve this by blindly making every object public or by blindly blocking all existing playback.
+
+### P0 — Chunked upload endpoints are unauthenticated and not owner-bound
+
+- `POST /api/upload/init`, `PUT /api/upload/part`, and `POST /api/upload/complete` do not authenticate the caller.
+- `src/d1-storage.ts` stores object metadata and chunks by caller-supplied object key; it does not bind an upload session to a user.
+- A caller can potentially initialize/overwrite or complete another object's key when it is known or guessed.
+
+**Required fix:** authenticate every operation; create server-generated upload-session IDs; persist owner ID, expiry, expected size, allowed content type and status; bind every chunk/finalize operation to both session ID and authenticated owner; reject path/key reuse across owners; validate contiguous parts and size/hash before completion.
+
+### P0 — Generic multipart upload endpoint is unauthenticated
+
+- `POST /api/upload` accepts a file and caller-supplied `trackId` without checking a session or owner.
+- It writes to the shared D1 object namespace.
+
+**Required fix:** same owner-bound upload session model as above. Validate content signatures server-side and ensure the resulting object is attached only to a share owned by the authenticated user.
+
+### P0 — Legacy file sync trusts caller-supplied identity
+
+- `POST /api/files/sync` is unauthenticated.
+- It accepts `user_email` and `username`, creates/updates file rows under that identity, and defaults to user ID 1 when no valid email is supplied.
+
+**Required fix:** authenticate and derive user ID exclusively from the verified token. Remove the user-creation fallback and never accept ownership identity from the request body.
+
+### P0 — External storage stream can bypass share visibility
+
+- `GET /api/storage/object/:id/stream` checks whether an object is linked to any `tl_shares` row; if so, it does not require the requester to own the object or satisfy a listener entitlement.
+- It then streams the linked original from Google Drive or OneDrive.
+
+**Required fix:** owner access for private library previews; listener access only through a separate release-entitlement check. A database link to a share is not itself an authorization grant.
+
+### P1 — Admin approval route checks authentication but not administrator role
+
+- `src/routes/files.ts` applies `authMiddleware` to all routes, but `POST /:id/approve` does not check `users.role = 'admin'`.
+- The handler changes `auth_status` and grants POC to the file owner.
+
+**Required fix:** explicit server-side role check before any approval mutation; log reviewer identity, decision, reason and timestamp. POC changes must be ledgered and idempotent.
+
+### P1 — Authenticated file detail route is not owner-scoped
+
+- `GET /api/v1/files/:id` returns `SELECT *` for any authenticated user, including fields such as file URLs and internal state.
+
+**Required fix:** owner-only private detail endpoint; public metadata endpoint with an explicit allowlist; never serialize the full row.
+
+### P1 — SharePlace list returns raw stream URLs and assumes modern shares are public
+
+- `GET /api/shares` maps all `tl_shares` rows into the public listing and returns their full row data, including `stream_url`.
+- The mapping also assigns `shared: 1` and `auth_status: 'verified'` in the response regardless of an independently verified release/visibility decision.
+
+**Required fix:** add explicit publication/visibility state and query only eligible releases. Return an allowlisted public DTO with no source URL, provider object ID, private metadata or storage credentials.
+
+### P1 — Free MP3 upload creates POC credit contrary to current product policy
+
+- The SharePlace POST handler inserts a POC log for both release modes: `upload_mp3` grants 1 and `upload_tl3` grants 3.
+- Current product direction is that free MP3 upload/listening does not create POC contribution or spend TL.
+
+**Required fix:** remove POC credit for free MP3 upload. Keep TL3 issuance contribution only if the finalized POC rules explicitly authorize it; write any contribution event through the canonical, idempotent TL Economics ledger rather than an uncoordinated log.
+
+### P1 — Previously committed Worker configuration contained a plaintext provider/API key
+
+- **Completed in current branch:** removed `TON_API_KEY` from tracked `wrangler.toml` `[vars]` and declared it as an optional Worker secret binding in `src/types.ts`.
+- **Still required:** the old value remains exposed in Git history and must be revoked/rotated at TON Center. Set the replacement through `wrangler secret put TON_API_KEY` or the protected deployment secret store; never restore it under `[vars]`.
+- Review repository history and logs for other copies. Removing the current file line does not erase historical exposure.
+
+### P2 — Track Page counters and moderation require stronger operational controls
+
+- The renewal branch now persists likes, follows, comments, reports and playlists.
+- Views intentionally remain untracked (reported as zero with `views_tracked:false`), which is preferable to fabricating counts.
+- Add rate limits, spam controls, comment deletion/moderation, report review, pagination and audit events before opening these interactions broadly.
+
+## Required acceptance tests
+
+1. Anonymous requests to all upload init/part/complete and source-read endpoints fail closed.
+2. User A cannot initialize, overwrite, append, complete, read, or stream User B's object.
+3. A private source object cannot be read by a listener even if it is linked to a SharePlace row.
+4. A listener can stream only an eligible published TL container after entitlement/time checks; existing authorized playback regression tests pass.
+5. `/api/files/sync` cannot create or mutate another user's records and never defaults to user ID 1.
+6. Non-admin approval attempts return 403 and make no database changes.
+7. Authenticated non-owners cannot read private file details.
+8. Public SharePlace DTOs contain no original file URL, provider download URL, OAuth token, or private metadata.
+9. Free MP3 upload produces no POC event and no TL charge.
+10. TL3 contribution events are idempotent under retries.
+11. Credential rotation is confirmed before next production deployment.
+12. Track Page likes/comments/follows/playlists pass user-isolation, duplicate and rate-limit tests.
+
+## Implementation sequence
+
+1. Rotate the exposed provider/API credential and inventory other tracked secrets.
+2. Add owner-bound upload sessions and source-object authorization.
+3. Add a separate entitlement-checked TL3 playback route; migrate clients without breaking existing playback.
+4. Close identity spoofing in file sync and enforce admin role on approval.
+5. Introduce public DTO allowlists and explicit release visibility.
+6. Align MP3/TL3 POC events with TL Economics policy.
+7. Add automated CI and staging D1 integration tests.
+8. Only then mark the backend PR ready for review.
+
+## Validation state
+
+- GitHub Actions Worker bundle validation: **passed** using `npx wrangler deploy --dry-run`; this is a compile/bundle check only, not a deployment.
+- At the initial audit commit, strict TypeScript validation **failed** with multiple type errors. These were corrected on the current renewal branch; the latest strict TypeScript workflow and Worker dry-run both pass. This is a compile/bundle result, not a security or D1 integration test.
+- `npm ci` reported 10 dependency vulnerabilities (1 low, 3 moderate, 6 high) at the time of this run. Do not run `npm audit fix --force` blindly; review advisories and dependency compatibility first.
+- No D1 integration tests, browser tests, cross-user penetration tests or production deployment were performed.
+
+This document is based on source inspection and CI output. It is not a penetration test and does not prove exploitability against a deployed environment. No merge or deployment is represented as complete.
+
+
+## Implementation update — 2026-10-14
+
+The following code-level remediations have since been applied to the renewal branch:
+
+- **Completed in code:** `POST /api/files/sync` now requires a verified JWT and derives the owner ID from the session. Caller-supplied email/username no longer selects or creates the owner, and the user-ID-1 fallback is removed.
+- **Completed in code:** chunked upload init/part/complete routes require a verified JWT and use/check user-scoped `tracks/u{userId}/...` keys.
+- **Completed in code:** generic multipart upload and legacy TL upload require a verified JWT; new object keys are user-scoped. The legacy TL upload fails closed if `TL_SECRET` is absent.
+- **Completed in code:** raw D1 object reads and the legacy `/api/audio/:filename` route now fail closed unless the authenticated owner or an explicitly eligible public release is established. Unscoped legacy keys are no longer implicitly public.
+- **Already present and retained:** private file details are owner/admin-only; file approval checks the administrator role and only grants the POC bonus on the first transition to verified.
+- **Completed in code:** `/api/stream/:shareId` verifies JWT signatures, checks owner or explicit public-release eligibility before returning bytes, verifies external-storage object ownership against the share creator, and requires a funded listener for public TL3 playback. Legacy free-MP3 compatibility is limited to rows explicitly recorded as MP3 releases; TL3 `release_check` values supplied by clients are not trusted.
+- **Completed in code:** `/api/storage/object/:id/stream` no longer treats the mere existence of a linked `tl_shares` row as authorization. It loads the active storage object, checks its owner, and evaluates publication/entitlement before streaming.
+- **Completed in code:** both SharePlace catalogue paths filter modern `tl_shares` to explicit legacy free-MP3 releases or rows backed by a verified, shared, non-held `tl_files` record.
+- **Completed in code:** SharePlace registration no longer creates POC log entries. Registration is not a verified contribution event.
+- **Completed in code:** D1 chunk uploads use server-issued owner-bound sessions with expiry, expected size/type binding, exact chunk sizing, ordered-part completion, per-part SHA-256 revalidation, TL3 v2 header/creator validation, and atomic finalization.
+- **Completed in code:** public `/api/shares`, single Track Page reads and the SharePlace router now return explicit allowlisted DTOs. Raw provider/source URLs and private moderation fields are omitted; stream URLs point to TimeLink proxy endpoints.
+- **Validation:** on commit `ae6f2c93`, the stream/upload/DTO/POC regression validator, Cloudflare Worker dry-run and strict TypeScript check all passed. No deployment or production D1 write was performed.
+
+### Remaining blockers — do not mark this PR ready yet
+
+1. **P0 upload-session hardening is implemented in code; staging verification remains.** The API now issues opaque session IDs, binds sessions to the authenticated owner and one-hour expiry, fixes expected size/content type, enforces exact chunk sizes and sequential parts, rejects conflicting retries, re-hashes each part at completion, validates the TL3 v2 header and creator ID, and atomically marks the object/session complete. The returned SHA-256 is a manifest hash over the verified chunk hashes, not a whole-file SHA-256.
+2. **P1 TL economics policy remains open.** SharePlace registration no longer grants POC, but verified TL3 contribution still needs to be connected to the canonical idempotent TL Economics ledger. SharePlace registration no longer grants POC for either MP3 or TL3. Verified TL3 contribution must be connected to the canonical idempotent ledger after moderation.
+5. **P1 committed TON credential remains open.** Rotate the exposed value and remove plaintext configuration before any production deployment.
+6. Cross-user D1 integration tests, upload-abuse tests, playback entitlement tests, and Track Page social isolation tests are still required.
+
+The PR remains a Draft. Do not merge or deploy until the remaining P0 findings are closed and the acceptance tests above pass.
+
+
+## Stream authorization remediation — 2026-10-14
+
+The P0 playback authorization paths have now been closed in code on the renewal branch:
+
+- The share stream, external-object stream, raw D1 object route and legacy audio route require a verified owner identity or an eligible public release; unknown legacy object keys are no longer treated as public by default.
+- A row in `tl_shares` is not sufficient by itself to authorize an external storage stream. The `storage_objects.user_id` must match the share creator.
+- Client-submitted `release_check` and `auth_status` values are not trusted as moderation evidence. File sync now always resets assets to `unverified`, `shared=0` and `shared_to_shareplace=0`; only an administrator can verify a file, after which its owner may explicitly share it.
+- Public publication is TL3-only. MP3 originals remain private source assets; new MP3/free-MP3 shares are rejected. Existing raw MP3 records are not treated as public TL3 even if a caller previously labelled their `content_kind` as `tl3`.
+- A share registration requires an existing creator-owned D1 TL3 object, a valid TLNK v2 header whose `cid` matches the creator, a rights declaration, and a matching `tl_files` record that is administrator-verified and explicitly shared.
+- Verification POC is awarded only when an administrator first verifies an `audio/tl3` asset; raw MP3 source assets do not earn that POC.
+- Public TL3 listening requires a verified account and a positive TL balance. Creator-owner preview remains available.
+- The public catalogue filters out modern shares that do not satisfy the publication gate and returns only allowlisted metadata with proxy stream URLs.
+- Track Page likes, comments, reports and playlist additions now enforce owner-or-public-release access; playlist mutations remain user-scoped, likes and reports are idempotent, and self-follow is rejected.
+- A static regression validator now runs in the Worker CI workflow and checks these authorization boundaries.
+
+The P0 stream authorization and upload-session controls and the public response DTO allowlist are now implemented in code. Remaining blockers are TON credential rotation (the plaintext value has been removed from the current branch but still requires provider-side revocation), canonical TL3 contribution ledger integration, and staging integration tests for social APIs and two-user storage/playback isolation. These changes have not yet been exercised against a staging D1 database with two real accounts. Do not mark the PR ready or deploy until staging tests pass.
