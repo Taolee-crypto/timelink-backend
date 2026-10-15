@@ -208,7 +208,32 @@ export interface BuildFromMp3Result {
 
 export async function buildTL3V3FromMp3(input: BuildFromMp3Input): Promise<BuildFromMp3Result> {
   const { mp3Raw, segments } = input;
-  const totalSec = segments.length;
+  if (!(mp3Raw instanceof Uint8Array) || mp3Raw.length === 0) {
+    throw new Error('TL3 원본 MP3가 비어 있습니다.');
+  }
+  if (!Array.isArray(segments) || segments.length === 0) {
+    throw new Error('TL3 제조에는 하나 이상의 MP3 세그먼트가 필요합니다.');
+  }
+  let expectedOffset = 0;
+  let durationMs = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (!Number.isInteger(segment.offset) || !Number.isInteger(segment.length) ||
+        segment.offset !== expectedOffset || segment.length <= 0 ||
+        segment.offset + segment.length > mp3Raw.length) {
+      throw new Error('TL3 MP3 세그먼트의 위치 또는 길이가 연속적이지 않습니다. index=' + i);
+    }
+    if (!Number.isFinite(segment.durationMs) || segment.durationMs <= 0 || segment.durationMs > 1000.5) {
+      throw new Error('TL3 MP3 세그먼트는 1초 이하여야 합니다. index=' + i);
+    }
+    expectedOffset += segment.length;
+    durationMs += segment.durationMs;
+  }
+  if (expectedOffset !== mp3Raw.length) {
+    throw new Error('TL3 MP3 세그먼트가 원본 전체 바이트를 포함하지 않습니다.');
+  }
+  const segmentCount = segments.length;
+  const durationSeconds = Number((durationMs / 1000).toFixed(3));
 
   // 라이선스 (서버 유도)
   const lic = await deriveLicenseBytes(input.masterSecret, input.shareId);
@@ -223,12 +248,12 @@ export async function buildTL3V3FromMp3(input: BuildFromMp3Input): Promise<Build
   // T_0
   const mp3T0 = await initialToken(fid, hashMp3, salt);
 
-  // 세그먼트 암호화 (5초 단위 mp3 프레임 그대로)
+  // 세그먼트 암호화 (최대 1초 단위 MP3 프레임)
   const mp3Enc: Uint8Array[] = [];
   const mp3Tokens: string[] = [hex(mp3T0)];
   let T_mp3 = mp3T0;
 
-  for (let n = 1; n <= totalSec; n++) {
+  for (let n = 1; n <= segmentCount; n++) {
     const seg = segments[n - 1];
     const segBytes = mp3Raw.subarray(seg.offset, seg.offset + seg.length);
 
@@ -254,10 +279,10 @@ export async function buildTL3V3FromMp3(input: BuildFromMp3Input): Promise<Build
     name: input.name,
     genre: input.genre,
     bpm: input.bpm,
-    dur_sec: totalSec,
+    dur_sec: durationSeconds,
     fs: 0,         // mp3 프레임 방식이라 fs/ch는 참고용
     ch: 0,
-    mp3: { N: totalSec, seg_bytes: 0, last_bytes: mp3Enc[mp3Enc.length - 1].length, first_offset: 0 },
+    mp3: { N: segmentCount, seg_bytes: 0, last_bytes: mp3Enc[mp3Enc.length - 1].length, first_offset: 0 },
     lp: null,
     hash_mp3: hex(hashMp3),
     hash_lp: null,
