@@ -1409,9 +1409,9 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     let fileId=Number(c.req.param('id')||0);
     const rawId=String(c.req.param('id')||'');
     if(!fileId||isNaN(fileId)||String(fileId)!==rawId){
-      const shareRow=await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released'").bind(rawId).first<any>();
-      if(!shareRow) return c.json({ok:false,error:'fileId/shareId 필요'},400);
-      fileId=Number(shareRow.file_id);
+      const resolvedFileId=await resolveTL3FileId(c.env.DB,rawId);
+      if(!resolvedFileId) return c.json({ok:false,error:'공유 ID에 연결된 검증된 TL3 출시 파일을 찾을 수 없습니다.',share_id:rawId},404);
+      fileId=resolvedFileId;
     }
     const body=await c.req.json<any>().catch(()=>({}));
     const sessionId=String(body.session_id||'').slice(0,80);
@@ -1468,9 +1468,9 @@ app.post('/api/v1/tl3/offline/start', async (c) => {
 
     let fileId = Number(shareIdRaw);
     if (!fileId || String(fileId) !== shareIdRaw) {
-      const row = await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released'").bind(shareIdRaw).first<any>();
-      if (!row) return c.json({ok:false,error:'TL3 release not found'},404);
-      fileId = Number(row.file_id);
+      const resolvedFileId = await resolveTL3FileId(c.env.DB, shareIdRaw);
+      if (!resolvedFileId) return c.json({ok:false,error:'공유 ID에 연결된 TL3 출시 파일이 없습니다.',share_id:shareIdRaw},404);
+      fileId = resolvedFileId;
     }
 
     const file = await c.env.DB.prepare("SELECT r.segment_count,r.status FROM tl3_releases r WHERE r.file_id=? AND r.status='released'").bind(fileId).first<any>();
