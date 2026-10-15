@@ -1147,8 +1147,19 @@ app.post('/api/v1/tl3/releases', async (c) => {
 
     // Ensure the release schema is ready before checking share ID ownership.
     try { await c.env.DB.prepare('ALTER TABLE tl3_releases ADD COLUMN share_id TEXT').run(); } catch (_) {}
-    // Remove the former single-release uniqueness rule; keep a normal lookup index.
-    await c.env.DB.prepare('DROP INDEX IF EXISTS idx_tl3_releases_share_id').run().catch(() => {});
+    // Remove any legacy unique index whose sole indexed column is share_id.
+    // Index names are read from SQLite metadata and quoted before use.
+    const releaseIndexes = await c.env.DB.prepare("PRAGMA index_list('tl3_releases')").all<any>().catch(() => ({results:[]}));
+    for (const idx of (releaseIndexes.results || [])) {
+      if (Number(idx.unique) !== 1 || String(idx.origin || '') === 'pk') continue;
+      const indexName = String(idx.name || '').replace(/"/g, '""');
+      if (!indexName) continue;
+      const indexColumns = await c.env.DB.prepare(`PRAGMA index_info("${indexName}")`).all<any>().catch(() => ({results:[]}));
+      const columns = (indexColumns.results || []).map((col:any) => String(col.name || '').toLowerCase());
+      if (columns.length === 1 && columns[0] === 'share_id') {
+        await c.env.DB.prepare(`DROP INDEX IF EXISTS "${indexName}"`).run();
+      }
+    }
     await c.env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_tl3_releases_share_id_lookup ON tl3_releases(share_id)').run().catch(() => {});
     // share_id groups SharePlace entries; it is intentionally reusable across assets.
     const shareId = shareIdParam || `tl3_${fileId}`;
