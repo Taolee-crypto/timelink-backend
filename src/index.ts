@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
+import { buildTL3SpineV4, verifyTL3SpineV4Container } from './tl3spine';
 
 import { cors } from 'hono/cors';
 import type { Env } from './types';
@@ -1002,44 +1003,77 @@ app.post('/api/upload',async(c)=>{const session=await storageUser(c),uid=Number(
 
 // (tl3Xor 제거됨 — v3에서 AES-256-GCM 사용)
 
-function parseMp3Segments(data: Uint8Array, targetMs=5000): Array<{offset:number,length:number,durationMs:number}> {
+function parseMp3Segments(data: Uint8Array, targetMs=1000): Array<{offset:number,length:number,durationMs:number}> {
   const bitrateV1 = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
   const bitrateV2 = [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0];
   const sampleBase = [44100,48000,32000,0];
-  const frames: Array<{offset:number,length:number,durationMs:number}> = [];
-  let p = 0;
-  if (data.length >= 10 && data[0]===0x49 && data[1]===0x44 && data[2]===0x33) {
-    const sz = ((data[6]&0x7f)<<21)|((data[7]&0x7f)<<14)|((data[8]&0x7f)<<7)|(data[9]&0x7f);
-    p = 10 + sz + ((data[5]&0x10) ? 10 : 0);
+  if (!Number.isFinite(targetMs) || targetMs <= 0 || targetMs > 5000) {
+    throw new Error('TL3 Spine 세그먼트 목표 시간은 1~5000ms여야 합니다.');
   }
-  while (p + 4 <= data.length) {
-    if (data[p]!==0xff || (data[p+1]&0xe0)!==0xe0) { p++; continue; }
-    const version = (data[p+1]>>3)&3;
-    const layer = (data[p+1]>>1)&3;
-    const bi = (data[p+2]>>4)&15;
-    const si = (data[p+2]>>2)&3;
-    const padding = (data[p+2]>>1)&1;
-    if (layer!==1 || version===1 || bi===0 || bi===15 || si===3) { p++; continue; }
-    const sr0 = sampleBase[si];
-    const sampleRate = version===3 ? sr0 : Math.floor(sr0/(version===2?2:4));
+
+  const frames: Array<{offset:number,length:number,durationMs:number}> = [];
+  let scan = 0;
+  if (data.length >= 10 && data[0]===0x49 && data[1]===0x44 && data[2]===0x33) {
+    const size = ((data[6]&0x7f)<<21)|((data[7]&0x7f)<<14)|((data[8]&0x7f)<<7)|(data[9]&0x7f);
+    scan = 10 + size + ((data[5]&0x10) ? 10 : 0);
+    if (scan > data.length) throw new Error('MP3 ID3 헤더 길이가 잘못되었습니다.');
+  }
+
+  while (scan + 4 <= data.length) {
+    if (data[scan]!==0xff || (data[scan+1]&0xe0)!==0xe0) { scan++; continue; }
+    const version = (data[scan+1]>>3)&3;
+    const layer = (data[scan+1]>>1)&3;
+    const bi = (data[scan+2]>>4)&15;
+    const si = (data[scan+2]>>2)&3;
+    const padding = (data[scan+2]>>1)&1;
+    if (layer!==1 || version===1 || bi===0 || bi===15 || si===3) { scan++; continue; }
+    const baseRate = sampleBase[si];
+    const sampleRate = version===3 ? baseRate : Math.floor(baseRate/(version===2?2:4));
     const kbps = version===3 ? bitrateV1[bi] : bitrateV2[bi];
     const frameLength = Math.floor((version===3 ? 144000 : 72000) * kbps / sampleRate) + padding;
-    if (frameLength < 24 || p + frameLength > data.length) { p++; continue; }
+    if (frameLength < 24 || scan + frameLength > data.length) { scan++; continue; }
     const samples = version===3 ? 1152 : 576;
-    frames.push({offset:p,length:frameLength,durationMs:(samples*1000)/sampleRate});
-    p += frameLength;
+    frames.push({offset:scan,length:frameLength,durationMs:(samples*1000)/sampleRate});
+    scan += frameLength;
   }
   if (!frames.length) throw new Error('지원되는 MP3 프레임을 찾지 못했습니다.');
-  const out:Array<{offset:number,length:number,durationMs:number}> = [];
-  let start = frames[0].offset, length = 0, durationMs = 0;
-  for (const fr of frames) {
-    if (durationMs > 0 && durationMs + fr.durationMs > targetMs) {
-      out.push({offset:start,length,durationMs:Math.round(durationMs)});
-      start = fr.offset; length = 0; durationMs = 0;
+
+  // 중간에 임의 바이트를 건너뛰면 그 바이트가 세그먼트에서 빠지므로 변환을 중단한다.
+  for (let i=1;i<frames.length;i++) {
+    const expected = frames[i-1].offset + frames[i-1].length;
+    if (frames[i].offset !== expected) {
+      throw new Error('MP3 프레임 사이에 해석할 수 없는 데이터가 있습니다. 손실 방지를 위해 변환을 중단합니다.');
     }
-    length += fr.length; durationMs += fr.durationMs;
   }
-  if (length > 0) out.push({offset:start,length,durationMs:Math.round(durationMs)});
+  const firstFrame = frames[0].offset;
+  const lastFrameEnd = frames[frames.length-1].offset + frames[frames.length-1].length;
+  const prefixLength = firstFrame;
+  let suffixLength = data.length - lastFrameEnd;
+  if (suffixLength > 0) {
+    const hasId3v1 = suffixLength === 128 && data[lastFrameEnd]===0x54 &&
+      data[lastFrameEnd+1]===0x41 && data[lastFrameEnd+2]===0x47;
+    if (!hasId3v1) throw new Error('MP3 끝부분에 해석할 수 없는 데이터가 있습니다. 원본 보존을 위해 변환을 중단합니다.');
+  }
+
+  const out:Array<{offset:number,length:number,durationMs:number}> = [];
+  let groupStart = 0;
+  let groupEnd = firstFrame;
+  let groupDuration = 0;
+  for (let i=0;i<frames.length;i++) {
+    const frame=frames[i];
+    if (groupDuration>0 && groupDuration+frame.durationMs>targetMs) {
+      out.push({offset:groupStart,length:groupEnd-groupStart,durationMs:Math.round(groupDuration)});
+      groupStart=frame.offset;
+      groupDuration=0;
+    }
+    groupEnd=frame.offset+frame.length;
+    groupDuration+=frame.durationMs;
+  }
+  if (suffixLength) groupEnd=data.length;
+  if (groupEnd>groupStart) out.push({offset:groupStart,length:groupEnd-groupStart,durationMs:Math.round(groupDuration)});
+  if (!out.length || out[0].offset!==0 || out[out.length-1].offset+out[out.length-1].length!==data.length) {
+    throw new Error('MP3 세그먼트가 원본 전체를 연속적으로 포함하지 않습니다.');
+  }
   return out;
 }
 
@@ -1214,6 +1248,115 @@ app.post('/api/v1/tl3/releases', async (c) => {
 });
 
 // GET /api/v1/tl3/resolve/:shareId — shareId (sh_...) → file_id 조회
+
+// ── TL3 Spine v4: 별도 제조 및 검증 가능한 보관본 생성 ──
+// v3 릴리스/재생 경로는 변경하지 않는다. v4 플레이어 배포 전에는 공개 재생으로 노출하지 않는다.
+app.post('/api/v1/tl3/spine/releases', async (c) => {
+  try {
+    const body = await c.req.json<any>();
+    if (body.rights_confirmed !== true) return c.json({ok:false,error:'저작권 또는 적법한 이용 권한 확인이 필요합니다.'},400);
+    const fileId = Number(body.file_id || 0);
+    const shareId = String(body.share_id || '');
+    if (!Number.isSafeInteger(fileId) || fileId <= 0 || !shareId) return c.json({ok:false,error:'file_id와 share_id가 필요합니다.'},400);
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const payload = auth ? await verifyToken(auth,c.env.JWT_SECRET) : null;
+    if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const user = await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(payload.sub).first<any>();
+    if (!user) return c.json({ok:false,error:'사용자를 확인할 수 없습니다.'},401);
+    const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_files WHERE id=?').bind(fileId).first<any>();
+    if (!file || Number(file.user_id)!==Number(user.id)) return c.json({ok:false,error:'본인의 음원만 TL3로 자산화할 수 있습니다.'},403);
+    const sourceUrl=String(file.stream_url||'');
+    if (!sourceUrl) return c.json({ok:false,error:'원본 음원 주소가 없습니다.'},400);
+    let raw:Uint8Array;
+    const storagePath='/api/storage/';
+    const storageIndex=sourceUrl.indexOf(storagePath);
+    if(storageIndex>=0){
+      const key=decodeURIComponent(sourceUrl.slice(storageIndex+storagePath.length).split('?')[0]);
+      const meta=await getD1ObjectMeta(c.env.DB,key);
+      if(!meta) return c.json({ok:false,error:'원본 음원을 찾을 수 없습니다.'},404);
+      raw=await readD1Range(c.env.DB,key,0,meta.size);
+    }else{
+      const upstream=await fetch(sourceUrl);
+      if(!upstream.ok) return c.json({ok:false,error:'원본 음원 가져오기 실패 (HTTP '+upstream.status+')'},502);
+      raw=new Uint8Array(await upstream.arrayBuffer());
+    }
+    if(raw.length>100*1024*1024) return c.json({ok:false,error:'TL3 음원은 100MB 이하만 지원합니다.'},413);
+    const segments=parseMp3Segments(raw,1000);
+    const masterSecret=String((c.env as any).TL3_MASTER_SECRET||'');
+    if(!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET not set'},500);
+    const build=await buildTL3SpineV4({
+      fileId,shareId,title:String(file.title),artist:String(file.artist),
+      creatorId:Number(user.id),mp3Raw:raw,segments,masterSecret,
+      licId:'k_2026_spine_1',rightsConfirmed:true
+    });
+    const objectKey=`tl3/spine-v4/${fileId}/${Date.now()}.tl3`;
+    await putD1Object(c.env.DB,objectKey,build.data,'application/octet-stream',String(file.title)+'.tl3');
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_spine_v4_releases (
+      file_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, share_id TEXT NOT NULL,
+      object_key TEXT NOT NULL, header_json TEXT NOT NULL, segment_count INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL, spine_root TEXT NOT NULL, spine_latest TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'sealed', created_at TEXT DEFAULT (datetime('now'))
+    )`).run();
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_spine_v4_tokens (
+      file_id INTEGER NOT NULL, token_index INTEGER NOT NULL, token TEXT NOT NULL,
+      PRIMARY KEY(file_id,token_index)
+    )`).run();
+    await c.env.DB.prepare('DELETE FROM tl3_spine_v4_tokens WHERE file_id=?').bind(fileId).run();
+    const tokenStatements: D1PreparedStatement[] = build.spineTokens.map((token,index)=>
+      c.env.DB.prepare('INSERT INTO tl3_spine_v4_tokens(file_id,token_index,token) VALUES(?,?,?)').bind(fileId,index,token)
+    );
+    for(let i=0;i<tokenStatements.length;i+=50) await c.env.DB.batch(tokenStatements.slice(i,i+50));
+    await c.env.DB.prepare(`INSERT INTO tl3_spine_v4_releases
+      (file_id,user_id,share_id,object_key,header_json,segment_count,duration_ms,spine_root,spine_latest,status)
+      VALUES(?,?,?,?,?,?,?,?,?,'sealed')
+      ON CONFLICT(file_id) DO UPDATE SET user_id=excluded.user_id,share_id=excluded.share_id,
+      object_key=excluded.object_key,header_json=excluded.header_json,segment_count=excluded.segment_count,
+      duration_ms=excluded.duration_ms,spine_root=excluded.spine_root,spine_latest=excluded.spine_latest,
+      status='sealed',created_at=datetime('now')`
+    ).bind(fileId,Number(user.id),shareId,objectKey,JSON.stringify(build.header),
+      build.header.segment_count,build.header.duration_ms,build.header.spine_root,build.header.spine_latest).run();
+    return c.json({ok:true,profile:'TL3-SPINE-1',version:4,file_id:fileId,share_id:shareId,
+      status:'sealed_not_published',duration_ms:build.header.duration_ms,
+      segment_count:build.header.segment_count,container_bytes:build.data.length,
+      spine_root:build.header.spine_root,spine_latest:build.header.spine_latest,
+      message:'v4 제조 및 서버 보관 완료. v4 플레이어 연결 전까지 공개 재생에는 사용하지 않습니다.'});
+  } catch(e:any) {
+    return c.json({ok:false,error:e?.message||'TL3 Spine v4 변환 실패'},500);
+  }
+});
+
+app.get('/api/v1/tl3/spine/:id/verify', async (c) => {
+  try {
+    const auth=c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+    const payload=auth?await verifyToken(auth,c.env.JWT_SECRET):null;
+    if(!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const rawId=String(c.req.param('id')||'');
+    const fileId=Number(rawId);
+    if(!Number.isSafeInteger(fileId)||fileId<=0||String(fileId)!==rawId) return c.json({ok:false,error:'잘못된 file_id'},400);
+    const row=await c.env.DB.prepare('SELECT user_id,header_json,segment_count,status FROM tl3_spine_v4_releases WHERE file_id=?').bind(fileId).first<any>();
+    if(!row) return c.json({ok:false,error:'Spine v4 자산을 찾을 수 없습니다.'},404);
+    if(Number(row.user_id)!==Number(payload.sub)) return c.json({ok:false,error:'본인 자산만 검증할 수 있습니다.'},403);
+    const header=JSON.parse(String(row.header_json||'{}'));
+    const tokens=await c.env.DB.prepare('SELECT token_index,token FROM tl3_spine_v4_tokens WHERE file_id=? ORDER BY token_index ASC').bind(fileId).all<any>();
+    const chain=(tokens.results||[]);
+    const ordered=chain.every((item:any,index:number)=>Number(item.token_index)===index);
+    const meta=await getD1ObjectMeta(c.env.DB,String((await c.env.DB.prepare(
+      'SELECT object_key FROM tl3_spine_v4_releases WHERE file_id=?'
+    ).bind(fileId).first<any>())?.object_key||''));
+    if(!meta) return c.json({ok:false,valid:false,error:'TL3 Spine 컨테이너를 찾을 수 없습니다.'},404);
+    const container=await readD1Range(c.env.DB,String((await c.env.DB.prepare(
+      'SELECT object_key FROM tl3_spine_v4_releases WHERE file_id=?'
+    ).bind(fileId).first<any>())?.object_key||''),0,meta.size);
+    const result=ordered
+      ? await verifyTL3SpineV4Container(container,header,chain.map((item:any)=>String(item.token)))
+      : {valid:false,reason:'스파인 토큰 순서 오류'};
+    return c.json({ok:true,valid:result.valid,reason:result.reason||null,
+      profile:'TL3-SPINE-1',version:4,file_id:fileId,
+      segment_count:Number(row.segment_count),spine_tokens:chain.length,
+      status:result.valid?row.status:'integrity_error'});
+  } catch(e:any) { return c.json({ok:false,error:e?.message||'Spine 검증 실패'},500); }
+});
+
 app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
   try {
     const shareId = c.req.param('shareId');
