@@ -248,12 +248,12 @@ export async function buildTL3V3FromMp3(input: BuildFromMp3Input): Promise<Build
   // T_0
   const mp3T0 = await initialToken(fid, hashMp3, salt);
 
-  // 세그먼트 암호화 (5초 단위 mp3 프레임 그대로)
+  // 세그먼트 암호화 (최대 1초 단위 MP3 프레임)
   const mp3Enc: Uint8Array[] = [];
   const mp3Tokens: string[] = [hex(mp3T0)];
   let T_mp3 = mp3T0;
 
-  for (let n = 1; n <= totalSec; n++) {
+  for (let n = 1; n <= segmentCount; n++) {
     const seg = segments[n - 1];
     const segBytes = mp3Raw.subarray(seg.offset, seg.offset + seg.length);
 
@@ -282,7 +282,7 @@ export async function buildTL3V3FromMp3(input: BuildFromMp3Input): Promise<Build
     dur_sec: durationSeconds,
     fs: 0,         // mp3 프레임 방식이라 fs/ch는 참고용
     ch: 0,
-    mp3: { N: totalSec, seg_bytes: 0, last_bytes: mp3Enc[mp3Enc.length - 1].length, first_offset: 0 },
+    mp3: { N: segmentCount, seg_bytes: 0, last_bytes: mp3Enc[mp3Enc.length - 1].length, first_offset: 0 },
     lp: null,
     hash_mp3: hex(hashMp3),
     hash_lp: null,
