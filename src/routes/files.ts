@@ -49,6 +49,29 @@ router.get('/my', async (c) => {
   return c.json(rows.results);
 });
 
+// GET /pending-tl3 — administrator review queue for completed TL3 releases
+router.get('/pending-tl3', async (c) => {
+  const u = c.get('user');
+  const role = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?')
+    .bind(u.id).first<{ role: string }>();
+  if (String(role?.role || '').toLowerCase() !== 'admin') {
+    return c.json({ detail: 'Administrator role required' }, 403);
+  }
+  const rows = await c.env.DB.prepare(`
+    SELECT f.id, f.user_id, u.username, u.email, f.title, f.artist, f.genre,
+      f.file_type, f.auth_status, f.shared, f.cover_image, f.created_at,
+      r.price_tl, r.duration_ms, r.rights_confirmed
+    FROM tl_files f
+    JOIN tl3_releases r ON r.file_id = f.id
+    LEFT JOIN users u ON u.id = f.user_id
+    WHERE r.status = 'released' AND r.rights_confirmed = 1
+      AND f.auth_status IN ('unverified','pending')
+      AND COALESCE(f.revenue_held,0) = 0
+    ORDER BY f.created_at DESC LIMIT 200
+  `).all();
+  return c.json({ items: rows.results || [] });
+});
+
 // GET /:id
 router.get('/:id', async (c) => {
   const u = c.get('user');
@@ -99,10 +122,20 @@ router.post('/:id/approve', async (c) => {
     .bind(c.req.param('id')).first<TLFile>();
   if (!file) return c.json({ detail: 'Not found' }, 404);
 
-  await c.env.DB.prepare('UPDATE tl_files SET auth_status = ? WHERE id = ?')
-    .bind(newStatus, file.id).run();
+  const release = await c.env.DB.prepare(
+    "SELECT id FROM tl3_releases WHERE file_id = ? AND status = 'released' AND rights_confirmed = 1 LIMIT 1"
+  ).bind(file.id).first<any>().catch(() => null);
+  const isCompletedTL3 = !!release;
 
-  if (body.approved && file.auth_status !== 'verified' && String(file.file_type||'').toLowerCase()==='audio/tl3') {
+  if (body.approved && isCompletedTL3) {
+    await c.env.DB.prepare("UPDATE tl_files SET file_type='audio/tl3', auth_status='verified', shared=1, shared_to_shareplace=1 WHERE id=?")
+      .bind(file.id).run();
+  } else {
+    await c.env.DB.prepare('UPDATE tl_files SET auth_status = ? WHERE id = ?')
+      .bind(newStatus, file.id).run();
+  }
+
+  if (body.approved && file.auth_status !== 'verified' && (isCompletedTL3 || String(file.file_type||'').toLowerCase()==='audio/tl3')) {
     // POC +0.3 is awarded only on the first transition to verified.
     const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?')
       .bind(file.user_id).first<User>();
