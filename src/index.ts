@@ -1137,8 +1137,8 @@ app.post('/api/v1/tl3/releases', async (c) => {
     }
     if (raw.length > 100*1024*1024) return c.json({ok:false,error:'TL3 출시용 음원은 100MB 이하만 지원합니다.'},413);
 
-    // 세그먼트 (5초 단위 MP3 프레임)
-    const segments = parseMp3Segments(raw,5000);
+    // TL3 정식 규격: MP3 프레임 경계를 보존하며 최대 1초 단위로 분할한다.
+    const segments = parseMp3Segments(raw,1000);
     const durationMs = segments.reduce((n,x)=>n+x.durationMs,0);
 
     // 마스터 시크릿
