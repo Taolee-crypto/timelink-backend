@@ -1147,18 +1147,8 @@ app.post('/api/v1/tl3/releases', async (c) => {
 
     // Ensure the release schema is ready before checking share ID ownership.
     try { await c.env.DB.prepare('ALTER TABLE tl3_releases ADD COLUMN share_id TEXT').run(); } catch (_) {}
-    try { await c.env.DB.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_tl3_releases_share_id ON tl3_releases(share_id)').run(); } catch (_) {}
-
-    // shareId (body.share_id 우선, 없으면 tl3_{fileId})
+    // share_id groups SharePlace entries; it is intentionally reusable across assets.
     const shareId = shareIdParam || `tl3_${fileId}`;
-    // Idempotent retry: a share ID may already belong to this exact file.
-    // Never let a reused share ID silently take over a different creator's release.
-    const shareOwner = await c.env.DB.prepare(
-      'SELECT file_id,user_id FROM tl3_releases WHERE share_id=? LIMIT 1'
-    ).bind(shareId).first<any>().catch(() => null);
-    if (shareOwner && (Number(shareOwner.file_id) !== fileId || Number(shareOwner.user_id) !== Number(user.id))) {
-      return c.json({ok:false,error:'이 공유 ID는 이미 다른 음원에 연결되어 있습니다. 기존 음원은 보존했으며 새 공유 ID가 필요합니다.',code:'TL3_SHARE_ID_CONFLICT',file_id:Number(shareOwner.file_id)},409);
-    }
 
     // v3 빌드 (AES-256-GCM + 타임토큰 체인)
     const build = await buildTL3V3FromMp3({
@@ -1197,6 +1187,12 @@ app.post('/api/v1/tl3/releases', async (c) => {
       share_id TEXT NOT NULL, kind TEXT NOT NULL, segment_index INTEGER NOT NULL,
       token TEXT NOT NULL, PRIMARY KEY (share_id, kind, segment_index)
     )`).run();
+    // Keep token chains isolated per asset even when SharePlace ID is reused.
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_release_tokens (
+      file_id INTEGER NOT NULL, share_id TEXT NOT NULL, kind TEXT NOT NULL,
+      segment_index INTEGER NOT NULL, token TEXT NOT NULL,
+      PRIMARY KEY (file_id, kind, segment_index)
+    )`).run();
 
     // ─ D1: tl3_segments 확장 (ciphertext 위치)
     for (const sql of [
@@ -1219,8 +1215,8 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const stmts: D1PreparedStatement[] = [];
     for (let i = 0; i < build.mp3Tokens.length; i++) {
       stmts.push(
-        c.env.DB.prepare('INSERT OR REPLACE INTO tl3_tokens(share_id, kind, segment_index, token) VALUES (?,?,?,?)')
-          .bind(shareId, 'mp3', i, build.mp3Tokens[i])
+        c.env.DB.prepare('INSERT OR REPLACE INTO tl3_release_tokens(file_id, share_id, kind, segment_index, token) VALUES (?,?,?,?,?)')
+          .bind(fileId, shareId, 'mp3', i, build.mp3Tokens[i])
       );
     }
     for (let i = 0; i < stmts.length; i += 50) {
@@ -1242,14 +1238,6 @@ app.post('/api/v1/tl3/releases', async (c) => {
       mp3_token_root=excluded.mp3_token_root,mp3_token_latest=excluded.mp3_token_latest,
       share_id=excluded.share_id,
       updated_at=datetime('now')
-      ON CONFLICT(share_id) DO UPDATE SET price_tl=excluded.price_tl,status='released',
-      rights_confirmed=1,rights_confirmed_at=datetime('now'),
-      tl3_key=excluded.tl3_key,payload_offset=excluded.payload_offset,duration_ms=excluded.duration_ms,
-      segment_count=excluded.segment_count,fid=excluded.fid,salt=excluded.salt,lic_id=excluded.lic_id,
-      hash_mp3=excluded.hash_mp3,hash_lp=excluded.hash_lp,header_json=excluded.header_json,
-      mp3_token_root=excluded.mp3_token_root,mp3_token_latest=excluded.mp3_token_latest,
-      updated_at=datetime('now')
-      WHERE tl3_releases.file_id=excluded.file_id AND tl3_releases.user_id=excluded.user_id
     `).bind(
       fileId, user.id, file.title, file.artist, price, tl3Key, hdr.mp3.first_offset,
       durationMs, segments.length,
@@ -1258,8 +1246,8 @@ app.post('/api/v1/tl3/releases', async (c) => {
       1, new Date().toISOString()
     ).run();
 
-    const savedRelease = await c.env.DB.prepare('SELECT file_id,user_id,share_id FROM tl3_releases WHERE share_id=?').bind(shareId).first<any>();
-    if (!savedRelease || Number(savedRelease.file_id)!==fileId || Number(savedRelease.user_id)!==Number(user.id)) {
+    const savedRelease = await c.env.DB.prepare('SELECT file_id,user_id,share_id FROM tl3_releases WHERE file_id=?').bind(fileId).first<any>();
+    if (!savedRelease || Number(savedRelease.user_id)!==Number(user.id) || String(savedRelease.share_id)!==shareId) {
       return c.json({ok:false,error:'TL3 릴리스 저장 충돌이 발생했습니다. 기존 데이터는 보존했습니다.',code:'TL3_RELEASE_SAVE_CONFLICT'},409);
     }
 
