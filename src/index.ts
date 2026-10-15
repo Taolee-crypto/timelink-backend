@@ -3155,8 +3155,9 @@ app.get('/api/shares/:id', async (c) => {
   const file=await c.env.DB.prepare('SELECT * FROM tl_files WHERE CAST(id AS TEXT)=?').bind(id).first<any>();
   if(!file)return c.json({error:'not found'},404);
   const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-  const release=await c.env.DB.prepare("SELECT price_tl,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(file.id).first<any>().catch(()=>null);
-  const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&!!release&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
+  const release=await c.env.DB.prepare("SELECT price_tl,share_id,rights_confirmed FROM tl3_releases WHERE file_id=? AND status='released'").bind(file.id).first<any>().catch(()=>null);
+  const rightsAllowed=Number(release?.rights_confirmed||0)===1||file.auth_status==='verified';
+  const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&!!release&&rightsAllowed&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
   if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
   return c.json({
     id:String(file.id),file_id:Number(file.id),share_id:release?.share_id||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
