@@ -3817,7 +3817,7 @@ app.get('/api/legacy-stream/:fileId',async(c)=>{
     if(!file)return c.json({error:'파일 없음'},404);
     const viewerId=await playbackUserId(c);
     const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-    const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&file.auth_status==='verified'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
+    const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0&&Number((await c.env.DB.prepare("SELECT rights_confirmed FROM tl3_releases WHERE file_id=? AND status='released'").bind(file.id).first<any>())?.rights_confirmed||0)===1;
     if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
     if(!isOwner&&Number(file.file_tl||0)>0){
       if(!viewerId)return c.json({error:'TL3 재생은 로그인이 필요합니다.'},401);
