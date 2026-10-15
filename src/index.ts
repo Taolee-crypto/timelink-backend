@@ -85,7 +85,7 @@ async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   const streamUrl=String(share?.stream_url||'').trim();
   if(!streamUrl) return false;
   const file=await db.prepare(
-    "SELECT f.id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND r.status='released' AND r.rights_confirmed=1 AND (f.stream_url=? OR f.file_url=? OR f.file_url LIKE ?) LIMIT 1"
+    "SELECT f.id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND r.status='released' AND (r.rights_confirmed=1 OR f.auth_status='verified') AND (f.stream_url=? OR f.file_url=? OR f.file_url LIKE ?) LIMIT 1"
   ).bind(streamUrl,streamUrl,'%'+streamUrl).first().catch(()=>null);
   return !!file;
 }
@@ -1203,7 +1203,7 @@ app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
     const shareId = c.req.param('shareId');
     if (!shareId) return c.json({ok:false,error:'shareId 필요'},400);
     const row = await c.env.DB.prepare(
-      "SELECT file_id,title,artist,duration_ms,segment_count,price_tl FROM tl3_releases WHERE (share_id=? OR CAST(file_id AS TEXT)=?) AND status='released' AND rights_confirmed=1"
+      "SELECT file_id,title,artist,duration_ms,segment_count,price_tl FROM tl3_releases WHERE (share_id=? OR CAST(file_id AS TEXT)=?) AND status='released'"
     ).bind(shareId,shareId).first<any>();
     if (!row) return c.json({ok:false,error:'TL3 release not found'},404);
     return c.json({ok:true, file_id:row.file_id, title:row.title, artist:row.artist, duration_ms:row.duration_ms, segment_count:row.segment_count, price_tl:row.price_tl});
@@ -1216,7 +1216,7 @@ app.get('/api/v1/tl3/file/:shareId', async (c) => {
     const shareId = c.req.param('shareId');
     if (!shareId) return c.json({ok:false,error:'shareId 필요'},400);
     const row = await c.env.DB.prepare(
-      "SELECT file_id FROM tl3_releases WHERE (share_id=? OR CAST(file_id AS TEXT)=?) AND status='released' AND rights_confirmed=1"
+      "SELECT file_id FROM tl3_releases WHERE (share_id=? OR CAST(file_id AS TEXT)=?) AND status='released'"
     ).bind(shareId,shareId).first<any>();
     if (!row) return c.json({ok:false,error:'TL3 release not found'},404);
     const key = `tl3/releases/${row.file_id}.tl3`;
@@ -2765,7 +2765,7 @@ app.get('/api/shares', async (c) => {
         SELECT 1 FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id
         WHERE (f.stream_url=s.stream_url OR f.file_url=s.stream_url)
           AND LOWER(f.file_type)='audio/tl3' AND f.shared=1
-          AND COALESCE(f.revenue_held,0)=0 AND r.status='released' AND r.rights_confirmed=1
+          AND COALESCE(f.revenue_held,0)=0 AND r.status='released' AND (r.rights_confirmed=1 OR f.auth_status='verified')
       )
       UNION ALL
       SELECT
@@ -2788,7 +2788,7 @@ app.get('/api/shares', async (c) => {
       FROM tl_files f
       LEFT JOIN users u ON f.user_id = u.id
       JOIN tl3_releases r ON r.file_id=f.id
-      WHERE LOWER(f.file_type)='audio/tl3' AND r.status='released' AND r.rights_confirmed=1
+      WHERE LOWER(f.file_type)='audio/tl3' AND r.status='released' AND (r.rights_confirmed=1 OR f.auth_status='verified')
         AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
       ORDER BY created_at DESC LIMIT 200
     `).all();
@@ -3155,7 +3155,7 @@ app.get('/api/shares/:id', async (c) => {
   const file=await c.env.DB.prepare('SELECT * FROM tl_files WHERE CAST(id AS TEXT)=?').bind(id).first<any>();
   if(!file)return c.json({error:'not found'},404);
   const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-  const release=await c.env.DB.prepare("SELECT price_tl,share_id FROM tl3_releases WHERE file_id=? AND status='released' AND rights_confirmed=1").bind(file.id).first<any>().catch(()=>null);
+  const release=await c.env.DB.prepare("SELECT price_tl,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(file.id).first<any>().catch(()=>null);
   const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&!!release&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
   if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
   return c.json({
