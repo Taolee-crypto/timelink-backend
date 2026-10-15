@@ -1614,9 +1614,9 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       const fa=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
       return c.json({ok:true,duplicate:true,lic_n:hex(licN),segment:segmentIndex,cost:Number(ss.pending_cost||0),wallet_tl:Number(fw?.p||0)+Number(fw?.a||0)+Number(fw?.b||0),asset_remaining_tl:Number(fa?.remaining_tl||0)});
     }
-    if (Number(ss.last_segment_at) && now - Number(ss.last_segment_at) < 1) {
-      return c.json({ok:false,error:'rate limit',retry_after:1-(now-Number(ss.last_segment_at))},429);
-    }
+    // Segment order and the single pending-segment state already prevent replay
+    // and parallel charging. A wall-clock one-second throttle breaks valid
+    // sub-second MP3 frame groups and is therefore intentionally omitted.
     const masterSecret = c.env.TL3_MASTER_SECRET;
     if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
     const cost=Number((Number(seg.duration_ms)/1000).toFixed(3));
