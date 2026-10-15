@@ -1006,8 +1006,8 @@ function parseMp3Segments(data: Uint8Array, targetMs=1000): Array<{offset:number
   const bitrateV1 = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
   const bitrateV2 = [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0];
   const sampleBase = [44100,48000,32000,0];
-  if (!Number.isFinite(targetMs) || targetMs <= 0 || targetMs > 1000) {
-    throw new Error('TL3 Spine 세그먼트 목표 시간은 1~1000ms여야 합니다.');
+  if (!Number.isFinite(targetMs) || targetMs <= 0 || targetMs > 5000) {
+    throw new Error('TL3 Spine 세그먼트 목표 시간은 1~5000ms여야 합니다.');
   }
 
   const frames: Array<{offset:number,length:number,durationMs:number}> = [];
