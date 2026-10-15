@@ -50,6 +50,21 @@ router.get('/channels', async (c) => {
   }
 });
 
+router.get('/my-channel', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ ok: false, error: '로그인이 필요합니다.' }, 401);
+  try {
+    await ensureIncarTables(c.env.DB);
+    const channel = await c.env.DB.prepare(
+      `SELECT channel_id, name, owner_name, car_plate, car_type, drive_region, description, theme, playlist, schedules, created_at
+       FROM incar_channels WHERE owner_id=? AND status='active' ORDER BY created_at DESC LIMIT 1`
+    ).bind(auth.id).first<any>();
+    return c.json({ ok: true, registered: !!channel, channel: channel || null });
+  } catch (error: any) {
+    return c.json({ ok: false, error: error?.message || '내 인카 채널 조회 실패' }, 500);
+  }
+});
+
 router.post('/channel', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ ok: false, error: '로그인이 필요합니다.' }, 401);
