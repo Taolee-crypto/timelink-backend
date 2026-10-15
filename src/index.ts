@@ -1145,6 +1145,10 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const masterSecret = String((c.env as any).TL3_MASTER_SECRET || '');
     if (!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET not set'},500);
 
+    // Ensure the release schema is ready before checking share ID ownership.
+    try { await c.env.DB.prepare('ALTER TABLE tl3_releases ADD COLUMN share_id TEXT').run(); } catch (_) {}
+    try { await c.env.DB.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_tl3_releases_share_id ON tl3_releases(share_id)').run(); } catch (_) {}
+
     // shareId (body.share_id 우선, 없으면 tl3_{fileId})
     const shareId = shareIdParam || `tl3_${fileId}`;
     // Idempotent retry: a share ID may already belong to this exact file.
