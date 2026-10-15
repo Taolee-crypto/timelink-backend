@@ -89,7 +89,8 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
   const linked=await db.prepare(
     "SELECT DISTINCT r.file_id FROM tl_shares s JOIN tl_files f ON (f.stream_url=s.stream_url OR f.file_url=s.stream_url) JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 2"
   ).bind(id).all().catch(()=>({results:[]}));
-  const linkedIds=Array.from(new Set((linked.results||[]).map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0)));
+  const linkedRows:any[]=(linked.results||[]) as any[];
+  const linkedIds:number[]=[...new Set<number>(linkedRows.map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
   if(linkedIds.length===1) return linkedIds[0];
   if(linkedIds.length>1) return 0;
 
@@ -98,7 +99,8 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
   const direct=await db.prepare(
     "SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 2"
   ).bind(id).all().catch(()=>({results:[]}));
-  const directIds=Array.from(new Set((direct.results||[]).map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0)));
+  const directRows:any[]=(direct.results||[]) as any[];
+  const directIds:number[]=[...new Set<number>(directRows.map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
   return directIds.length===1?directIds[0]:0;
 }
 async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
