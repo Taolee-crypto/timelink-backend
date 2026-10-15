@@ -55,15 +55,15 @@ router.post('/', async (c) => {
     }
     const stored = await getD1ObjectMeta(c.env.DB, storageKey);
     if (!stored) return c.json({ ok: false, error: '완료된 TL3 저장 자산을 찾을 수 없습니다.' }, 404);
-    const prefix = await readD1Range(c.env.DB, storageKey, 0, Math.min(stored.size, 7));
-    if (prefix.byteLength < 7 || prefix[0] !== 0x54 || prefix[1] !== 0x4c || prefix[2] !== 0x4e || prefix[3] !== 0x4b || prefix[4] !== 0x02) {
-      return c.json({ ok: false, error: '유효한 TL3 v2 컨테이너가 아닙니다.' }, 400);
+    const prefix = await readD1Range(c.env.DB, storageKey, 0, Math.min(stored.size, 9));
+    if (prefix.byteLength < 9 || prefix[0] !== 0x54 || prefix[1] !== 0x4c || prefix[2] !== 0x4e || prefix[3] !== 0x4b || prefix[4] !== 0x03) {
+      return c.json({ ok: false, error: '유효한 TL3 v3 컨테이너가 아닙니다.' }, 400);
     }
-    const headerLength = (prefix[5] << 8) | prefix[6];
-    if (headerLength <= 0 || 7 + headerLength > stored.size) {
+    const headerLength = new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength).getUint32(5, false);
+    if (headerLength <= 0 || 9 + headerLength > stored.size) {
       return c.json({ ok: false, error: 'TL3 메타데이터가 손상되었습니다.' }, 400);
     }
-    const headerBytes = await readD1Range(c.env.DB, storageKey, 7, headerLength);
+    const headerBytes = await readD1Range(c.env.DB, storageKey, 9, headerLength);
     let header: any;
     try {
       header = JSON.parse(new TextDecoder().decode(headerBytes));
@@ -75,10 +75,10 @@ router.post('/', async (c) => {
     }
 
     const approvedFile = await c.env.DB.prepare(
-      "SELECT id FROM tl_files WHERE user_id = ? AND LOWER(file_type) = 'audio/tl3' AND (stream_url = ? OR file_url = ?) AND auth_status = 'verified' AND shared = 1 AND COALESCE(revenue_held, 0) = 0 LIMIT 1"
+      "SELECT f.id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.user_id = ? AND LOWER(f.file_type) = 'audio/tl3' AND (f.stream_url = ? OR f.file_url = ?) AND f.shared = 1 AND COALESCE(f.revenue_held, 0) = 0 AND r.status='released' AND r.rights_confirmed=1 LIMIT 1"
     ).bind(userId, streamUrl, streamUrl).first<any>();
     if (!approvedFile) {
-      return c.json({ ok: false, error: '관리자 권리 검증과 창작자 공개 승인이 완료된 TL3만 공유할 수 있습니다.' }, 403);
+      return c.json({ ok: false, error: '창작자 권리 확인을 마친 TL3 자산을 먼저 발행해야 합니다.' }, 403);
     }
 
     const hash = String(body.origin_hash || '').trim().toLowerCase();
@@ -127,7 +127,8 @@ router.get('/', async (c) => {
       WHERE a.file_id = f.id AND c.status = 'active' LIMIT 1) AS cert_no
     FROM tl_files f JOIN users u ON f.user_id = u.id
     WHERE LOWER(f.file_type)='audio/tl3'
-      AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0`;
+      AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+      AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)`;
   const params: (string | number)[] = [];
   if (genre) { query += ' AND f.genre = ?'; params.push(genre); }
   query += ` ORDER BY ${orderCol} DESC LIMIT ? OFFSET ?`;
@@ -160,7 +161,8 @@ router.get('/', async (c) => {
         SELECT 1 FROM tl_files f
         WHERE (f.stream_url=s.stream_url OR f.file_url=s.stream_url)
           AND LOWER(f.file_type)='audio/tl3'
-          AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+          AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+          AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)
       )
       ORDER BY s.pulse DESC, s.created_at DESC
       LIMIT ? OFFSET ?
