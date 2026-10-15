@@ -3155,16 +3155,16 @@ app.get('/api/shares/:id', async (c) => {
   const file=await c.env.DB.prepare('SELECT * FROM tl_files WHERE CAST(id AS TEXT)=?').bind(id).first<any>();
   if(!file)return c.json({error:'not found'},404);
   const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-  const release=await c.env.DB.prepare("SELECT 1 AS ok FROM tl3_releases WHERE file_id=? AND status='released' AND rights_confirmed=1").bind(file.id).first<any>().catch(()=>null);
+  const release=await c.env.DB.prepare("SELECT price_tl,share_id FROM tl3_releases WHERE file_id=? AND status='released' AND rights_confirmed=1").bind(file.id).first<any>().catch(()=>null);
   const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&!!release&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
   if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
   return c.json({
-    id:String(file.id),user_id:Number(file.user_id||0),username:String(file.username||'User'),
+    id:String(file.id),file_id:Number(file.id),share_id:release?.share_id||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
     title:String(file.title||''),artist:String(file.artist||''),album:'',duration:Number(file.duration_seconds||0),
-    file_tl:Number(file.file_tl||0),category:String(file.genre||'Music'),file_type:String(file.file_type||''),
-    category_type:'',description:'',plan:'A',cover_url:null,pulse:Number(file.pulse||0),
+    file_tl:Number(file.file_tl||0),price_tl:Number(release?.price_tl||0),category:String(file.genre||'Music'),file_type:String(file.file_type||''),
+    category_type:'audio',description:'',plan:'A',cover_url:file.cover_image||null,pulse:Number(file.pulse||0),
     play_count:Number(file.play_count||0),created_at:file.created_at,
-    content_kind:Number(file.file_tl||0)>0?'tl3':'mp3',
+    content_kind:release?'tl3':'mp3',
     stream_url:origin+'/api/legacy-stream/'+encodeURIComponent(String(file.id))
   });
 });
