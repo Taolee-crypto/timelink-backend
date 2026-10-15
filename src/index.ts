@@ -1419,7 +1419,6 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     const takeA=Math.min(left,wallet.a); left=Number((left-takeA).toFixed(6));
     const takeB=Math.min(left,wallet.b); left=Number((left-takeB).toFixed(6));
     const takeP=Number(Math.max(0,left).toFixed(6));
-    const nextA=Number((wallet.a-takeA).toFixed(6)),nextB=Number((wallet.b-takeB).toFixed(6)),nextP=Number((wallet.p-takeP).toFixed(6));
     try{
       await c.env.DB.batch([
         c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl=COALESCE(tl_p,tl,tl_balance,0)-?+COALESCE(tl_a,0)-?+COALESCE(tl_b,0)-?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND COALESCE(tl_p,tl,tl_balance,0)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(takeP,takeA,takeB,takeP,takeA,takeB,cost,u.id,takeP,takeA,takeB),
