@@ -1363,6 +1363,8 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     if (segmentIndex >= Number(file.segment_count||0)) return c.json({ok:false,error:'재생 종료'},416);
     const seg = await c.env.DB.prepare('SELECT duration_ms FROM tl3_segments WHERE file_id=? AND segment_index=?').bind(fileId,segmentIndex).first<any>();
     if (!seg) return c.json({ok:false,error:'세그먼트 없음'},404);
+    const assetTL=await ensureTL3AssetTL(c.env.DB,fileId);
+    if(!assetTL) return c.json({ok:false,error:'음원 TL 풀을 확인할 수 없습니다.'},409);
     const now = Math.floor(Date.now()/1000);
     let ss = await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
     if (!ss) {
@@ -1378,9 +1380,13 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       if (Number(ss.pending_segment) === segmentIndex) {
         // 같은 세그먼트 재요청 → 이미 차감됨, 통과
       } else if (pendingAge > pendingDuration + 10) {
-        const pendingCost = Number(ss.pending_cost||0);
-        await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(pendingCost,pendingCost,u.id).run();
-        await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime(\'now\') WHERE id=?').bind(sessionId).run();
+        const pendingCost=Number(ss.pending_cost||0);
+        const refundP=Number(ss.pending_tl_p||0),refundA=Number(ss.pending_tl_a||0),refundB=Number(ss.pending_tl_b||0);
+        await c.env.DB.batch([
+          c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,pendingCost,u.id),
+          c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(pendingCost,fileId),
+          c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime('now') WHERE id=?").bind(sessionId)
+        ]);
         ss.next_segment = Number(ss.pending_segment)+1;
         ss.pending_segment = null;
       }
@@ -1391,9 +1397,31 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     }
     const masterSecret = c.env.TL3_MASTER_SECRET;
     if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
-    const cost = Number((Number(seg.duration_ms)/1000).toFixed(3));
-    const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-?,total_tl_spent=total_tl_spent+? WHERE id=? AND tl_balance>=?').bind(cost,cost,u.id,cost).run();
-    if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:cost,balance:u.tl_balance},402);
+    const cost=Number((Number(seg.duration_ms)/1000).toFixed(3));
+    const wallet=tlWalletParts(u),walletTotal=wallet.p+wallet.a+wallet.b;
+    const assetRemaining=Number(assetTL.remaining_tl||0);
+    if(assetRemaining+1e-9<cost) return c.json({ok:false,error:'이 음원의 자산 TL이 소진되었습니다.',required:cost,asset_remaining_tl:assetRemaining},402);
+    if(walletTotal+1e-9<cost) return c.json({ok:false,error:'사용자 지갑 TL이 부족합니다.',required:cost,wallet_tl:walletTotal},402);
+    let left=cost;
+    const takeA=Math.min(left,wallet.a); left=Number((left-takeA).toFixed(6));
+    const takeB=Math.min(left,wallet.b); left=Number((left-takeB).toFixed(6));
+    const takeP=Number(Math.max(0,left).toFixed(6));
+    const nextA=Number((wallet.a-takeA).toFixed(6)),nextB=Number((wallet.b-takeB).toFixed(6)),nextP=Number((wallet.p-takeP).toFixed(6));
+    try{
+      await c.env.DB.batch([
+        c.env.DB.prepare('UPDATE users SET tl_p=?,tl_a=?,tl_b=?,tl=?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND COALESCE(tl_p,tl,tl_balance,0)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(nextP,nextA,nextB,nextP+nextA+nextB,cost,u.id,takeP,takeA,takeB),
+        c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+        c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl-?,updated_at=datetime('now') WHERE file_id=? AND remaining_tl>=?").bind(cost,fileId,cost),
+        c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+        c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_tl_p=?,pending_tl_a=?,pending_tl_b=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime('now') WHERE id=? AND (pending_segment IS NULL OR pending_segment IS ?)").bind(Math.max(Number(ss.next_segment||0),segmentIndex+1),segmentIndex,cost,takeP,takeA,takeB,Number(seg.duration_ms),now,now,sessionId,segmentIndex),
+        c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+        c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
+      ]);
+    }catch(_){
+      const fw=await c.env.DB.prepare('SELECT COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
+      const fa=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+      return c.json({ok:false,error:'TL 예약이 동시에 변경되었습니다. 잔액을 새로 확인해 주세요.',wallet_tl:Number(fw?.p||0)+Number(fw?.a||0)+Number(fw?.b||0),asset_remaining_tl:Number(fa?.remaining_tl||0)},409);
+    }
 
     // 파일 생성 시 사용한 share_id와 동일한 키로 라이선스를 계산한다.
     const releaseRow = await c.env.DB.prepare(
@@ -1402,10 +1430,9 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     const shareIdKey = releaseRow?.share_id || `tl3_${fileId}`;
     const licN = await deriveLicenseBytes(masterSecret, shareIdKey);
 
-    const nextNs = Math.max(Number(ss.next_segment||0), segmentIndex + 1);
-    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(nextNs,segmentIndex,cost,Number(seg.duration_ms),now,now,sessionId).run();
-    const fresh = await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
-    return c.json({ok:true, lic_n: hex(licN), segment: segmentIndex, cost: cost, remaining_tl: Number(fresh?.tl_balance||0)});
+    const fresh=await c.env.DB.prepare('SELECT COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
+    const freshAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+    return c.json({ok:true,lic_n:hex(licN),segment:segmentIndex,cost,remaining_tl:Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0),wallet_tl:Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0),asset_remaining_tl:Number(freshAsset?.remaining_tl||0)});
   } catch(e:any) { return c.json({ok:false,error:e.message||'code error'},500); }
 });
 
@@ -2957,6 +2984,7 @@ async function ensureShareTLBalances(db: D1Database){
   `).run();
 }
 async function ensureTL3AssetTL(db:D1Database,fileId:number){
+  await db.prepare(`CREATE TABLE IF NOT EXISTS tl3_assertion_guard (ok INTEGER NOT NULL CHECK(ok=1))`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS tl3_asset_tl (
     file_id INTEGER PRIMARY KEY, share_id TEXT NOT NULL,
     initial_tl REAL NOT NULL DEFAULT 0, remaining_tl REAL NOT NULL DEFAULT 0,
