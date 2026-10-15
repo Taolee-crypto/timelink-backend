@@ -1002,44 +1002,77 @@ app.post('/api/upload',async(c)=>{const session=await storageUser(c),uid=Number(
 
 // (tl3Xor 제거됨 — v3에서 AES-256-GCM 사용)
 
-function parseMp3Segments(data: Uint8Array, targetMs=5000): Array<{offset:number,length:number,durationMs:number}> {
+function parseMp3Segments(data: Uint8Array, targetMs=1000): Array<{offset:number,length:number,durationMs:number}> {
   const bitrateV1 = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
   const bitrateV2 = [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0];
   const sampleBase = [44100,48000,32000,0];
-  const frames: Array<{offset:number,length:number,durationMs:number}> = [];
-  let p = 0;
-  if (data.length >= 10 && data[0]===0x49 && data[1]===0x44 && data[2]===0x33) {
-    const sz = ((data[6]&0x7f)<<21)|((data[7]&0x7f)<<14)|((data[8]&0x7f)<<7)|(data[9]&0x7f);
-    p = 10 + sz + ((data[5]&0x10) ? 10 : 0);
+  if (!Number.isFinite(targetMs) || targetMs <= 0 || targetMs > 1000) {
+    throw new Error('TL3 Spine 세그먼트 목표 시간은 1~1000ms여야 합니다.');
   }
-  while (p + 4 <= data.length) {
-    if (data[p]!==0xff || (data[p+1]&0xe0)!==0xe0) { p++; continue; }
-    const version = (data[p+1]>>3)&3;
-    const layer = (data[p+1]>>1)&3;
-    const bi = (data[p+2]>>4)&15;
-    const si = (data[p+2]>>2)&3;
-    const padding = (data[p+2]>>1)&1;
-    if (layer!==1 || version===1 || bi===0 || bi===15 || si===3) { p++; continue; }
-    const sr0 = sampleBase[si];
-    const sampleRate = version===3 ? sr0 : Math.floor(sr0/(version===2?2:4));
+
+  const frames: Array<{offset:number,length:number,durationMs:number}> = [];
+  let scan = 0;
+  if (data.length >= 10 && data[0]===0x49 && data[1]===0x44 && data[2]===0x33) {
+    const size = ((data[6]&0x7f)<<21)|((data[7]&0x7f)<<14)|((data[8]&0x7f)<<7)|(data[9]&0x7f);
+    scan = 10 + size + ((data[5]&0x10) ? 10 : 0);
+    if (scan > data.length) throw new Error('MP3 ID3 헤더 길이가 잘못되었습니다.');
+  }
+
+  while (scan + 4 <= data.length) {
+    if (data[scan]!==0xff || (data[scan+1]&0xe0)!==0xe0) { scan++; continue; }
+    const version = (data[scan+1]>>3)&3;
+    const layer = (data[scan+1]>>1)&3;
+    const bi = (data[scan+2]>>4)&15;
+    const si = (data[scan+2]>>2)&3;
+    const padding = (data[scan+2]>>1)&1;
+    if (layer!==1 || version===1 || bi===0 || bi===15 || si===3) { scan++; continue; }
+    const baseRate = sampleBase[si];
+    const sampleRate = version===3 ? baseRate : Math.floor(baseRate/(version===2?2:4));
     const kbps = version===3 ? bitrateV1[bi] : bitrateV2[bi];
     const frameLength = Math.floor((version===3 ? 144000 : 72000) * kbps / sampleRate) + padding;
-    if (frameLength < 24 || p + frameLength > data.length) { p++; continue; }
+    if (frameLength < 24 || scan + frameLength > data.length) { scan++; continue; }
     const samples = version===3 ? 1152 : 576;
-    frames.push({offset:p,length:frameLength,durationMs:(samples*1000)/sampleRate});
-    p += frameLength;
+    frames.push({offset:scan,length:frameLength,durationMs:(samples*1000)/sampleRate});
+    scan += frameLength;
   }
   if (!frames.length) throw new Error('지원되는 MP3 프레임을 찾지 못했습니다.');
-  const out:Array<{offset:number,length:number,durationMs:number}> = [];
-  let start = frames[0].offset, length = 0, durationMs = 0;
-  for (const fr of frames) {
-    if (durationMs > 0 && durationMs + fr.durationMs > targetMs) {
-      out.push({offset:start,length,durationMs:Math.round(durationMs)});
-      start = fr.offset; length = 0; durationMs = 0;
+
+  // 중간에 임의 바이트를 건너뛰면 그 바이트가 세그먼트에서 빠지므로 변환을 중단한다.
+  for (let i=1;i<frames.length;i++) {
+    const expected = frames[i-1].offset + frames[i-1].length;
+    if (frames[i].offset !== expected) {
+      throw new Error('MP3 프레임 사이에 해석할 수 없는 데이터가 있습니다. 손실 방지를 위해 변환을 중단합니다.');
     }
-    length += fr.length; durationMs += fr.durationMs;
   }
-  if (length > 0) out.push({offset:start,length,durationMs:Math.round(durationMs)});
+  const firstFrame = frames[0].offset;
+  const lastFrameEnd = frames[frames.length-1].offset + frames[frames.length-1].length;
+  const prefixLength = firstFrame;
+  let suffixLength = data.length - lastFrameEnd;
+  if (suffixLength > 0) {
+    const hasId3v1 = suffixLength === 128 && data[lastFrameEnd]===0x54 &&
+      data[lastFrameEnd+1]===0x41 && data[lastFrameEnd+2]===0x47;
+    if (!hasId3v1) throw new Error('MP3 끝부분에 해석할 수 없는 데이터가 있습니다. 원본 보존을 위해 변환을 중단합니다.');
+  }
+
+  const out:Array<{offset:number,length:number,durationMs:number}> = [];
+  let groupStart = 0;
+  let groupEnd = firstFrame;
+  let groupDuration = 0;
+  for (let i=0;i<frames.length;i++) {
+    const frame=frames[i];
+    if (groupDuration>0 && groupDuration+frame.durationMs>targetMs) {
+      out.push({offset:groupStart,length:groupEnd-groupStart,durationMs:Math.round(groupDuration)});
+      groupStart=frame.offset;
+      groupDuration=0;
+    }
+    groupEnd=frame.offset+frame.length;
+    groupDuration+=frame.durationMs;
+  }
+  if (suffixLength) groupEnd=data.length;
+  if (groupEnd>groupStart) out.push({offset:groupStart,length:groupEnd-groupStart,durationMs:Math.round(groupDuration)});
+  if (!out.length || out[0].offset!==0 || out[out.length-1].offset+out[out.length-1].length!==data.length) {
+    throw new Error('MP3 세그먼트가 원본 전체를 연속적으로 포함하지 않습니다.');
+  }
   return out;
 }
 
