@@ -1384,8 +1384,12 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
         const refundP=Number(ss.pending_tl_p||0),refundA=Number(ss.pending_tl_a||0),refundB=Number(ss.pending_tl_b||0);
         await c.env.DB.batch([
           c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,pendingCost,u.id),
+          c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
           c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(pendingCost,fileId),
-          c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime('now') WHERE id=?").bind(sessionId)
+          c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+          c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime('now') WHERE id=?").bind(sessionId),
+          c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+          c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
         ]);
         ss.next_segment = Number(ss.pending_segment)+1;
         ss.pending_segment = null;
