@@ -1387,7 +1387,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
           c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(pendingCost,fileId),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-          c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime('now') WHERE id=?").bind(sessionId),
+          c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime('now') WHERE id=? AND pending_segment=?").bind(sessionId,Number(ss.pending_segment)),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
           c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
         ]);
