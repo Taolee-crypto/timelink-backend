@@ -1422,7 +1422,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
         c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl-?,updated_at=datetime('now') WHERE file_id=? AND remaining_tl>=?").bind(cost,fileId,cost),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-        c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_tl_p=?,pending_tl_a=?,pending_tl_b=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime('now') WHERE id=? AND (pending_segment IS NULL OR pending_segment IS ?)").bind(Math.max(Number(ss.next_segment||0),segmentIndex+1),segmentIndex,cost,takeP,takeA,takeB,Number(seg.duration_ms),now,now,sessionId,segmentIndex),
+        c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_tl_p=?,pending_tl_a=?,pending_tl_b=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime('now') WHERE id=? AND pending_segment IS NULL").bind(Math.max(Number(ss.next_segment||0),segmentIndex+1),segmentIndex,cost,takeP,takeA,takeB,Number(seg.duration_ms),now,now,sessionId),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
         c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
       ]);
