@@ -87,7 +87,7 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
   if(!id) return 0;
 
   const linked=await db.prepare(
-    "SELECT DISTINCT r.file_id FROM tl_shares s JOIN tl_files f ON (f.stream_url=s.stream_url OR f.file_url=s.stream_url) JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 2"
+    "SELECT DISTINCT r.file_id FROM tl_shares s JOIN tl_files f ON (f.stream_url=s.stream_url OR f.file_url=s.stream_url) JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1) LIMIT 2"
   ).bind(id).all().catch(()=>({results:[]}));
   const linkedRows:any[]=(linked.results||[]) as any[];
   const linkedIds:number[]=[...new Set<number>(linkedRows.map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
@@ -112,7 +112,7 @@ async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   const streamUrl=String(share?.stream_url||'').trim();
   if(streamUrl){
     const file=await db.prepare(
-      "SELECT id FROM tl_files WHERE LOWER(file_type)='audio/tl3' AND auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0 AND (stream_url=? OR file_url=? OR file_url LIKE ?) LIMIT 1"
+      "SELECT f.id FROM tl_files f WHERE LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND (f.stream_url=? OR f.file_url=? OR f.file_url LIKE ?) AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1) LIMIT 1"
     ).bind(streamUrl,streamUrl,'%'+streamUrl).first().catch(()=>null);
     if(file) return true;
   }
@@ -1278,7 +1278,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
       return c.json({ok:false,error:'TL3 릴리스 저장 충돌이 발생했습니다. 기존 데이터는 보존했습니다.',code:'TL3_RELEASE_SAVE_CONFLICT'},409);
     }
 
-    await c.env.DB.prepare("UPDATE tl_files SET file_type='audio/tl3', shared=1, shared_to_shareplace=1, updated_at=datetime('now') WHERE id=?").bind(fileId).run();
+    await c.env.DB.prepare("UPDATE tl_files SET file_type='audio/tl3', shared=1, shared_to_shareplace=1, auth_status=CASE WHEN auth_status='verified' THEN auth_status ELSE 'creator_confirmed' END, updated_at=datetime('now') WHERE id=?").bind(fileId).run();
     if (shareIdParam) {
       await c.env.DB.prepare("UPDATE tl_shares SET file_type='audio/tl3' WHERE CAST(id AS TEXT)=? AND CAST(user_id AS INTEGER)=?")
         .bind(shareIdParam, Number(user.id)).run().catch(() => {});
