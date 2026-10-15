@@ -1392,6 +1392,15 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       }
       // 10초 안 지났고 다른 세그먼트여도 → 프리버퍼 허용
     }
+    if(ss.pending_segment!==null&&ss.pending_segment!==undefined&&Number(ss.pending_segment)===segmentIndex){
+      const masterSecret=c.env.TL3_MASTER_SECRET;
+      if(!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET is not configured'},503);
+      const releaseRow=await c.env.DB.prepare("SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
+      const licN=await deriveLicenseBytes(masterSecret,releaseRow?.share_id||`tl3_${fileId}`);
+      const fw=await c.env.DB.prepare('SELECT COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
+      const fa=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+      return c.json({ok:true,duplicate:true,lic_n:hex(licN),segment:segmentIndex,cost:Number(ss.pending_cost||0),wallet_tl:Number(fw?.p||0)+Number(fw?.a||0)+Number(fw?.b||0),asset_remaining_tl:Number(fa?.remaining_tl||0)});
+    }
     if (Number(ss.last_segment_at) && now - Number(ss.last_segment_at) < 1) {
       return c.json({ok:false,error:'rate limit',retry_after:1-(now-Number(ss.last_segment_at))},429);
     }
