@@ -1204,8 +1204,12 @@ app.post('/api/v1/tl3/releases', async (c) => {
       1, new Date().toISOString()
     ).run();
 
-    await c.env.DB.prepare("UPDATE tl_files SET shared=1, shared_to_shareplace=1, updated_at=datetime('now') WHERE id=?").bind(fileId).run();
-    return c.json({ok:true,file_id:fileId,price_tl:price,status:'released',duration_ms:durationMs,segment_count:segments.length,tl3_key:tl3Key,version:3});
+    await c.env.DB.prepare("UPDATE tl_files SET file_type='audio/tl3', shared=1, shared_to_shareplace=1, updated_at=datetime('now') WHERE id=?").bind(fileId).run();
+    if (shareIdParam) {
+      await c.env.DB.prepare("UPDATE tl_shares SET file_type='audio/tl3' WHERE CAST(id AS TEXT)=? AND CAST(user_id AS INTEGER)=?")
+        .bind(shareIdParam, Number(user.id)).run().catch(() => {});
+    }
+    return c.json({ok:true,file_id:fileId,share_id:shareId,price_tl:price,status:'released',duration_ms:durationMs,segment_count:segments.length,tl3_key:tl3Key,version:3});
   } catch(e:any) { return c.json({ok:false,error:e.message||'TL3 release error'},500); }
 });
 
@@ -1215,8 +1219,8 @@ app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
     const shareId = c.req.param('shareId');
     if (!shareId) return c.json({ok:false,error:'shareId 필요'},400);
     const row = await c.env.DB.prepare(
-      "SELECT file_id,title,artist,duration_ms,segment_count,price_tl FROM tl3_releases WHERE share_id=? AND status='released'"
-    ).bind(shareId).first<any>();
+      "SELECT file_id,title,artist,duration_ms,segment_count,price_tl FROM tl3_releases WHERE (share_id=? OR CAST(file_id AS TEXT)=?) AND status='released'"
+    ).bind(shareId,shareId).first<any>();
     if (!row) return c.json({ok:false,error:'TL3 release not found'},404);
     return c.json({ok:true, file_id:row.file_id, title:row.title, artist:row.artist, duration_ms:row.duration_ms, segment_count:row.segment_count, price_tl:row.price_tl});
   } catch(e:any) { return c.json({ok:false,error:e.message||'resolve error'},500); }
@@ -1228,8 +1232,8 @@ app.get('/api/v1/tl3/file/:shareId', async (c) => {
     const shareId = c.req.param('shareId');
     if (!shareId) return c.json({ok:false,error:'shareId 필요'},400);
     const row = await c.env.DB.prepare(
-      "SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released'"
-    ).bind(shareId).first<any>();
+      "SELECT file_id FROM tl3_releases WHERE (share_id=? OR CAST(file_id AS TEXT)=?) AND status='released'"
+    ).bind(shareId,shareId).first<any>();
     if (!row) return c.json({ok:false,error:'TL3 release not found'},404);
     const key = `tl3/releases/${row.file_id}.tl3`;
     const meta = await getD1ObjectMeta(c.env.DB, key);
@@ -2784,7 +2788,9 @@ app.get('/api/shares', async (c) => {
         f.country, '' as content_lang, f.auth_status, f.shared,
         f.revenue, f.hold_revenue, f.revenue_held, f.pulse, f.play_count,
         f.created_at, f.updated_at,
-        CASE WHEN lower(f.file_type) LIKE '%mp3%' OR lower(f.file_type) LIKE 'audio/%' THEN 'mp3' ELSE 'file' END as content_kind,
+        CASE WHEN lower(f.file_type)='audio/tl3' THEN 'tl3'
+             WHEN lower(f.file_type) LIKE '%mp3%' OR lower(f.file_type) LIKE 'audio/%' THEN 'mp3'
+             ELSE 'file' END as content_kind,
         'tl_file' as source_table,
         (SELECT c.cert_no FROM tl_asset_certs c
          JOIN tl_assets a ON a.asset_id = c.asset_id
@@ -3158,15 +3164,16 @@ app.get('/api/shares/:id', async (c) => {
   const file=await c.env.DB.prepare('SELECT * FROM tl_files WHERE CAST(id AS TEXT)=?').bind(id).first<any>();
   if(!file)return c.json({error:'not found'},404);
   const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
+  const release=await c.env.DB.prepare("SELECT price_tl,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(file.id).first<any>().catch(()=>null);
   const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&file.auth_status==='verified'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0;
   if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
   return c.json({
-    id:String(file.id),user_id:Number(file.user_id||0),username:String(file.username||'User'),
+    id:String(file.id),file_id:Number(file.id),share_id:release?.share_id||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
     title:String(file.title||''),artist:String(file.artist||''),album:'',duration:Number(file.duration_seconds||0),
-    file_tl:Number(file.file_tl||0),category:String(file.genre||'Music'),file_type:String(file.file_type||''),
-    category_type:'',description:'',plan:'A',cover_url:null,pulse:Number(file.pulse||0),
+    file_tl:Number(file.file_tl||0),price_tl:Number(release?.price_tl||0),category:String(file.genre||'Music'),file_type:String(file.file_type||''),
+    category_type:'audio',description:'',plan:'A',cover_url:file.cover_image||null,pulse:Number(file.pulse||0),
     play_count:Number(file.play_count||0),created_at:file.created_at,
-    content_kind:Number(file.file_tl||0)>0?'tl3':'mp3',
+    content_kind:release?'tl3':'mp3',
     stream_url:origin+'/api/legacy-stream/'+encodeURIComponent(String(file.id))
   });
 });
