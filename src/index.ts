@@ -788,7 +788,7 @@ app.post('/api/files/sync', async (c) => {
 
     if (!body.title) return c.json({ error: 'title required' }, 422);
 
-    const existing = await c.env.DB.prepare(
+    const existing = body.force_new === true ? null : await c.env.DB.prepare(
       'SELECT id FROM tl_files WHERE title = ? AND user_id = ?'
     ).bind(body.title, userId).first<{ id: number }>();
     if (existing) {
@@ -813,7 +813,7 @@ app.post('/api/files/sync', async (c) => {
         body.spotify_album||'', 0, body.pulse||0, body.icon||'🎵',
         Math.max(0,Math.floor(Number(body.file_tl||0))), Math.max(0,Math.floor(Number(body.file_tl||0)))
       ).first<{ id: number }>();
-      return c.json({ ok: true, action: 'created', d1_id: res?.id });
+      return c.json({ ok: true, action: 'created', d1_id: res?.id, share_id: body.share_id || (res?.id ? 'tl3_' + res.id : '') });
     }
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
