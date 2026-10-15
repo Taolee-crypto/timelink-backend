@@ -1147,6 +1147,9 @@ app.post('/api/v1/tl3/releases', async (c) => {
 
     // Ensure the release schema is ready before checking share ID ownership.
     try { await c.env.DB.prepare('ALTER TABLE tl3_releases ADD COLUMN share_id TEXT').run(); } catch (_) {}
+    // Remove the former single-release uniqueness rule; keep a normal lookup index.
+    await c.env.DB.prepare('DROP INDEX IF EXISTS idx_tl3_releases_share_id').run().catch(() => {});
+    await c.env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_tl3_releases_share_id_lookup ON tl3_releases(share_id)').run().catch(() => {});
     // share_id groups SharePlace entries; it is intentionally reusable across assets.
     const shareId = shareIdParam || `tl3_${fileId}`;
 
@@ -3524,6 +3527,7 @@ app.delete('/api/shares/:id', async (c) => {
     const fileId = Number(v3.file_id);
     const shareKey = `tl3_${fileId}`;
     await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(fileId).run().catch(()=>{});
+    await c.env.DB.prepare('DELETE FROM tl3_release_tokens WHERE file_id=?').bind(fileId).run().catch(()=>{});
     await c.env.DB.prepare('DELETE FROM tl3_tokens WHERE share_id=?').bind(shareKey).run().catch(()=>{});
     await c.env.DB.prepare('DELETE FROM tl3_releases WHERE file_id=?').bind(fileId).run().catch(()=>{});
     if (v3.tl3_key) {
