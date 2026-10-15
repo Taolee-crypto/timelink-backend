@@ -1316,6 +1316,30 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
   } catch(e:any) { return c.json({ok:false,error:e.message||'TL3 segment error'},500); }
 });
 
+// TL3 자산 잔여 TL 조회: 곡 전체 재생시간에서 출발한 자산 자체의 TL 풀
+app.get('/api/v1/tl3/asset/:id/tl', async (c) => {
+  try {
+    const rawId=String(c.req.param('id')||'');
+    const fileId=Number(rawId);
+    const rel=fileId>0&&String(fileId)===rawId
+      ? await c.env.DB.prepare("SELECT file_id,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>()
+      : await c.env.DB.prepare("SELECT file_id,share_id FROM tl3_releases WHERE share_id=? AND status='released'").bind(rawId).first<any>();
+    if(!rel) return c.json({ok:false,error:'TL3 release not found'},404);
+    const asset=await ensureTL3AssetTL(c.env.DB,Number(rel.file_id));
+    if(!asset) return c.json({ok:false,error:'음원 TL 풀을 초기화할 수 없습니다.'},409);
+    const auth=c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+    const payload=auth?await verifyToken(auth,c.env.JWT_SECRET):null;
+    let wallet_tl:null|number=null;
+    if(payload){
+      const w=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl FROM users WHERE id=?').bind(Number(payload.sub)).first<any>();
+      const p=tlWalletParts(w); wallet_tl=p.p+p.a+p.b;
+    }
+    return c.json({ok:true,file_id:Number(rel.file_id),share_id:String(rel.share_id),
+      initial_tl:Number(asset.initial_tl),remaining_tl:Number(asset.remaining_tl),
+      consumed_tl:Number(asset.consumed_tl),wallet_tl});
+  }catch(e:any){return c.json({ok:false,error:e?.message||'자산 TL 조회 실패'},500);}
+});
+
 // GET /api/v1/tl3/code/:id — 라이선스 키(lic_n) 반환 (TL 차감 후)
 app.get('/api/v1/tl3/code/:id', async (c) => {
   try {
@@ -2931,6 +2955,29 @@ async function ensureShareTLBalances(db: D1Database){
       UNIQUE(user_id, share_id)
     )
   `).run();
+}
+async function ensureTL3AssetTL(db:D1Database,fileId:number){
+  await db.prepare(`CREATE TABLE IF NOT EXISTS tl3_asset_tl (
+    file_id INTEGER PRIMARY KEY, share_id TEXT NOT NULL,
+    initial_tl REAL NOT NULL DEFAULT 0, remaining_tl REAL NOT NULL DEFAULT 0,
+    consumed_tl REAL NOT NULL DEFAULT 0, updated_at TEXT DEFAULT (datetime('now'))
+  )`).run();
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN pending_tl_p REAL DEFAULT 0").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN pending_tl_a REAL DEFAULT 0").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN pending_tl_b REAL DEFAULT 0").run().catch(()=>{});
+  await db.prepare(`
+    INSERT OR IGNORE INTO tl3_asset_tl(file_id,share_id,initial_tl,remaining_tl,consumed_tl)
+    SELECT r.file_id,r.share_id,
+      COALESCE(SUM(s.duration_ms),0)/1000.0,
+      COALESCE(SUM(s.duration_ms),0)/1000.0,0
+    FROM tl3_releases r JOIN tl3_segments s ON s.file_id=r.file_id
+    WHERE r.file_id=? AND r.status='released'
+    GROUP BY r.file_id,r.share_id
+  `).bind(fileId).run();
+  return await db.prepare('SELECT * FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+}
+function tlWalletParts(user:any){
+  return {p:Number(user?.tl_p??user?.tl??user?.tl_balance??0),a:Number(user?.tl_a??0),b:Number(user?.tl_b??0)};
 }
 async function shareAuthUser(c:any){
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
