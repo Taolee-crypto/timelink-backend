@@ -1383,7 +1383,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
         const pendingCost=Number(ss.pending_cost||0);
         const refundP=Number(ss.pending_tl_p||0),refundA=Number(ss.pending_tl_a||0),refundB=Number(ss.pending_tl_b||0);
         await c.env.DB.batch([
-          c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,tl,tl_balance,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,pendingCost,u.id),
+          c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,tl,tl_balance,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,pendingCost,u.id),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
           c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(pendingCost,fileId),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
@@ -1485,7 +1485,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     const refundP=Number((reservedP*ratio).toFixed(6)),refundA=Number((reservedA*ratio).toFixed(6));
     const refundB=Number((refund-refundP-refundA).toFixed(6));
     await c.env.DB.batch([
-      c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,refund,u.id),
+      c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,refund,u.id),
       c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
       c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,consumed_tl=consumed_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(refund,played,fileId),
       c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
@@ -1496,7 +1496,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     const creator=await c.env.DB.prepare('SELECT id,COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
     if(creator&&revenue>0){
       const creatorTotal=Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0);
-      await c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,0)+?,tl=COALESCE(tl_p,tl,tl_balance,0)+?+COALESCE(tl_a,0)+COALESCE(tl_b,0),total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,revenue,creator.id).run();
+      await c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl=COALESCE(tl_p,tl,tl_balance,0)+?+COALESCE(tl_a,0)+COALESCE(tl_b,0),total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,revenue,creator.id).run();
       await c.env.DB.prepare(`INSERT INTO transactions(user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES (?,?,'earn',?,?,?,?)`)
         .bind(creator.id,fileId,revenue,creatorTotal+revenue,u.id,`TL3 실제 ${played.toFixed(3)}초 정산`).run();
     }
