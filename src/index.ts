@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
-import { buildTL3SpineV4 } from './tl3spine';
+import { buildTL3SpineV4, verifyTL3SpineV4Container } from './tl3spine';
 
 import { cors } from 'hono/cors';
 import type { Env } from './types';
@@ -1339,13 +1339,21 @@ app.get('/api/v1/tl3/spine/:id/verify', async (c) => {
     const header=JSON.parse(String(row.header_json||'{}'));
     const tokens=await c.env.DB.prepare('SELECT token_index,token FROM tl3_spine_v4_tokens WHERE file_id=? ORDER BY token_index ASC').bind(fileId).all<any>();
     const chain=(tokens.results||[]);
-    const valid=chain.length===Number(row.segment_count)+1 &&
-      chain[0]?.token===header.spine_root &&
-      chain[chain.length-1]?.token===header.spine_latest &&
-      chain.every((item:any,index:number)=>Number(item.token_index)===index);
-    return c.json({ok:true,valid,profile:'TL3-SPINE-1',version:4,file_id:fileId,
+    const ordered=chain.every((item:any,index:number)=>Number(item.token_index)===index);
+    const meta=await getD1ObjectMeta(c.env.DB,String((await c.env.DB.prepare(
+      'SELECT object_key FROM tl3_spine_v4_releases WHERE file_id=?'
+    ).bind(fileId).first<any>())?.object_key||''));
+    if(!meta) return c.json({ok:false,valid:false,error:'TL3 Spine 컨테이너를 찾을 수 없습니다.'},404);
+    const container=await readD1Range(c.env.DB,String((await c.env.DB.prepare(
+      'SELECT object_key FROM tl3_spine_v4_releases WHERE file_id=?'
+    ).bind(fileId).first<any>())?.object_key||''),0,meta.size);
+    const result=ordered
+      ? await verifyTL3SpineV4Container(container,header,chain.map((item:any)=>String(item.token)))
+      : {valid:false,reason:'스파인 토큰 순서 오류'};
+    return c.json({ok:true,valid:result.valid,reason:result.reason||null,
+      profile:'TL3-SPINE-1',version:4,file_id:fileId,
       segment_count:Number(row.segment_count),spine_tokens:chain.length,
-      status:valid?row.status:'integrity_error'});
+      status:result.valid?row.status:'integrity_error'});
   } catch(e:any) { return c.json({ok:false,error:e?.message||'Spine 검증 실패'},500); }
 });
 
