@@ -1457,6 +1457,8 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     if(!fileId||!sessionId) return c.json({ok:false,error:'재생 세션이 필요합니다.'},400);
     const file=await c.env.DB.prepare(`SELECT f.id,f.user_id,f.revenue_held,r.status,r.segment_count,r.header_json FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
     if(!file||file.revenue_held) return c.json({ok:false,error:'TL3 release not available'},404);
+    const assetTL=await ensureTL3AssetTL(c.env.DB,fileId);
+    if(!assetTL) return c.json({ok:false,error:'음원 TL 풀을 확인할 수 없습니다.'},409);
     const ss=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
     if(!ss||ss.pending_segment===null||ss.pending_segment===undefined) return c.json({ok:false,error:'대기 중인 세그먼트가 없습니다.'},409);
     const now=Math.floor(Date.now()/1000);
@@ -1466,18 +1468,28 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     const reserved=Number(ss.pending_cost||0);
     const refund=Number(Math.max(0,reserved-played).toFixed(3));
     const revenue=Number((played*0.7).toFixed(3));
-    await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_spent=total_tl_spent-? WHERE id=?').bind(refund,refund,u.id).run();
-    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=CASE WHEN next_segment > pending_segment+1 THEN next_segment ELSE pending_segment+1 END,pending_segment=NULL,pending_cost=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime(\'now\') WHERE id=?').bind(sessionId).run();
-    const creator=await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
+    const reservedP=Number(ss.pending_tl_p||0),reservedA=Number(ss.pending_tl_a||0),reservedB=Number(ss.pending_tl_b||0);
+    const ratio=reserved>0?refund/reserved:0;
+    const refundP=Number((reservedP*ratio).toFixed(6)),refundA=Number((reservedA*ratio).toFixed(6));
+    const refundB=Number((refund-refundP-refundA).toFixed(6));
+    await c.env.DB.batch([
+      c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,refund,u.id),
+      c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,consumed_tl=consumed_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(refund,played,fileId),
+      c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=CASE WHEN next_segment > pending_segment+1 THEN next_segment ELSE pending_segment+1 END,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime('now') WHERE id=? AND pending_segment=?").bind(sessionId,Number(ss.pending_segment))
+    ]);
+    const creator=await c.env.DB.prepare('SELECT id,COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
     if(creator&&revenue>0){
-      await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?,total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,creator.id).run();
+      const creatorTotal=Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0);
+      await c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+COALESCE(tl_b,0),total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,revenue,creator.id).run();
       await c.env.DB.prepare(`INSERT INTO transactions(user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES (?,?,'earn',?,?,?,?)`)
-        .bind(creator.id,fileId,revenue,Number(creator.tl_balance||0)+revenue,u.id,`TL3 실제 ${played.toFixed(3)}초 정산`).run();
+        .bind(creator.id,fileId,revenue,creatorTotal+revenue,u.id,`TL3 실제 ${played.toFixed(3)}초 정산`).run();
     }
     await c.env.DB.prepare(`INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,?)`)
       .bind(fileId,u.id,played,revenue,null,Math.round(played),0).run();
-    const fresh=await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
-    return c.json({ok:true,segment:Number(ss.pending_segment),reserved,played_seconds:played,refund,settled_tl:played,creator_revenue:revenue,remaining_tl:Number(fresh?.tl_balance||0)});
+    const fresh=await c.env.DB.prepare('SELECT COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
+    const freshAsset=await c.env.DB.prepare('SELECT remaining_tl,consumed_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+    const walletNow=Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0);
+    return c.json({ok:true,segment:Number(ss.pending_segment),reserved,played_seconds:played,refund,settled_tl:played,creator_revenue:revenue,remaining_tl:walletNow,wallet_tl:walletNow,asset_remaining_tl:Number(freshAsset?.remaining_tl||0),asset_consumed_tl:Number(freshAsset?.consumed_tl||0)});
   } catch(e:any){
   try {
     await c.env.DB.prepare('INSERT INTO tl3_debug_logs(route,error,stack,created_at) VALUES(?,?,?,?)')
