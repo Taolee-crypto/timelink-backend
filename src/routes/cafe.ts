@@ -178,6 +178,22 @@ router.get('/channels', async (c) => {
   }
 });
 
+// ── GET /api/cafe/my-channels — 인증된 소유자 본인 채널 ──
+router.get('/my-channels', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
+  try {
+    await ensureCafeTables(c.env.DB);
+    const { results } = await c.env.DB.prepare(
+      `SELECT channel_id, name, owner_id, country, addr, description, images, playlist, schedules, plan, status, expires_at, created_at
+       FROM cafe_channels WHERE owner_id=? ORDER BY created_at DESC`
+    ).bind(auth.id).all();
+    return c.json({ ok: true, channels: results || [] });
+  } catch (e: any) {
+    return c.json({ ok: false, channels: [], error: e?.message || '내 카페 채널 조회 실패' }, 500);
+  }
+});
+
 // ── POST /api/cafe/channels — 채널 개설 ──
 router.post('/channels', async (c) => {
   const auth = await authUser(c);
