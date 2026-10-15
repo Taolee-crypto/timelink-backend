@@ -6,7 +6,7 @@ import { verifyToken } from '../auth';
 const router = new Hono<{ Bindings: Env }>();
 
 async function authUser(c: Context<{ Bindings: Env }>): Promise<{ id: number; user: any } | null> {
-  const token = (c.req.header('Authorization') || '').replace(/^Bearer\\s+/i, '').trim();
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '').trim();
   if (!token) return null;
   const payload = await verifyToken(token, c.env.JWT_SECRET).catch(() => null);
   const id = Number(payload?.sub || 0);
