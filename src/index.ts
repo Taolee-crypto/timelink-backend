@@ -1412,7 +1412,8 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
     const cost=Number((Number(seg.duration_ms)/1000).toFixed(3));
     const wallet=tlWalletParts(u),walletTotal=wallet.p+wallet.a+wallet.b;
-    const assetRemaining=Number(assetTL.remaining_tl||0);
+    const assetFresh=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+    const assetRemaining=Number(assetFresh?.remaining_tl||0);
     if(assetRemaining+1e-9<cost) return c.json({ok:false,error:'이 음원의 자산 TL이 소진되었습니다.',required:cost,asset_remaining_tl:assetRemaining},402);
     if(walletTotal+1e-9<cost) return c.json({ok:false,error:'사용자 지갑 TL이 부족합니다.',required:cost,wallet_tl:walletTotal},402);
     let left=cost;
