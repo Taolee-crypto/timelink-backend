@@ -104,19 +104,15 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
   return directIds.length===1?directIds[0]:0;
 }
 async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
-  const fileType=String(share?.file_type||'').toLowerCase();
-  // MP3 source assets are never public releases; only verified TL3 files pass below.
-  if(fileType!=='audio/tl3') return false;
-  // Never trust release_check here: legacy clients can submit it themselves.
-  // TL3 becomes public only when a matching server-verified TL3 file is shared.
-  const streamUrl=String(share?.stream_url||'').trim();
-  if(streamUrl){
-    const file=await db.prepare(
-      "SELECT f.id FROM tl_files f WHERE LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND (f.stream_url=? OR f.file_url=? OR f.file_url LIKE ?) AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1) LIMIT 1"
-    ).bind(streamUrl,streamUrl,'%'+streamUrl).first().catch(()=>null);
-    if(file) return true;
-  }
-  return false;
+  // 2026-10-16: GPT가 추가한 승인 게이트 제거
+  // 원칙: 공유=공개, 법적 책임=업로더 본인
+  // - v3 (tl_shares): content_kind/release_mode='tl3' → 공개
+  // - v4 (tl_files): shared=1 → 공개
+  const ck = String(share?.content_kind||'').toLowerCase();
+  const rm = String(share?.release_mode||'').toLowerCase();
+  const ft = String(share?.file_type||'').toLowerCase();
+  if (ck === 'tl3' || rm === 'tl3' || ft === 'audio/tl3') return true;
+  return Number(share?.shared) === 1;
 }
 
 async function hasPlaybackBalance(db:D1Database,userId:number):Promise<boolean>{
@@ -3461,7 +3457,8 @@ app.get('/api/shares/:id', async (c) => {
   if(!file)return c.json({error:'not found'},404);
   const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
   const release=await c.env.DB.prepare("SELECT price_tl,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(file.id).first<any>().catch(()=>null);
-  const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0&&Number((await c.env.DB.prepare("SELECT rights_confirmed FROM tl3_releases WHERE file_id=? AND status='released'").bind(file.id).first<any>())?.rights_confirmed||0)===1;
+  // 2026-10-16: 승인 게이트 제거 (공유=공개)
+  const isPublic = Number(file.shared) === 1;
   if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
   return c.json({
     id:String(file.id),file_id:Number(file.id),share_id:release?.share_id||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
@@ -3817,7 +3814,8 @@ app.get('/api/legacy-stream/:fileId',async(c)=>{
     if(!file)return c.json({error:'파일 없음'},404);
     const viewerId=await playbackUserId(c);
     const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-    const isPublic=String(file.file_type||'').toLowerCase()==='audio/tl3'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0&&Number((await c.env.DB.prepare("SELECT rights_confirmed FROM tl3_releases WHERE file_id=? AND status='released'").bind(file.id).first<any>())?.rights_confirmed||0)===1;
+    // 2026-10-16: 승인 게이트 제거 (공유=공개)
+  const isPublic = Number(file.shared) === 1;
     if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
     if(!isOwner&&Number(file.file_tl||0)>0){
       if(!viewerId)return c.json({error:'TL3 재생은 로그인이 필요합니다.'},401);
