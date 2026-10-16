@@ -1111,7 +1111,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
 
     // ★ LP 라이선스 + 차분 처리
     const lpLicense: any = body.lp_license || null;
-    const lpDiffB64: string = String(body.lp_diff_b64 || '');
+    const lpFlacB64: string = String(body.lp_flac_b64 || '');
     const lpDiffCodec: string = String(body.lp_diff_codec || 'deflate');
     const lpDiffN: number = Number(body.lp_diff_n || 0);
     const lpDiffScale: number = Number(body.lp_diff_scale || 128);
@@ -1130,16 +1130,16 @@ app.post('/api/v1/tl3/releases', async (c) => {
           await c.env.DB.prepare("INSERT INTO transactions (user_id, tx_type, amount, note, created_at) VALUES (?, 'lp_charge', ?, 'LP 음질 향상', datetime('now'))").bind(user.id, -lpPrice).run();
         } catch (_) {}
       }
-      if (lpDiffB64) {
+      if (lpFlacB64) {
         try {
-          const bin = atob(lpDiffB64);
+          const bin = atob(lpFlacB64);
           const bytes = new Uint8Array(bin.length);
           for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
           lpDiffBytes = bytes;
           const hashBuf = await crypto.subtle.digest('SHA-256', bytes);
           lpHashed = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
         } catch (e) {
-          console.warn('[LP-DIFF] base64 디코딩 실패:', e);
+          console.warn('[LP-FLAC] base64 디코딩 실패:', e);
         }
       }
     }
@@ -1293,19 +1293,19 @@ app.post('/api/v1/tl3/releases', async (c) => {
         g: lpLicense.lp_g || null,
         fs: Number(lpLicense.lp_fs || 0),
         n: Number(lpLicense.lp_n || 0),
-        diff_bytes: lpDiffBytes ? lpDiffBytes.length : 0,
-        diff_codec: lpDiffCodec,
-        diff_n: lpDiffN,
-        diff_scale: lpDiffScale,
+        flac_bytes: lpDiffBytes ? lpDiffBytes.length : 0,
+        flac_fs: Number(body.lp_flac_fs || 44100),
+        flac_ch: Number(body.lp_flac_ch || 2),
+        flac_n: Number(body.lp_flac_n || 0),
         version: String(lpLicense.lp_version || 'lp-v1')
       };
       if (lpDiffBytes && lpDiffBytes.length > 0) {
-        const diffKey = 'tl3/lp_diffs/' + fileId + '.lpd';
+        const flacKey = 'tl3/lp_flacs/' + fileId + '.flac';
         try {
-          await putD1Object(c.env.DB, diffKey, lpDiffBytes, 'application/octet-stream', file.title + '.lpd');
-          console.log('[LP-DIFF] 저장 완료:', diffKey, lpDiffBytes.length, 'bytes');
+          await putD1Object(c.env.DB, flacKey, lpDiffBytes, 'application/octet-stream', file.title + '.lpd');
+          console.log('[LP-FLAC] 저장 완료:', flacKey, lpDiffBytes.length, 'bytes');
         } catch (e) {
-          console.error('[LP-DIFF] 저장 실패:', e);
+          console.error('[LP-FLAC] 저장 실패:', e);
         }
       }
     }
@@ -1470,8 +1470,8 @@ app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
   } catch(e:any) { return c.json({ok:false,error:e.message||'resolve error'},500); }
 });
 
-// GET /api/v1/tl3/lp-diff/:fileId — LP 차분 다운로드 (LP_DIFF_ROUTE)
-app.get('/api/v1/tl3/lp-diff/:fileId', async (c) => {
+// GET /api/v1/tl3/lp-flac/:fileId — LP FLAC 다운로드 (LP_FLAC_ROUTE)
+app.get('/api/v1/tl3/lp-flac/:fileId', async (c) => {
   try {
     const rawId = String(c.req.param('fileId') || '');
     const fileId = Number(rawId);
@@ -1494,28 +1494,28 @@ app.get('/api/v1/tl3/lp-diff/:fileId', async (c) => {
     }
 
     // D1 Object Storage에서 차분 로드
-    const diffKey = `tl3/lp_diffs/${fileId}.lpd`;
-    const meta = await getD1ObjectMeta(c.env.DB, diffKey);
-    if (!meta) return c.json({ok:false,error:'LP 차분 파일을 찾을 수 없습니다.'},404);
+    const flacKey = `tl3/lp_flacs/${fileId}.flac`;
+    const meta = await getD1ObjectMeta(c.env.DB, flacKey);
+    if (!meta) return c.json({ok:false,error:'LP FLAC 파일을 찾을 수 없습니다.'},404);
 
-    const bytes = await readD1Range(c.env.DB, diffKey, 0, meta.size);
-    if (!bytes || !bytes.length) return c.json({ok:false,error:'LP 차분 읽기 실패'},502);
+    const bytes = await readD1Range(c.env.DB, flacKey, 0, meta.size);
+    if (!bytes || !bytes.length) return c.json({ok:false,error:'LP FLAC 읽기 실패'},502);
 
     return new Response(bytes, {
       status: 200,
       headers: {
         'Content-Type': 'application/octet-stream',
         'Content-Length': String(bytes.length),
-        'X-LP-Codec': String(lpMeta.diff_codec || 'deflate'),
-        'X-LP-N': String(lpMeta.diff_n || 0),
-        'X-LP-Scale': String(lpMeta.diff_scale || 128),
+        'X-LP-Codec': 'flac',
+        'X-LP-N': String(lpMeta.flac_n || 0),
+        'X-LP-FS': String(lpMeta.flac_fs || 44100),
         'X-LP-Patent': String(lpMeta.patent || '10-2025-0167813'),
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'public, max-age=3600'
       }
     });
   } catch(e:any) {
-    return c.json({ok:false,error:e?.message||'LP 차분 로드 실패'},500);
+    return c.json({ok:false,error:e?.message||'LP FLAC 로드 실패'},500);
   }
 });
 
