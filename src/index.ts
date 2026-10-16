@@ -1470,6 +1470,55 @@ app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
   } catch(e:any) { return c.json({ok:false,error:e.message||'resolve error'},500); }
 });
 
+// GET /api/v1/tl3/lp-diff/:fileId — LP 차분 다운로드 (LP_DIFF_ROUTE)
+app.get('/api/v1/tl3/lp-diff/:fileId', async (c) => {
+  try {
+    const rawId = String(c.req.param('fileId') || '');
+    const fileId = Number(rawId);
+    if (!Number.isSafeInteger(fileId) || fileId <= 0) {
+      return c.json({ok:false,error:'유효한 file_id가 아닙니다.'},400);
+    }
+
+    // 릴리스 확인
+    const row = await c.env.DB.prepare(
+      "SELECT file_id,user_id,header_json FROM tl3_releases WHERE file_id=? AND status='released'"
+    ).bind(fileId).first<any>();
+    if (!row) return c.json({ok:false,error:'TL3 release not found'},404);
+
+    // lp_meta 확인
+    let hdr: any = {};
+    try { hdr = JSON.parse(row.header_json || '{}'); } catch(_) {}
+    const lpMeta = hdr.lp_meta;
+    if (!lpMeta || !lpMeta.enabled) {
+      return c.json({ok:false,error:'이 자산은 LP Enhanced가 활성화되지 않았습니다.'},404);
+    }
+
+    // D1 Object Storage에서 차분 로드
+    const diffKey = `tl3/lp_diffs/${fileId}.lpd`;
+    const meta = await getD1ObjectMeta(c.env.DB, diffKey);
+    if (!meta) return c.json({ok:false,error:'LP 차분 파일을 찾을 수 없습니다.'},404);
+
+    const bytes = await readD1Range(c.env.DB, diffKey, 0, meta.size);
+    if (!bytes || !bytes.length) return c.json({ok:false,error:'LP 차분 읽기 실패'},502);
+
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(bytes.length),
+        'X-LP-Codec': String(lpMeta.diff_codec || 'deflate'),
+        'X-LP-N': String(lpMeta.diff_n || 0),
+        'X-LP-Scale': String(lpMeta.diff_scale || 128),
+        'X-LP-Patent': String(lpMeta.patent || '10-2025-0167813'),
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600'
+      }
+    });
+  } catch(e:any) {
+    return c.json({ok:false,error:e?.message||'LP 차분 로드 실패'},500);
+  }
+});
+
 // GET /api/v1/tl3/file/:shareId — .tl3 파일 다운로드 (TL3_FILE_ROUTE)
 app.get('/api/v1/tl3/file/:shareId', async (c) => {
   try {
