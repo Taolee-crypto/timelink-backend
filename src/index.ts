@@ -3391,8 +3391,27 @@ app.get('/api/shares/:id/my-tl', async (c) => {
   const shareId=c.req.param('id');
   try{
     await ensureShareTLBalances(c.env.DB);
-    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    if(!share) return c.json({error:'파일 없음'},404);
+    let share = await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    let tl3Release = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? AND status='released'").bind(shareId).first<any>();
+    
+    // ★ 정석 처리: shareId가 숫자(107)로 들어온 경우, 해당 file_id로 정확한 share_id를 찾아냄
+    if (!share && !tl3Release && /^\d+$/.test(shareId)) {
+      const numericId = Number(shareId);
+      // tl3_releases에서 file_id로 조회해서 진짜 share_id 추출
+      const releaseById = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE file_id=? AND status='released'").bind(numericId).first<any>();
+      if (releaseById && releaseById.share_id) {
+        tl3Release = releaseById;
+        shareId = releaseById.share_id; // 진짜 share_id로 내부 변수 교체
+      }
+      // 혹은 tl_shares에서 file_id로 조회 (컬럼명이 다를 수 있음)
+      const shareByFile = await c.env.DB.prepare("SELECT * FROM tl_shares WHERE file_id=? LIMIT 1").bind(numericId).first<any>();
+      if (shareByFile) {
+        share = shareByFile;
+        shareId = shareByFile.id; // 진짜 share_id
+      }
+    }
+
+    if (!share && !tl3Release) return c.json({error:'파일 없음'},404);
     let row=await c.env.DB.prepare('SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?')
       .bind(userId,shareId).first<any>();
     if(!row){
