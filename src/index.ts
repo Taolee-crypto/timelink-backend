@@ -115,17 +115,30 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
   return directIds.length===1?directIds[0]:0;
 }
 async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
-  // 2026-10-16: GPT가 추가한 승인 게이트 제거
-  // 원칙: 공유=공개, 법적 책임=업로더 본인
-  // - v3 (tl_shares): content_kind/release_mode='tl3' → 공개
-  // - v4 (tl_files): shared=1 → 공개
-  const ck = String(share?.content_kind||'').toLowerCase();
-  const rm = String(share?.release_mode||'').toLowerCase();
-  const ft = String(share?.file_type||'').toLowerCase();
-  if (ck === 'tl3' || rm === 'tl3' || ft === 'audio/tl3') return true;
-  return Number(share?.shared) === 1;
+  const contentKind=String(share?.content_kind||'').toLowerCase();
+  const releaseMode=String(share?.release_mode||'').toLowerCase();
+  const declaredType=String(share?.file_type||'').toLowerCase();
+  const shareId=String(share?.share_id||share?.id||'').trim();
+  const ownerId=Number(share?.user_id||0);
+  const fileId=shareId ? await resolveTL3FileId(db,shareId) : 0;
+  const isDeclaredTL3=contentKind==='tl3'||releaseMode==='tl3'||declaredType==='audio/tl3';
+  if(isDeclaredTL3||fileId>0){
+    if(!fileId) return false;
+    const release=await db.prepare(`
+      SELECT f.file_type,f.user_id,f.shared,f.revenue_held,r.status,r.rights_confirmed
+      FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id
+      WHERE f.id=? AND LOWER(f.file_type)='audio/tl3'
+        AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+        AND r.status='released' AND r.rights_confirmed=1
+        AND (?=0 OR f.user_id=?)
+      LIMIT 1
+    `).bind(fileId,ownerId,ownerId).first<any>();
+    const fileType=String(release?.file_type||'').toLowerCase();
+    if(!release||fileType!=='audio/tl3'||Number(release.rights_confirmed)!==1||String(release.status)!=='released') return false;
+    return true;
+  }
+  return Number(share?.shared)===1;
 }
-
 async function hasPlaybackBalance(db:D1Database,userId:number):Promise<boolean>{
   if(!userId) return false;
   const row=await db.prepare(
@@ -1124,40 +1137,12 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const sourceUrl = String(file.stream_url || '');
     if (!sourceUrl) return c.json({ok:false,error:'TL3 출시용 원본 주소가 없습니다.'},400);
 
-    // ★ LP 라이선스 + 차분 처리
+    // LP 전체 오디오는 저장하지 않고 재생 파라미터만 기록한다.
     const lpLicense: any = body.lp_license || null;
-    const lpOpusB64: string = String(body.lp_opus_b64 || '');
-    const lpDiffCodec: string = String(body.lp_diff_codec || 'deflate');
-    const lpDiffN: number = Number(body.lp_diff_n || 0);
-    const lpDiffScale: number = Number(body.lp_diff_scale || 128);
-    let lpDiffBytes: Uint8Array | null = null;
     let lpHashed: string | null = null;
-    if (lpLicense && lpLicense.lp_enabled === true) {
-      const lpPrice = Math.max(0, Math.floor(Number(lpLicense.lp_price_tl || 1000)));
-      if (lpPrice > 0) {
-        const u = await c.env.DB.prepare('SELECT id, tl_p, tl_a, tl_b, tl_balance, tl FROM users WHERE id=?').bind(user.id).first<any>();
-        if (!u) return c.json({ok:false,error:'사용자 잔액 조회 실패'},500);
-        const bal = Number(u.tl_p||0) + Number(u.tl_a||0) + Number(u.tl_b||0) + Number(u.tl_balance||0) + Number(u.tl||0);
-        if (bal < lpPrice) return c.json({ok:false,error:'LP 적용에 필요한 TL이 부족합니다. (필요: '+lpPrice+' TL / 보유: '+bal+' TL)', code:'LP_INSUFFICIENT_TL'}, 402);
-        const newBalance = Math.max(0, Number(u.tl_balance||0) - lpPrice);
-        await c.env.DB.prepare("UPDATE users SET tl_balance=?, updated_at=datetime('now') WHERE id=?").bind(newBalance, user.id).run();
-        try {
-          await c.env.DB.prepare("INSERT INTO transactions (user_id, tx_type, amount, note, created_at) VALUES (?, 'lp_charge', ?, 'LP 음질 향상', datetime('now'))").bind(user.id, -lpPrice).run();
-        } catch (_) {}
-      }
-      if (lpOpusB64) {
-        try {
-          const bin = atob(lpOpusB64);
-          const bytes = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          lpDiffBytes = bytes;
-          const hashBuf = await crypto.subtle.digest('SHA-256', bytes);
-          lpHashed = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-        } catch (e) {
-          console.warn('[LP-FLAC] base64 디코딩 실패:', e);
-        }
-      }
-    }
+    const lpPrice = lpLicense && lpLicense.lp_enabled === true
+      ? Math.max(0, Math.floor(Number(lpLicense.lp_price_tl || 1000))) : 0;
+    let lpAlreadyCharged = false;
 
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_releases (
       id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL UNIQUE, user_id INTEGER NOT NULL,
@@ -1172,6 +1157,18 @@ app.post('/api/v1/tl3/releases', async (c) => {
       "ALTER TABLE tl3_releases ADD COLUMN duration_ms INTEGER DEFAULT 0",
       "ALTER TABLE tl3_releases ADD COLUMN segment_count INTEGER DEFAULT 0"
     ]) { try { await c.env.DB.prepare(sql).run(); } catch (_) {} }
+    try { await c.env.DB.prepare('ALTER TABLE tl3_releases ADD COLUMN header_json TEXT').run(); } catch (_) {}
+    const priorRelease = await c.env.DB.prepare('SELECT header_json,status FROM tl3_releases WHERE file_id=?').bind(fileId).first<any>();
+    if (priorRelease && String(priorRelease.status) === 'released') {
+      try { lpAlreadyCharged = JSON.parse(String(priorRelease.header_json || '{}'))?.lp_meta?.enabled === true; } catch (_) {}
+    }
+    if (lpPrice > 0 && !lpAlreadyCharged) {
+      const walletRow = await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(user.id).first<any>();
+      if (!walletRow) return c.json({ok:false,error:'사용자 잔액 조회 실패'},500);
+      const wallet = tlWalletParts(walletRow);
+      const balance = wallet.p + wallet.a + wallet.b;
+      if (balance < lpPrice) return c.json({ok:false,error:'LP 적용에 필요한 TL이 부족합니다. (필요: '+lpPrice+' TL / 보유: '+balance+' TL)',code:'LP_INSUFFICIENT_TL'},402);
+    }
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_segments (
       file_id INTEGER NOT NULL, segment_index INTEGER NOT NULL, offset INTEGER NOT NULL,
       length INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
@@ -1228,19 +1225,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const shareId = shareIdParam || `tl3_${fileId}`;
 
     // v3 빌드 (AES-256-GCM + 타임토큰 체인)
-    // ★ V4 제조: LP Opus 데이터가 있으면 함께 암호화
-    let lpOpusData: Uint8Array | null = null;
-    if (typeof lpOpusB64 !== 'undefined' && lpOpusB64) {
-      try {
-        const bin = atob(lpOpusB64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        lpOpusData = bytes;
-      } catch (e) {
-        console.warn('[V4] LP Opus base64 디코딩 실패:', e);
-      }
-    }
-
+    // LP 오디오는 TL3 컨테이너에 포함하지 않는다. 재생 시점에 Player DSP로 적용한다.
     const build = await buildTL3V4FromMp3({
       fileId: fileId,
       title: file.title,
@@ -1250,7 +1235,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
       creator_id: Number(user.id),
       mp3Raw: raw,
       segments,
-      lpOpusData: lpOpusData, // ★ V4: LP Opus 포함
+      lpOpusData: null, // LP 실시간 DSP: 추가 오디오 페이로드 없음
       masterSecret,
       shareId,
       licId: 'k_2026_01'
@@ -1258,6 +1243,30 @@ app.post('/api/v1/tl3/releases', async (c) => {
 
     const tl3Key = `tl3/releases/${fileId}.tl3`;
     await putD1Object(c.env.DB, tl3Key, build.data, 'application/octet-stream', `${file.title}.tl3`);
+
+    // LP 요금은 TL3 파일 생성과 D1 저장이 성공한 뒤 한 번만 차감한다.
+    if (lpPrice > 0 && !lpAlreadyCharged) {
+      const walletRow = await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(user.id).first<any>();
+      if (!walletRow) return c.json({ok:false,error:'LP 요금 결제 중 사용자 잔액 조회 실패'},500);
+      const wallet = tlWalletParts(walletRow);
+      if (wallet.p + wallet.a + wallet.b < lpPrice) return c.json({ok:false,error:'LP 요금 결제 중 잔액이 변경되었습니다. 다시 시도해 주세요.',code:'LP_INSUFFICIENT_TL'},402);
+      let left = lpPrice;
+      const takeP = Math.min(left,wallet.p); left = Number((left-takeP).toFixed(6));
+      const takeA = Math.min(left,wallet.a); left = Number((left-takeA).toFixed(6));
+      const takeB = Math.min(left,wallet.b); left = Number((left-takeB).toFixed(6));
+      const debit = await c.env.DB.prepare(`UPDATE users SET
+        tl_p=COALESCE(tl_p,tl,tl_balance,0)-?,
+        tl_a=COALESCE(tl_a,0)-?,
+        tl_b=COALESCE(tl_b,0)-?,
+        tl=COALESCE(tl_p,tl,tl_balance,0)-?+COALESCE(tl_a,0)-?+COALESCE(tl_b,0)-?,
+        total_tl_spent=COALESCE(total_tl_spent,0)+?,updated_at=datetime('now')
+        WHERE id=? AND COALESCE(tl_p,tl,tl_balance,0)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?`)
+        .bind(takeP,takeA,takeB,takeP,takeA,takeB,lpPrice,user.id,takeP,takeA,takeB).run();
+      if (!debit.meta?.changes) return c.json({ok:false,error:'LP 요금 차감이 동시 잔액 변경으로 취소되었습니다. 다시 시도해 주세요.',code:'LP_DEBIT_CONFLICT'},409);
+      try {
+        await c.env.DB.prepare("INSERT INTO transactions (user_id, tx_type, amount, note, created_at) VALUES (?, 'lp_charge', ?, 'LP 음질 향상', datetime('now'))").bind(user.id,-lpPrice).run();
+      } catch (_) {}
+    }
 
     // ─ D1: tl3_releases v3 컬럼 확장
     for (const sql of [
@@ -1326,21 +1335,10 @@ app.post('/api/v1/tl3/releases', async (c) => {
         g: lpLicense.lp_g || null,
         fs: Number(lpLicense.lp_fs || 0),
         n: Number(lpLicense.lp_n || 0),
-        opus_bytes: lpDiffBytes ? lpDiffBytes.length : 0,
-        opus_fs: Number(body.lp_opus_fs || 48000),
-        opus_ch: Number(body.lp_opus_ch || 2),
-        opus_n: Number(body.lp_opus_n || 0),
-        version: String(lpLicense.lp_version || 'lp-v1')
+        version: String(lpLicense.lp_version || 'lp-v1-runtime'),
+        processing: 'player-realtime',
+        audio_payload_bytes: 0
       };
-      if (lpDiffBytes && lpDiffBytes.length > 0) {
-        const opusKey = 'tl3/lp_opus/' + fileId + '.opus';
-        try {
-          await putD1Object(c.env.DB, opusKey, lpDiffBytes, 'application/octet-stream', file.title + '.lpd');
-          console.log('[LP-OPUS] 저장 완료:', opusKey, lpDiffBytes.length, 'bytes');
-        } catch (e) {
-          console.error('[LP-OPUS] 저장 실패:', e);
-        }
-      }
     }
     await c.env.DB.prepare(`INSERT INTO tl3_releases
       (file_id,user_id,title,artist,price_tl,status,tl3_key,payload_offset,duration_ms,segment_count,
@@ -1619,7 +1617,8 @@ app.get('/api/v1/tl3/header/:id', async (c) => {
       lic_id: header.lic_id,
       token_latest: header.token_latest,
       mp3_tokens: header.mp3_tokens || [],
-      rights: header.rights || {}
+      rights: header.rights || {},
+      lp_meta: header.lp_meta || null
     });
   } catch(e:any) { return c.json({ok:false,error:e.message||'header error'},500); }
 });
@@ -4013,10 +4012,13 @@ app.get('/api/legacy-stream/:fileId',async(c)=>{
     if(!file)return c.json({error:'파일 없음'},404);
     const viewerId=await playbackUserId(c);
     const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-    // 2026-10-16: 승인 게이트 제거 (공유=공개)
-  const isPublic = Number(file.shared) === 1;
+    const release=await c.env.DB.prepare(
+      "SELECT 1 FROM tl3_releases WHERE file_id=? AND status='released' AND rights_confirmed=1 LIMIT 1"
+    ).bind(file.id).first();
+    const fileType=String(file.file_type||'').toLowerCase();
+    const isPublic=fileType==='audio/tl3'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0&&!!release;
     if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
-    if(!isOwner&&Number(file.file_tl||0)>0){
+    if(!isOwner){
       if(!viewerId)return c.json({error:'TL3 재생은 로그인이 필요합니다.'},401);
       if(!await hasPlaybackBalance(c.env.DB,viewerId))return c.json({error:'재생에 필요한 TL 잔액이 없습니다.'},402);
     }
