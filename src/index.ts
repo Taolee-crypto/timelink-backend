@@ -3435,8 +3435,26 @@ app.post('/api/shares/:id/charge', async (c) => {
     const amount=Math.floor(Number(body.amount||0));
     if(!Number.isFinite(amount)||amount<=0) return c.json({error:'충전 TL은 1 이상이어야 합니다.'},400);
     await ensureShareTLBalances(c.env.DB);
-    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    const tl3Release=await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? AND status='released'").bind(shareId).first<any>();
+    let share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    let tl3Release=await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? AND status='released'").bind(shareId).first<any>();
+
+    // ★ 핵심: shareId가 숫자(file_id)로 들어온 경우 -> share_id로 변환
+    if (!share && !tl3Release && /^\d+$/.test(shareId)) {
+      const numericId = Number(shareId);
+      // 1. tl3_releases에서 file_id로 진짜 share_id 찾기
+      const releaseByFileId = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE file_id=? AND status='released'").bind(numericId).first<any>();
+      if (releaseByFileId) {
+        tl3Release = releaseByFileId;
+        shareId = releaseByFileId.share_id; // 변수 업데이트
+      }
+      // 2. 혹시 tl_shares에 file_id 컬럼이 있다면 그것도 확인
+      const shareByFileId = await c.env.DB.prepare("SELECT * FROM tl_shares WHERE file_id=? LIMIT 1").bind(numericId).first<any>();
+      if (shareByFileId) {
+        share = shareByFileId;
+        shareId = shareByFileId.id;
+      }
+    }
+
     if(!share && !tl3Release) return c.json({error:'파일 없음'},404);
     if(share){
       const isMp3=shareKind(share)==='mp3';
