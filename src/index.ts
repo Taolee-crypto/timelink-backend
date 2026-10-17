@@ -52,6 +52,17 @@ app.use('*', cors({
   maxAge: 86400,
 }));
 
+// ★ 에러 발생 시에도 CORS 헤더 유지
+app.onError((err, c) => {
+  console.error("[onError]", err);
+  const origin = c.req.header("Origin") || "*";
+  return c.json(
+    { ok: false, error: err.message || "Internal Server Error" },
+    500,
+    { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true" }
+  );
+});
+
 app.options('*', () => new Response(null, { status: 204 }));
 
 // ══════════════════════════════════════════════════════════
@@ -1088,15 +1099,19 @@ function parseMp3Segments(data: Uint8Array, targetMs=1000): Array<{offset:number
 
 // (buildTL3V2 제거됨 — v3에서 buildTL3V3 사용)
 
-// TL3 정식 출시: 크리에이터가 가격을 직접 설정한다.
 app.post('/api/v1/tl3/releases', async (c) => {
   try {
     const body = await c.req.json<any>();
+    // ★ CORS 헤더 강제 설정 (preflight 이후 실제 요청에도 필요)
+    const _origin = c.req.header('Origin') || '*';
+    c.header('Access-Control-Allow-Origin', _origin);
+    c.header('Access-Control-Allow-Credentials', 'true');
+    c.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    c.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
     if (body.rights_confirmed !== true) {
       return c.json({ok:false,error:'저작권 또는 적법한 이용 권한 확인이 필요합니다.'},400);
     }
     const fileId = Number(body.file_id || 0);
-    const price = Math.max(0, Math.floor(Number(body.price_tl || 0)));
     const shareIdParam = String(body.share_id || '');
     if (!fileId || !body.title || !body.artist) return c.json({ok:false,error:'file_id, title, artist가 필요합니다.'},400);
     const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
@@ -1184,6 +1199,10 @@ app.post('/api/v1/tl3/releases', async (c) => {
     // TL3 정식 규격: MP3 프레임 경계를 보존하며 최대 1초 단위로 분할한다.
     const segments = parseMp3Segments(raw,1000);
     const durationMs = segments.reduce((n,x)=>n+x.durationMs,0);
+
+    // ★ 음원 길이(초) = 재생에 필요한 TL량 (초당 1TL)
+    const durationSec = Math.max(1, Math.ceil(durationMs / 1000));
+    const price = durationSec; // price_tl 컬럼에 초 단위 TL 저장 (기존 스키마 호환)
 
     // 마스터 시크릿
     const masterSecret = String((c.env as any).TL3_MASTER_SECRET || '');
@@ -1354,7 +1373,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
       await c.env.DB.prepare("UPDATE tl_shares SET file_type='audio/tl3' WHERE CAST(id AS TEXT)=? AND CAST(user_id AS INTEGER)=?")
         .bind(shareIdParam, Number(user.id)).run().catch(() => {});
     }
-    return c.json({ok:true,file_id:fileId,share_id:shareId,price_tl:price,status:'released',duration_ms:durationMs,segment_count:segments.length,tl3_key:tl3Key,version:3});
+    return c.json({ok:true,file_id:fileId,share_id:shareId,price_tl:price,duration_sec:durationSec,status:'released',duration_ms:durationMs,segment_count:segments.length,tl3_key:tl3Key,version:3});
   } catch(e:any) { return c.json({ok:false,error:e.message||'TL3 release error'},500); }
 });
 
