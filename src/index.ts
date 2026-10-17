@@ -1604,6 +1604,11 @@ app.get('/api/v1/tl3/header/:id', async (c) => {
       lic_id: header.lic_id,
       token_latest: header.token_latest,
       mp3_tokens: header.mp3_tokens || [],
+      lp_opus: header.lp_opus || null,
+      hash_lp_opus: header.hash_lp_opus || null,
+      lp_tokens: header.lp_tokens || [],
+      mp3_seg_lens: header.mp3_seg_lens || [],
+      lp_seg_lens: header.lp_seg_lens || [],
       rights: header.rights || {},
       lp_meta: header.lp_meta || null
     });
