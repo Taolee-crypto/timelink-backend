@@ -1111,7 +1111,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
 
     // ★ LP 라이선스 + 차분 처리
     const lpLicense: any = body.lp_license || null;
-    const lpFlacB64: string = String(body.lp_flac_b64 || '');
+    const lpOpusB64: string = String(body.lp_opus_b64 || '');
     const lpDiffCodec: string = String(body.lp_diff_codec || 'deflate');
     const lpDiffN: number = Number(body.lp_diff_n || 0);
     const lpDiffScale: number = Number(body.lp_diff_scale || 128);
@@ -1130,9 +1130,9 @@ app.post('/api/v1/tl3/releases', async (c) => {
           await c.env.DB.prepare("INSERT INTO transactions (user_id, tx_type, amount, note, created_at) VALUES (?, 'lp_charge', ?, 'LP 음질 향상', datetime('now'))").bind(user.id, -lpPrice).run();
         } catch (_) {}
       }
-      if (lpFlacB64) {
+      if (lpOpusB64) {
         try {
-          const bin = atob(lpFlacB64);
+          const bin = atob(lpOpusB64);
           const bytes = new Uint8Array(bin.length);
           for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
           lpDiffBytes = bytes;
@@ -1293,19 +1293,19 @@ app.post('/api/v1/tl3/releases', async (c) => {
         g: lpLicense.lp_g || null,
         fs: Number(lpLicense.lp_fs || 0),
         n: Number(lpLicense.lp_n || 0),
-        flac_bytes: lpDiffBytes ? lpDiffBytes.length : 0,
-        flac_fs: Number(body.lp_flac_fs || 44100),
-        flac_ch: Number(body.lp_flac_ch || 2),
-        flac_n: Number(body.lp_flac_n || 0),
+        opus_bytes: lpDiffBytes ? lpDiffBytes.length : 0,
+        opus_fs: Number(body.lp_opus_fs || 48000),
+        opus_ch: Number(body.lp_opus_ch || 2),
+        opus_n: Number(body.lp_opus_n || 0),
         version: String(lpLicense.lp_version || 'lp-v1')
       };
       if (lpDiffBytes && lpDiffBytes.length > 0) {
-        const flacKey = 'tl3/lp_flacs/' + fileId + '.flac';
+        const opusKey = 'tl3/lp_opus/' + fileId + '.opus';
         try {
-          await putD1Object(c.env.DB, flacKey, lpDiffBytes, 'application/octet-stream', file.title + '.lpd');
-          console.log('[LP-FLAC] 저장 완료:', flacKey, lpDiffBytes.length, 'bytes');
+          await putD1Object(c.env.DB, opusKey, lpDiffBytes, 'application/octet-stream', file.title + '.lpd');
+          console.log('[LP-OPUS] 저장 완료:', opusKey, lpDiffBytes.length, 'bytes');
         } catch (e) {
-          console.error('[LP-FLAC] 저장 실패:', e);
+          console.error('[LP-OPUS] 저장 실패:', e);
         }
       }
     }
