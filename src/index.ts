@@ -118,7 +118,7 @@ async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   const contentKind=String(share?.content_kind||'').toLowerCase();
   const releaseMode=String(share?.release_mode||'').toLowerCase();
   const declaredType=String(share?.file_type||'').toLowerCase();
-  const shareId=String(share?.id||share?.share_id||'').trim();
+  const shareId=String(share?.share_id||share?.id||'').trim();
   const ownerId=Number(share?.user_id||0);
   const fileId=shareId ? await resolveTL3FileId(db,shareId) : 0;
   const isDeclaredTL3=contentKind==='tl3'||releaseMode==='tl3'||declaredType==='audio/tl3';
