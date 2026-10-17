@@ -3750,19 +3750,6 @@ app.delete('/api/shares/:id', async (c) => {
     return c.json({error:e.message||'삭제 실패'},500);
   }
 });
-    await c.env.DB.prepare('DELETE FROM tl3_release_tokens WHERE file_id=?').bind(fileId).run().catch(()=>{});
-    await c.env.DB.prepare('DELETE FROM tl3_tokens WHERE share_id=?').bind(shareKey).run().catch(()=>{});
-    await c.env.DB.prepare('DELETE FROM tl3_releases WHERE file_id=?').bind(fileId).run().catch(()=>{});
-    if (v3.tl3_key) {
-      await c.env.DB.prepare('DELETE FROM tl_d1_object_parts WHERE object_key=?').bind(v3.tl3_key).run().catch(()=>{});
-      await c.env.DB.prepare('DELETE FROM tl_d1_objects WHERE object_key=?').bind(v3.tl3_key).run().catch(()=>{});
-    }
-    await c.env.DB.prepare('DELETE FROM tl_files WHERE id=?').bind(fileId).run().catch(()=>{});
-  }
-  await c.env.DB.prepare('DELETE FROM tl_shares WHERE id=? AND user_id=?').bind(shareId, String(userId)).run().catch(()=>{});
-  await c.env.DB.prepare('DELETE FROM tl_user_files WHERE share_id=?').bind(shareId).run().catch(()=>{});
-  return c.json({ ok: true });
-});
 
 app.post('/api/shares/:id/pulse', async (c) => {
   try {
