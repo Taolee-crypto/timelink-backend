@@ -115,28 +115,11 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
   return directIds.length===1?directIds[0]:0;
 }
 async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
+  // Existing TimeLink rule: shared TL3 assets are treated as shared.
   const contentKind=String(share?.content_kind||'').toLowerCase();
   const releaseMode=String(share?.release_mode||'').toLowerCase();
-  const declaredType=String(share?.file_type||'').toLowerCase();
-  const shareId=String(share?.share_id||share?.id||'').trim();
-  const ownerId=Number(share?.user_id||0);
-  const fileId=shareId ? await resolveTL3FileId(db,shareId) : 0;
-  const isDeclaredTL3=contentKind==='tl3'||releaseMode==='tl3'||declaredType==='audio/tl3';
-  if(isDeclaredTL3||fileId>0){
-    if(!fileId) return false;
-    const release=await db.prepare(`
-      SELECT f.file_type,f.user_id,f.shared,f.revenue_held,r.status,r.rights_confirmed
-      FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id
-      WHERE f.id=? AND LOWER(f.file_type)='audio/tl3'
-        AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
-        AND r.status='released' AND r.rights_confirmed=1
-        AND (?=0 OR f.user_id=?)
-      LIMIT 1
-    `).bind(fileId,ownerId,ownerId).first<any>();
-    const fileType=String(release?.file_type||'').toLowerCase();
-    if(!release||fileType!=='audio/tl3'||Number(release.rights_confirmed)!==1||String(release.status)!=='released') return false;
-    return true;
-  }
+  const fileType=String(share?.file_type||'').toLowerCase();
+  if(contentKind==='tl3'||releaseMode==='tl3'||fileType==='audio/tl3') return true;
   return Number(share?.shared)===1;
 }
 async function hasPlaybackBalance(db:D1Database,userId:number):Promise<boolean>{
@@ -1610,6 +1593,10 @@ app.get('/api/v1/tl3/header/:id', async (c) => {
       segment_count: row.segment_count,
       price_tl: row.price_tl,
       share_id: row.share_id,
+      // The Track player consumes header.mp3.N before requesting segment zero.
+      // Keep the original v4 header shape in the API response; old releases
+      // may not contain every optional MP3 descriptor.
+      mp3: header.mp3 || { N: Number(row.segment_count || 0), seg_bytes: 0, last_bytes: 0, first_offset: 0 },
       fid: header.fid,
       salt: header.salt,
       hash_mp3: header.hash_mp3,
@@ -4012,13 +3999,9 @@ app.get('/api/legacy-stream/:fileId',async(c)=>{
     if(!file)return c.json({error:'파일 없음'},404);
     const viewerId=await playbackUserId(c);
     const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-    const release=await c.env.DB.prepare(
-      "SELECT 1 FROM tl3_releases WHERE file_id=? AND status='released' AND rights_confirmed=1 LIMIT 1"
-    ).bind(file.id).first();
-    const fileType=String(file.file_type||'').toLowerCase();
-    const isPublic=fileType==='audio/tl3'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0&&!!release;
+    const isPublic = Number(file.shared) === 1;
     if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
-    if(!isOwner){
+    if(!isOwner&&Number(file.file_tl||0)>0){
       if(!viewerId)return c.json({error:'TL3 재생은 로그인이 필요합니다.'},401);
       if(!await hasPlaybackBalance(c.env.DB,viewerId))return c.json({error:'재생에 필요한 TL 잔액이 없습니다.'},402);
     }
