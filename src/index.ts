@@ -322,7 +322,7 @@ async function ensureTrackSocialTables(db:any){
 }
 
 app.get('/api/social/stats/:id',async(c)=>{
-  const shareId=c.req.param('id');
+  let shareId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
     const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
@@ -344,7 +344,7 @@ app.get('/api/social/stats/:id',async(c)=>{
 app.post('/api/social/like/:id',async(c)=>{
   const userId=await shareAuthUser(c).catch(()=>0);
   if(!userId)return c.json({error:'인증 필요'},401);
-  const shareId=c.req.param('id');
+  let shareId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
     const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
@@ -359,7 +359,7 @@ app.post('/api/social/like/:id',async(c)=>{
 app.delete('/api/social/like/:id',async(c)=>{
   const userId=await shareAuthUser(c).catch(()=>0);
   if(!userId)return c.json({error:'인증 필요'},401);
-  const shareId=c.req.param('id');
+  let shareId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
     await c.env.DB.prepare('DELETE FROM social_likes WHERE share_id=? AND user_id=?').bind(shareId,userId).run();
@@ -403,7 +403,7 @@ app.delete('/api/social/follow/:id',async(c)=>{
 });
 
 app.get('/api/social/comments/:id',async(c)=>{
-  const shareId=c.req.param('id');
+  let shareId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
     const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
@@ -420,7 +420,7 @@ app.get('/api/social/comments/:id',async(c)=>{
 app.post('/api/social/comment/:id',async(c)=>{
   const userId=await shareAuthUser(c).catch(()=>0);
   if(!userId)return c.json({error:'인증 필요'},401);
-  const shareId=c.req.param('id');
+  let shareId=c.req.param('id');
   const body=await c.req.json<any>().catch(()=>({}));
   const content=String(body.content||'').trim().slice(0,1000);
   if(!content)return c.json({error:'내용을 입력해 주세요.'},400);
@@ -3388,7 +3388,7 @@ app.get('/api/shares/my', async (c) => {
 app.get('/api/shares/:id/my-tl', async (c) => {
   const userId=await shareAuthUser(c);
   if(!userId) return c.json({error:'인증 필요'},401);
-  const shareId=c.req.param('id');
+  let shareId=c.req.param('id');
   try{
     await ensureShareTLBalances(c.env.DB);
     let share = await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
@@ -3429,7 +3429,7 @@ app.get('/api/shares/:id/my-tl', async (c) => {
 app.post('/api/shares/:id/charge', async (c) => {
   const userId=await shareAuthUser(c);
   if(!userId) return c.json({error:'인증 필요'},401);
-  const shareId=c.req.param('id');
+  let shareId=c.req.param('id');
   try{
     const body=await c.req.json<any>().catch(()=>({}));
     const amount=Math.floor(Number(body.amount||0));
@@ -3494,7 +3494,7 @@ app.post('/api/shares/:id/charge', async (c) => {
 app.post('/api/shares/:id/consume', async (c) => {
   const userId=await shareAuthUser(c);
   if(!userId) return c.json({error:'인증 필요'},401);
-  const shareId=c.req.param('id');
+  let shareId=c.req.param('id');
   try{
     const body=await c.req.json<any>().catch(()=>({}));
     const seconds=Math.max(1,Math.min(30,Math.floor(Number(body.seconds||0))));
