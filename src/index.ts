@@ -1610,6 +1610,10 @@ app.get('/api/v1/tl3/header/:id', async (c) => {
       segment_count: row.segment_count,
       price_tl: row.price_tl,
       share_id: row.share_id,
+      // The Track player consumes header.mp3.N before requesting segment zero.
+      // Keep the original v4 header shape in the API response; old releases
+      // may not contain every optional MP3 descriptor.
+      mp3: header.mp3 || { N: Number(row.segment_count || 0), seg_bytes: 0, last_bytes: 0, first_offset: 0 },
       fid: header.fid,
       salt: header.salt,
       hash_mp3: header.hash_mp3,
