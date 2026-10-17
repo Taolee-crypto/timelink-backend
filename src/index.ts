@@ -37,7 +37,7 @@ import cafeBroadcastRouter from './routes/cafe-broadcast';
 import contactRouter from './routes/contact';
 import uploadPdfRouter from './routes/upload-pdf';
 import { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, finalizeUpload, registerObject, externalStream, disconnectStorage } from './storage';
-import { buildTL3V3, buildTL3V3FromMp3, parseTL3V3, decryptSegmentV3, decryptSingleSegment, deriveLicenseBytes, computeNextToken, unhex, initialToken, hex } from './tl3v3';
+import { buildTL3V4FromMp3, deriveLicenseBytes, initialToken, nextToken, ivFor, hex, enc, sha256 } from './tl3v3';
 
 
 const app = new Hono<{ Bindings: Env }>();
@@ -1209,7 +1209,20 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const shareId = shareIdParam || `tl3_${fileId}`;
 
     // v3 빌드 (AES-256-GCM + 타임토큰 체인)
-    const build = await buildTL3V3FromMp3({
+    // ★ V4 제조: LP Opus 데이터가 있으면 함께 암호화
+    let lpOpusData: Uint8Array | null = null;
+    if (typeof lpOpusB64 !== 'undefined' && lpOpusB64) {
+      try {
+        const bin = atob(lpOpusB64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        lpOpusData = bytes;
+      } catch (e) {
+        console.warn('[V4] LP Opus base64 디코딩 실패:', e);
+      }
+    }
+
+    const build = await buildTL3V4FromMp3({
       fileId: fileId,
       title: file.title,
       artist: file.artist,
@@ -1218,6 +1231,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
       creator_id: Number(user.id),
       mp3Raw: raw,
       segments,
+      lpOpusData: lpOpusData, // ★ V4: LP Opus 포함
       masterSecret,
       shareId,
       licId: 'k_2026_01'
