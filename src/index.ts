@@ -3417,9 +3417,12 @@ app.post('/api/shares/:id/charge', async (c) => {
     if(!Number.isFinite(amount)||amount<=0) return c.json({error:'충전 TL은 1 이상이어야 합니다.'},400);
     await ensureShareTLBalances(c.env.DB);
     const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    if(!share) return c.json({error:'파일 없음'},404);
-    const isMp3=shareKind(share)==='mp3';
-    if(isMp3) return c.json({error:'MP3는 무료 재생이며 TL 충전 대상이 아닙니다.'},400);
+    const tl3Release=await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? AND status='released'").bind(shareId).first<any>();
+    if(!share && !tl3Release) return c.json({error:'파일 없음'},404);
+    if(share){
+      const isMp3=shareKind(share)==='mp3';
+      if(isMp3) return c.json({error:'MP3는 무료 재생이며 TL 충전 대상이 아닙니다.'},400);
+    }
 
     const user=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first<any>();
     if(!user) return c.json({error:'유저 없음'},404);
