@@ -3447,12 +3447,7 @@ app.post('/api/shares/:id/charge', async (c) => {
         tl3Release = releaseByFileId;
         shareId = releaseByFileId.share_id; // 변수 업데이트
       }
-      // 2. 혹시 tl_shares에 file_id 컬럼이 있다면 그것도 확인
-      const shareByFileId = await c.env.DB.prepare("SELECT * FROM tl_shares WHERE file_id=? LIMIT 1").bind(numericId).first<any>();
-      if (shareByFileId) {
-        share = shareByFileId;
-        shareId = shareByFileId.id;
-      }
+
     }
 
     if(!share && !tl3Release) return c.json({error:'파일 없음'},404);
