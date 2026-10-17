@@ -1124,13 +1124,8 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const sourceUrl = String(file.stream_url || '');
     if (!sourceUrl) return c.json({ok:false,error:'TL3 출시용 원본 주소가 없습니다.'},400);
 
-    // ★ LP 라이선스 + 차분 처리
+    // LP는 전체 렌더 오디오를 저장하지 않는다. 라이선스와 재생 파라미터만 TL3 헤더에 기록한다.
     const lpLicense: any = body.lp_license || null;
-    const lpOpusB64: string = String(body.lp_opus_b64 || '');
-    const lpDiffCodec: string = String(body.lp_diff_codec || 'deflate');
-    const lpDiffN: number = Number(body.lp_diff_n || 0);
-    const lpDiffScale: number = Number(body.lp_diff_scale || 128);
-    let lpDiffBytes: Uint8Array | null = null;
     let lpHashed: string | null = null;
     if (lpLicense && lpLicense.lp_enabled === true) {
       const lpPrice = Math.max(0, Math.floor(Number(lpLicense.lp_price_tl || 1000)));
@@ -1144,18 +1139,6 @@ app.post('/api/v1/tl3/releases', async (c) => {
         try {
           await c.env.DB.prepare("INSERT INTO transactions (user_id, tx_type, amount, note, created_at) VALUES (?, 'lp_charge', ?, 'LP 음질 향상', datetime('now'))").bind(user.id, -lpPrice).run();
         } catch (_) {}
-      }
-      if (lpOpusB64) {
-        try {
-          const bin = atob(lpOpusB64);
-          const bytes = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          lpDiffBytes = bytes;
-          const hashBuf = await crypto.subtle.digest('SHA-256', bytes);
-          lpHashed = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-        } catch (e) {
-          console.warn('[LP-FLAC] base64 디코딩 실패:', e);
-        }
       }
     }
 
@@ -1228,19 +1211,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const shareId = shareIdParam || `tl3_${fileId}`;
 
     // v3 빌드 (AES-256-GCM + 타임토큰 체인)
-    // ★ V4 제조: LP Opus 데이터가 있으면 함께 암호화
-    let lpOpusData: Uint8Array | null = null;
-    if (typeof lpOpusB64 !== 'undefined' && lpOpusB64) {
-      try {
-        const bin = atob(lpOpusB64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        lpOpusData = bytes;
-      } catch (e) {
-        console.warn('[V4] LP Opus base64 디코딩 실패:', e);
-      }
-    }
-
+    // LP 오디오는 TL3 컨테이너에 포함하지 않는다. 재생 시점에 Player DSP로 적용한다.
     const build = await buildTL3V4FromMp3({
       fileId: fileId,
       title: file.title,
@@ -1250,7 +1221,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
       creator_id: Number(user.id),
       mp3Raw: raw,
       segments,
-      lpOpusData: lpOpusData, // ★ V4: LP Opus 포함
+      lpOpusData: null, // LP 실시간 DSP: 추가 오디오 페이로드 없음
       masterSecret,
       shareId,
       licId: 'k_2026_01'
@@ -1326,21 +1297,10 @@ app.post('/api/v1/tl3/releases', async (c) => {
         g: lpLicense.lp_g || null,
         fs: Number(lpLicense.lp_fs || 0),
         n: Number(lpLicense.lp_n || 0),
-        opus_bytes: lpDiffBytes ? lpDiffBytes.length : 0,
-        opus_fs: Number(body.lp_opus_fs || 48000),
-        opus_ch: Number(body.lp_opus_ch || 2),
-        opus_n: Number(body.lp_opus_n || 0),
-        version: String(lpLicense.lp_version || 'lp-v1')
+        version: String(lpLicense.lp_version || 'lp-v1-runtime'),
+        processing: 'player-realtime',
+        audio_payload_bytes: 0
       };
-      if (lpDiffBytes && lpDiffBytes.length > 0) {
-        const opusKey = 'tl3/lp_opus/' + fileId + '.opus';
-        try {
-          await putD1Object(c.env.DB, opusKey, lpDiffBytes, 'application/octet-stream', file.title + '.lpd');
-          console.log('[LP-OPUS] 저장 완료:', opusKey, lpDiffBytes.length, 'bytes');
-        } catch (e) {
-          console.error('[LP-OPUS] 저장 실패:', e);
-        }
-      }
     }
     await c.env.DB.prepare(`INSERT INTO tl3_releases
       (file_id,user_id,title,artist,price_tl,status,tl3_key,payload_offset,duration_ms,segment_count,
@@ -1619,7 +1579,8 @@ app.get('/api/v1/tl3/header/:id', async (c) => {
       lic_id: header.lic_id,
       token_latest: header.token_latest,
       mp3_tokens: header.mp3_tokens || [],
-      rights: header.rights || {}
+      rights: header.rights || {},
+      lp_meta: header.lp_meta || null
     });
   } catch(e:any) { return c.json({ok:false,error:e.message||'header error'},500); }
 });
