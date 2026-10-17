@@ -115,17 +115,30 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
   return directIds.length===1?directIds[0]:0;
 }
 async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
-  // 2026-10-16: GPT가 추가한 승인 게이트 제거
-  // 원칙: 공유=공개, 법적 책임=업로더 본인
-  // - v3 (tl_shares): content_kind/release_mode='tl3' → 공개
-  // - v4 (tl_files): shared=1 → 공개
-  const ck = String(share?.content_kind||'').toLowerCase();
-  const rm = String(share?.release_mode||'').toLowerCase();
-  const ft = String(share?.file_type||'').toLowerCase();
-  if (ck === 'tl3' || rm === 'tl3' || ft === 'audio/tl3') return true;
-  return Number(share?.shared) === 1;
+  const contentKind=String(share?.content_kind||'').toLowerCase();
+  const releaseMode=String(share?.release_mode||'').toLowerCase();
+  const declaredType=String(share?.file_type||'').toLowerCase();
+  const shareId=String(share?.id||share?.share_id||'').trim();
+  const ownerId=Number(share?.user_id||0);
+  const fileId=shareId ? await resolveTL3FileId(db,shareId) : 0;
+  const isDeclaredTL3=contentKind==='tl3'||releaseMode==='tl3'||declaredType==='audio/tl3';
+  if(isDeclaredTL3||fileId>0){
+    if(!fileId) return false;
+    const release=await db.prepare(`
+      SELECT f.file_type,f.user_id,f.shared,f.revenue_held,r.status,r.rights_confirmed
+      FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id
+      WHERE f.id=? AND LOWER(f.file_type)='audio/tl3'
+        AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+        AND r.status='released' AND r.rights_confirmed=1
+        AND (?=0 OR f.user_id=?)
+      LIMIT 1
+    `).bind(fileId,ownerId,ownerId).first<any>();
+    const fileType=String(release?.file_type||'').toLowerCase();
+    if(!release||fileType!=='audio/tl3'||Number(release.rights_confirmed)!==1||String(release.status)!=='released') return false;
+    return true;
+  }
+  return Number(share?.shared)===1;
 }
-
 async function hasPlaybackBalance(db:D1Database,userId:number):Promise<boolean>{
   if(!userId) return false;
   const row=await db.prepare(
