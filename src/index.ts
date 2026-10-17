@@ -1124,23 +1124,11 @@ app.post('/api/v1/tl3/releases', async (c) => {
     const sourceUrl = String(file.stream_url || '');
     if (!sourceUrl) return c.json({ok:false,error:'TL3 출시용 원본 주소가 없습니다.'},400);
 
-    // LP는 전체 렌더 오디오를 저장하지 않는다. 라이선스와 재생 파라미터만 TL3 헤더에 기록한다.
+    // LP 전체 오디오는 저장하지 않고 재생 파라미터만 기록한다.
     const lpLicense: any = body.lp_license || null;
-    let lpHashed: string | null = null;
-    if (lpLicense && lpLicense.lp_enabled === true) {
-      const lpPrice = Math.max(0, Math.floor(Number(lpLicense.lp_price_tl || 1000)));
-      if (lpPrice > 0) {
-        const u = await c.env.DB.prepare('SELECT id, tl_p, tl_a, tl_b, tl_balance, tl FROM users WHERE id=?').bind(user.id).first<any>();
-        if (!u) return c.json({ok:false,error:'사용자 잔액 조회 실패'},500);
-        const bal = Number(u.tl_p||0) + Number(u.tl_a||0) + Number(u.tl_b||0) + Number(u.tl_balance||0) + Number(u.tl||0);
-        if (bal < lpPrice) return c.json({ok:false,error:'LP 적용에 필요한 TL이 부족합니다. (필요: '+lpPrice+' TL / 보유: '+bal+' TL)', code:'LP_INSUFFICIENT_TL'}, 402);
-        const newBalance = Math.max(0, Number(u.tl_balance||0) - lpPrice);
-        await c.env.DB.prepare("UPDATE users SET tl_balance=?, updated_at=datetime('now') WHERE id=?").bind(newBalance, user.id).run();
-        try {
-          await c.env.DB.prepare("INSERT INTO transactions (user_id, tx_type, amount, note, created_at) VALUES (?, 'lp_charge', ?, 'LP 음질 향상', datetime('now'))").bind(user.id, -lpPrice).run();
-        } catch (_) {}
-      }
-    }
+    const lpPrice = lpLicense && lpLicense.lp_enabled === true
+      ? Math.max(0, Math.floor(Number(lpLicense.lp_price_tl || 1000))) : 0;
+    let lpAlreadyCharged = false;
 
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_releases (
       id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL UNIQUE, user_id INTEGER NOT NULL,
@@ -1155,6 +1143,18 @@ app.post('/api/v1/tl3/releases', async (c) => {
       "ALTER TABLE tl3_releases ADD COLUMN duration_ms INTEGER DEFAULT 0",
       "ALTER TABLE tl3_releases ADD COLUMN segment_count INTEGER DEFAULT 0"
     ]) { try { await c.env.DB.prepare(sql).run(); } catch (_) {} }
+    try { await c.env.DB.prepare('ALTER TABLE tl3_releases ADD COLUMN header_json TEXT').run(); } catch (_) {}
+    const priorRelease = await c.env.DB.prepare('SELECT header_json,status FROM tl3_releases WHERE file_id=?').bind(fileId).first<any>();
+    if (priorRelease && String(priorRelease.status) === 'released') {
+      try { lpAlreadyCharged = JSON.parse(String(priorRelease.header_json || '{}'))?.lp_meta?.enabled === true; } catch (_) {}
+    }
+    if (lpPrice > 0 && !lpAlreadyCharged) {
+      const walletRow = await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(user.id).first<any>();
+      if (!walletRow) return c.json({ok:false,error:'사용자 잔액 조회 실패'},500);
+      const wallet = tlWalletParts(walletRow);
+      const balance = wallet.p + wallet.a + wallet.b;
+      if (balance < lpPrice) return c.json({ok:false,error:'LP 적용에 필요한 TL이 부족합니다. (필요: '+lpPrice+' TL / 보유: '+balance+' TL)',code:'LP_INSUFFICIENT_TL'},402);
+    }
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_segments (
       file_id INTEGER NOT NULL, segment_index INTEGER NOT NULL, offset INTEGER NOT NULL,
       length INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
@@ -1229,6 +1229,30 @@ app.post('/api/v1/tl3/releases', async (c) => {
 
     const tl3Key = `tl3/releases/${fileId}.tl3`;
     await putD1Object(c.env.DB, tl3Key, build.data, 'application/octet-stream', `${file.title}.tl3`);
+
+    // LP 요금은 TL3 파일 생성과 D1 저장이 성공한 뒤 한 번만 차감한다.
+    if (lpPrice > 0 && !lpAlreadyCharged) {
+      const walletRow = await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(user.id).first<any>();
+      if (!walletRow) return c.json({ok:false,error:'LP 요금 결제 중 사용자 잔액 조회 실패'},500);
+      const wallet = tlWalletParts(walletRow);
+      if (wallet.p + wallet.a + wallet.b < lpPrice) return c.json({ok:false,error:'LP 요금 결제 중 잔액이 변경되었습니다. 다시 시도해 주세요.',code:'LP_INSUFFICIENT_TL'},402);
+      let left = lpPrice;
+      const takeP = Math.min(left,wallet.p); left = Number((left-takeP).toFixed(6));
+      const takeA = Math.min(left,wallet.a); left = Number((left-takeA).toFixed(6));
+      const takeB = Number((left-takeB).toFixed(6));
+      const debit = await c.env.DB.prepare(`UPDATE users SET
+        tl_p=COALESCE(tl_p,tl,tl_balance,0)-?,
+        tl_a=COALESCE(tl_a,0)-?,
+        tl_b=COALESCE(tl_b,0)-?,
+        tl=COALESCE(tl_p,tl,tl_balance,0)-?+COALESCE(tl_a,0)-?+COALESCE(tl_b,0)-?,
+        total_tl_spent=COALESCE(total_tl_spent,0)+?,updated_at=datetime('now')
+        WHERE id=? AND COALESCE(tl_p,tl,tl_balance,0)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?`)
+        .bind(takeP,takeA,takeB,takeP,takeA,takeB,lpPrice,user.id,takeP,takeA,takeB).run();
+      if (!debit.meta?.changes) return c.json({ok:false,error:'LP 요금 차감이 동시 잔액 변경으로 취소되었습니다. 다시 시도해 주세요.',code:'LP_DEBIT_CONFLICT'},409);
+      try {
+        await c.env.DB.prepare("INSERT INTO transactions (user_id, tx_type, amount, note, created_at) VALUES (?, 'lp_charge', ?, 'LP 음질 향상', datetime('now'))").bind(user.id,-lpPrice).run();
+      } catch (_) {}
+    }
 
     // ─ D1: tl3_releases v3 컬럼 확장
     for (const sql of [
