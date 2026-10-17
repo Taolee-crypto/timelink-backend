@@ -1126,6 +1126,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
 
     // LP 전체 오디오는 저장하지 않고 재생 파라미터만 기록한다.
     const lpLicense: any = body.lp_license || null;
+    let lpHashed: string | null = null;
     const lpPrice = lpLicense && lpLicense.lp_enabled === true
       ? Math.max(0, Math.floor(Number(lpLicense.lp_price_tl || 1000))) : 0;
     let lpAlreadyCharged = false;
@@ -1239,7 +1240,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
       let left = lpPrice;
       const takeP = Math.min(left,wallet.p); left = Number((left-takeP).toFixed(6));
       const takeA = Math.min(left,wallet.a); left = Number((left-takeA).toFixed(6));
-      const takeB = Number((left-takeB).toFixed(6));
+      const takeB = Math.min(left,wallet.b); left = Number((left-takeB).toFixed(6));
       const debit = await c.env.DB.prepare(`UPDATE users SET
         tl_p=COALESCE(tl_p,tl,tl_balance,0)-?,
         tl_a=COALESCE(tl_a,0)-?,
