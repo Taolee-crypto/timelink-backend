@@ -3710,18 +3710,46 @@ app.patch('/api/shares/:id', async (c) => {
 });
 
 app.delete('/api/shares/:id', async (c) => {
-  const auth = (c.req.header('Authorization') || '').replace('Bearer ', '').trim();
-  if (!auth) return c.json({ error: '인증 필요' }, 401);
-  let userId: number;
-  try { userId = parseJWT(auth).userId; } catch (e) { return c.json({ error: 'Invalid token' }, 401); }
-  const shareId = c.req.param('id');
-  const row = await c.env.DB.prepare('SELECT user_id FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-  if (!row || Number(row.user_id) !== Number(userId)) return c.json({ error: '권한 없음' }, 403);
-  const v3 = await c.env.DB.prepare('SELECT file_id, tl3_key FROM tl3_releases WHERE share_id=?').bind(shareId).first<any>();
-  if (v3) {
-    const fileId = Number(v3.file_id);
-    const shareKey = `tl3_${fileId}`;
-    await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(fileId).run().catch(()=>{});
+  try {
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
+    if (!payload) return c.json({error:'인증 필요'},401);
+    
+    const shareId = String(c.req.param('id') || '');
+    const userId = Number(payload.sub);
+    
+    // 1) tl_shares에서 찾기 (기존 로직)
+    let share = await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    
+    // 2) tl_shares에 없으면 tl3_releases에서 찾기 (V4 자산)
+    if (!share) {
+      const release = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? OR CAST(file_id AS TEXT)=?").bind(shareId, shareId).first<any>();
+      if (release) {
+        if (Number(release.user_id) !== userId) {
+          return c.json({error:'권한 없음'},403);
+        }
+        // V4 자산 삭제 (tl3_releases, tl3_segments, tl3_release_tokens)
+        await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(release.file_id).run().catch(()=>{});
+        await c.env.DB.prepare('DELETE FROM tl3_release_tokens WHERE file_id=?').bind(release.file_id).run().catch(()=>{});
+        await c.env.DB.prepare('DELETE FROM tl3_releases WHERE file_id=?').bind(release.file_id).run();
+        await c.env.DB.prepare('DELETE FROM tl_files WHERE id=?').bind(release.file_id).run().catch(()=>{});
+        return c.json({ok:true, deleted:'tl3_release', file_id:release.file_id});
+      }
+      return c.json({error:'파일 없음'},404);
+    }
+    
+    // 3) tl_shares가 있으면 기존 로직 (소유권 확인)
+    if (Number(share.user_id) !== userId) {
+      return c.json({error:'권한 없음'},403);
+    }
+    
+    // 기존 삭제 로직 (tl_shares + 관련 자산)
+    await c.env.DB.prepare('DELETE FROM tl_shares WHERE id=?').bind(shareId).run();
+    return c.json({ok:true, deleted:'share', id:shareId});
+  } catch(e:any) {
+    return c.json({error:e.message||'삭제 실패'},500);
+  }
+});
     await c.env.DB.prepare('DELETE FROM tl3_release_tokens WHERE file_id=?').bind(fileId).run().catch(()=>{});
     await c.env.DB.prepare('DELETE FROM tl3_tokens WHERE share_id=?').bind(shareKey).run().catch(()=>{});
     await c.env.DB.prepare('DELETE FROM tl3_releases WHERE file_id=?').bind(fileId).run().catch(()=>{});
