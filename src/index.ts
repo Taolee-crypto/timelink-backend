@@ -4012,10 +4012,13 @@ app.get('/api/legacy-stream/:fileId',async(c)=>{
     if(!file)return c.json({error:'파일 없음'},404);
     const viewerId=await playbackUserId(c);
     const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-    // 2026-10-16: 승인 게이트 제거 (공유=공개)
-  const isPublic = Number(file.shared) === 1;
+    const release=await c.env.DB.prepare(
+      "SELECT 1 FROM tl3_releases WHERE file_id=? AND status='released' AND rights_confirmed=1 LIMIT 1"
+    ).bind(file.id).first();
+    const fileType=String(file.file_type||'').toLowerCase();
+    const isPublic=fileType==='audio/tl3'&&Number(file.shared)===1&&Number(file.revenue_held||0)===0&&!!release;
     if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
-    if(!isOwner&&Number(file.file_tl||0)>0){
+    if(!isOwner){
       if(!viewerId)return c.json({error:'TL3 재생은 로그인이 필요합니다.'},401);
       if(!await hasPlaybackBalance(c.env.DB,viewerId))return c.json({error:'재생에 필요한 TL 잔액이 없습니다.'},402);
     }
