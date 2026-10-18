@@ -1455,6 +1455,16 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
     if (!user) return c.json({ok:false,error:'사용자를 확인할 수 없습니다.'},401);
     const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_files WHERE id=?').bind(fileId).first<any>();
     if (!file || Number(file.user_id)!==Number(user.id)) return c.json({ok:false,error:'본인의 음원만 TL3로 자산화할 수 있습니다.'},403);
+    const lpLicense=body.lp_license||null;
+    const lpPrice=lpLicense&&lpLicense.lp_enabled===true?Math.max(0,Math.floor(Number(lpLicense.lp_price_tl||1000))):0;
+    let lpAlreadyCharged=false;
+    const priorV4=await c.env.DB.prepare('SELECT header_json,status FROM tl3_spine_v4_releases WHERE file_id=?').bind(fileId).first<any>().catch(()=>null);
+    if(priorV4){try{lpAlreadyCharged=JSON.parse(String(priorV4.header_json||'{}'))?.lp_meta?.enabled===true;}catch(_){}}
+    if(lpPrice>0&&!lpAlreadyCharged){
+      const wr=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(user.id).first<any>();
+      const wp=tlWalletParts(wr);
+      if(wp.p+wp.a+wp.b<lpPrice)return c.json({ok:false,error:'LP 적용에 필요한 TL이 부족합니다.',code:'LP_INSUFFICIENT_TL',required:lpPrice,balance:wp.p+wp.a+wp.b},402);
+    }
     let raw:Uint8Array;
     if(sourceFile){
       if(sourceFile.size<=0 || sourceFile.size>100*1024*1024) return c.json({ok:false,error:'TL3 원본은 100MB 이하만 지원합니다.'},413);
@@ -1549,16 +1559,22 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
       plainOffset+=seg.length; cipherOffset+=cipherLength;
     }
     await c.env.DB.prepare("UPDATE tl_files SET file_type='audio/tl3',stream_url=?,shared=1,shared_to_shareplace=1,updated_at=datetime('now') WHERE id=?").bind('https://api.timelink.digital/api/v1/tl3/spine/header/'+fileId,fileId).run();
-    const lpLicense=body.lp_license||null;
-    const lpPrice=lpLicense&&lpLicense.lp_enabled===true?Math.max(0,Math.floor(Number(lpLicense.lp_price_tl||1000))):0;
-    if(lpPrice>0){
-      const walletRow=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(user.id).first<any>();
+    if(lpPrice>0&&!lpAlreadyCharged){
+      const walletRow=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(user.id).first<any>();
+      if(!walletRow)return c.json({ok:false,error:'LP 요금 결제 중 사용자 잔액 조회 실패'},500);
       const wallet=tlWalletParts(walletRow);
-      if(wallet.p+wallet.a+wallet.b<lpPrice) return c.json({ok:false,error:'LP 적용에 필요한 TL이 부족합니다.',code:'LP_INSUFFICIENT_TL'},402);
-      let left=lpPrice; const takeA=Math.min(left,wallet.a); left-=takeA;
-      const takeB=Math.min(left,wallet.b); left-=takeB; const takeP=Math.max(0,left);
-      await c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl=COALESCE(tl_p,tl,tl_balance,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)-? WHERE id=?')
-        .bind(takeP,takeA,takeB,lpPrice,user.id).run();
+      if(wallet.p+wallet.a+wallet.b<lpPrice)return c.json({ok:false,error:'LP 요금 결제 중 잔액이 변경되었습니다.',code:'LP_INSUFFICIENT_TL'},402);
+      let left=lpPrice;const takeP=Math.min(left,wallet.p);left=Number((left-takeP).toFixed(6));
+      const takeA=Math.min(left,wallet.a);left=Number((left-takeA).toFixed(6));
+      const takeB=Math.min(left,wallet.b);left=Number((left-takeB).toFixed(6));
+      const debit=await c.env.DB.prepare(`UPDATE users SET
+        tl_p=COALESCE(tl_p,tl,tl_balance,0)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,
+        tl=COALESCE(tl_p,tl,tl_balance,0)-?+COALESCE(tl_a,0)-?+COALESCE(tl_b,0)-?,
+        total_tl_spent=COALESCE(total_tl_spent,0)+?,updated_at=datetime('now')
+        WHERE id=? AND COALESCE(tl_p,tl,tl_balance,0)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?`)
+        .bind(takeP,takeA,takeB,takeP,takeA,takeB,lpPrice,user.id,takeP,takeA,takeB).run();
+      if(!debit.meta?.changes)return c.json({ok:false,error:'LP 요금 차감 충돌',code:'LP_DEBIT_CONFLICT'},409);
+      try{await c.env.DB.prepare("INSERT INTO transactions (user_id,tx_type,amount,note,created_at) VALUES (?,'lp_charge',?,'LP 음질 향상',datetime('now'))").bind(user.id,-lpPrice).run();}catch(_){}
     }
     return c.json({ok:true,profile:'TL3-SPINE-1',version:4,file_id:fileId,share_id:shareId,
       status:'released',duration_ms:build.header.duration_ms,segment_count:build.header.segment_count,
