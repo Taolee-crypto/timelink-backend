@@ -2076,6 +2076,16 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     }
     await c.env.DB.prepare(`INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,?)`)
       .bind(fileId,u.id,played,revenue,null,Math.round(played),0).run();
+    // Keep the established POC contribution ledger in sync with metered TL3 playback.
+    // Only actually consumed TL is counted; refunded reservation amounts do not earn POC.
+    const consumedP=Number(Math.max(0,reservedP-refundP).toFixed(6));
+    const consumedA=Number(Math.max(0,reservedA-refundA).toFixed(6));
+    const consumedB=Number(Math.max(0,reservedB-refundB).toFixed(6));
+    const pocGained=consumedP*0.01+(consumedA+consumedB)*0.0005;
+    if(played>0){
+      await c.env.DB.prepare(`INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained)
+        VALUES(?,'consume',?,?,?)`).bind(u.id,played,consumedP,pocGained).run().catch(()=>{});
+    }
     let nextLicense:any=null;
     let nextError:string|null=null;
     if(nextSegment!==null){
