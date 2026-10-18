@@ -3755,11 +3755,12 @@ app.get('/api/shares/:id/my-tl', async (c) => {
         tl3Release = releaseById;
         shareId = releaseById.share_id; // 진짜 share_id로 내부 변수 교체
       }
-      // 혹은 tl_shares에서 file_id로 조회 (컬럼명이 다를 수 있음)
-      const shareByFile = await c.env.DB.prepare("SELECT * FROM tl_shares WHERE file_id=? LIMIT 1").bind(numericId).first<any>();
-      if (shareByFile) {
-        share = shareByFile;
-        shareId = shareByFile.id; // 진짜 share_id
+      // tl_shares는 file_id를 보유하지 않는다. tl3_releases에서 확인한
+      // 정식 share_id로 tl_shares를 조회해 D1 스키마와 일치시킨다.
+      if (tl3Release?.share_id) {
+        share = await c.env.DB.prepare("SELECT * FROM tl_shares WHERE id=? LIMIT 1")
+          .bind(String(tl3Release.share_id)).first<any>();
+        shareId = String(tl3Release.share_id);
       }
     }
 
