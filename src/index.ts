@@ -20,6 +20,7 @@ import ecoRouter from './economics';
 import economyV3Router from './routes/economy-v3';
 import musicV3Router from './routes/music-v3';
 import musicV3AdminRouter from './routes/music-v3-admin';
+import musicV3SocialRouter from './routes/music-v3-social';
 import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
@@ -133,6 +134,7 @@ async function playbackUserId(c:any,allowQueryToken=true):Promise<number>{
 
 async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   const fileType=String(share?.file_type||'').toLowerCase();
+  // PR29 security gate: public access requires a server-verified, shared TL3 record.
   // MP3 source assets are never public releases; only verified TL3 files pass below.
   if(fileType!=='audio/tl3') return false;
   // Never trust release_check here: legacy clients can submit it themselves.
@@ -301,6 +303,7 @@ app.route('/api/v1/users', usersRouter);
 app.route('/api/v3/economy', economyV3Router);
 app.route('/api/v3/music', musicV3Router);
 app.route('/api/v3/music-admin', musicV3AdminRouter);
+app.route('/api/v3/music-social', musicV3SocialRouter);
 app.route('/api/v1/files', filesRouter);
 app.route('/api/v1/playback', playbackRouter);
 app.route('/api/v1', scoreRouter);
