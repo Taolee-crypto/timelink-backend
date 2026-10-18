@@ -125,19 +125,28 @@ eco.get('/wallet', async (c) => {
     `).bind(userId).first() as any;
     if (!user) return c.json({ error: '유저 없음' }, 404);
 
-    // 레거시: tl 컬럼이 있으면 tl_p로 사용 (신규 컬럼 없을 시 fallback)
-    const tlP = user.tl_p ?? user.tl ?? 0;
-    const tlA = user.tl_a ?? 0;
-    const tlB = user.tl_b ?? 0;
+    // TL3 settlement uses split buckets first and falls back to legacy
+    // balances only when every split bucket is empty. The wallet API must
+    // report the same authoritative total; tl_balance can be stale after
+    // older split-wallet operations and must not override live P/A/B funds.
+    const tlP = Number(user.tl_p ?? user.tl ?? 0) || 0;
+    const tlA = Number(user.tl_a ?? 0) || 0;
+    const tlB = Number(user.tl_b ?? 0) || 0;
+    const splitTotal = tlP + tlA + tlB;
+    const legacyCandidates = [user.tl_balance, user.tl].map((value: any) => Number(value));
+    const legacyTotal = legacyCandidates.find((value: number) => Number.isFinite(value) && value > 0) ?? 0;
+    const authoritativeTotal = splitTotal > 0 ? splitTotal : legacyTotal;
 
     return c.json({
       wallet: {
         tl_p: tlP,         // 구매 TL (교환 가능)
         tl_a: tlA,         // 광고 TL (사용만)
         tl_b: tlB,         // 보너스 TL (사용만)
-        tl_balance: Number(user.tl_balance ?? (tlP + tlA + tlB)) || 0,
+        tl_balance: authoritativeTotal,
+        tl_split_total: splitTotal,
+        tl_legacy_balance: Number(user.tl_balance || 0) || 0,
         tl_locked: Number(user.tl_locked || 0),
-        tl_total: Number(user.tl_balance ?? (tlP + tlA + tlB)) || 0,
+        tl_total: authoritativeTotal,
         tlc: user.tlc_balance || 0,
         poc_index: Number((user.poc_index || 1.0).toFixed(3)),
         plan: user.plan || 'A',
