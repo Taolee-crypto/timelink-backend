@@ -1511,6 +1511,16 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
     ).bind(fileId,Number(user.id),shareId,objectKey,JSON.stringify(build.header),
       build.header.segment_count,build.header.duration_ms,build.header.spine_root,build.header.spine_latest).run();
     // Publish the v4 container through the existing metered segment/session ledger.
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_releases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL UNIQUE, user_id INTEGER NOT NULL,
+      title TEXT NOT NULL, artist TEXT NOT NULL, price_tl INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'released', tl3_key TEXT, payload_offset INTEGER DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0, segment_count INTEGER DEFAULT 0,
+      header_json TEXT, share_id TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )`).run();
+    for(const sql of ['ALTER TABLE tl3_releases ADD COLUMN header_json TEXT','ALTER TABLE tl3_releases ADD COLUMN share_id TEXT','ALTER TABLE tl3_releases ADD COLUMN updated_at TEXT']) {
+      try{ await c.env.DB.prepare(sql).run(); }catch(_){}
+    }
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_segments (
       file_id INTEGER NOT NULL, segment_index INTEGER NOT NULL, offset INTEGER NOT NULL,
       length INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
@@ -3618,6 +3628,17 @@ async function ensureTL3AssetTL(db:D1Database,fileId:number){
     file_id INTEGER PRIMARY KEY, share_id TEXT NOT NULL,
     initial_tl REAL NOT NULL DEFAULT 0, remaining_tl REAL NOT NULL DEFAULT 0,
     consumed_tl REAL NOT NULL DEFAULT 0, updated_at TEXT DEFAULT (datetime('now'))
+  )`).run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS tl3_stream_sessions (
+    id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, file_id INTEGER NOT NULL, share_id TEXT NOT NULL,
+    next_segment INTEGER NOT NULL DEFAULT 0, last_segment_at INTEGER DEFAULT 0,
+    pending_segment INTEGER DEFAULT NULL, pending_cost REAL DEFAULT 0,
+    pending_duration_ms INTEGER DEFAULT 0, pending_delivered_at INTEGER DEFAULT 0,
+    pending_tl_p REAL DEFAULT 0, pending_tl_a REAL DEFAULT 0, pending_tl_b REAL DEFAULT 0,
+    prefetch_segment INTEGER DEFAULT NULL, prefetch_cost REAL DEFAULT 0,
+    prefetch_tl_p REAL DEFAULT 0, prefetch_tl_a REAL DEFAULT 0, prefetch_tl_b REAL DEFAULT 0,
+    prefetch_duration_ms INTEGER DEFAULT 0, prefetch_delivered_at INTEGER DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now'))
   )`).run();
   await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN pending_tl_p REAL DEFAULT 0").run().catch(()=>{});
   await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN pending_tl_a REAL DEFAULT 0").run().catch(()=>{});
