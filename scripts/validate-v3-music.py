@@ -143,7 +143,7 @@ assert "verification_status,formula_version,metadata_json)" in route_source
 assert "'pending','poc-v1'" in route_source
 assert "type!=='TL3'" in route_source
 assert "source_asset_id" in route_source
-assert "json_extract(metadata_json,'$.source_asset_id')" in route_source
+assert "source_asset_id:sourceAssetId" in route_source
 assert "release_type IN ('MP3','TL3')" not in music_sql
 
 print(
