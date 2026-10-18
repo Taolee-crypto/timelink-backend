@@ -64,13 +64,13 @@ assert db.execute("SELECT COUNT(*) FROM v3_poc_events").fetchone()[0] == 0
 # MP3 is not a Release type; only TL3 is a commercial Release in this schema.
 fails("""
 INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('invalid-mp3-release','track-1','MP3',1,'draft','asset-source',0)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('invalid-mp3-release','track-1','MP3',1,'draft','asset-source','asset-source',0)
 """)
 fails("""
 INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('invalid-zero-price','track-1','TL3',1,'draft',NULL,0)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('invalid-zero-price','track-1','TL3',1,'draft',NULL,'asset-source',0)
 """)
 fails("""
 INSERT INTO v3_track_assets
@@ -90,7 +90,7 @@ INSERT INTO v3_poc_events
 (id,user_id,event_key,event_type,source,source_reference,base_value,contribution_value,
  verification_status,formula_version,metadata_json)
 VALUES ('poc-candidate-1','1','tl3-conversion:asset-tl3','tl3_conversion_completed',
- 'music_v3','asset-tl3',0,0,'pending','poc-v1','{"track_id":"track-1"}')
+ 'music_v3','asset-tl3',0,0,'pending','poc-v1','{"track_id":"track-1","source_asset_id":"asset-source"}')
 """)
 candidate = db.execute("""
 SELECT event_type,verification_status,contribution_value
@@ -100,8 +100,8 @@ assert candidate == ("tl3_conversion_completed", "pending", 0)
 
 db.execute("""
 INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl,duration_seconds,format_version)
-VALUES ('release-tl3','track-1','TL3',1,'draft','asset-tl3',120,180,'TLNK-v2')
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl,duration_seconds,format_version)
+VALUES ('release-tl3','track-1','TL3',1,'draft','asset-tl3','asset-source',120,180,'TLNK-v2')
 """)
 db.execute("UPDATE v3_track_releases SET status='published',published_at=datetime('now') WHERE id='release-tl3'")
 assert db.execute("SELECT status FROM v3_track_releases WHERE id='release-tl3'").fetchone()[0] == "published"
@@ -109,14 +109,19 @@ assert db.execute("SELECT status FROM v3_track_releases WHERE id='release-tl3'")
 # A source MP3 Asset cannot satisfy the published TL3 asset requirement.
 fails("""
 INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('invalid-source-release','track-1','TL3',2,'published','asset-source',120)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('invalid-source-release','track-1','TL3',2,'published','asset-source','asset-source',120)
+""")
+fails("""
+INSERT INTO v3_track_releases
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('invalid-source-link','track-1','TL3',3,'published','asset-tl3','asset-tl3',120)
 """)
 # Only one published TL3 release is allowed per Track.
 fails("""
 INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('second-published-tl3','track-1','TL3',2,'published','asset-tl3',120)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('second-published-tl3','track-1','TL3',2,'published','asset-tl3','asset-source',120)
 """)
 
 # Legacy records are not touched or backfilled by the V3 migrations.
@@ -137,6 +142,8 @@ assert "The completed TL3 output must be an available TL3 Asset" in route_source
 assert "verification_status,formula_version,metadata_json)" in route_source
 assert "'pending','poc-v1'" in route_source
 assert "type!=='TL3'" in route_source
+assert "source_asset_id" in route_source
+assert "source_asset_id:sourceAssetId" in route_source
 assert "release_type IN ('MP3','TL3')" not in music_sql
 
 print(

@@ -22,6 +22,45 @@ router.use('*', async (c, next) => {
 const id = () => crypto.randomUUID();
 const note = (v: unknown) => String(v || '').trim().slice(0, 2000);
 
+// GET /comment-reports — admin-only comment moderation queue
+router.get('/comment-reports', async (c) => {
+  const socialReady=await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v3_track_comment_moderation_events'").first();
+  if(!socialReady) return c.json({ok:false,code:'V3_COMMENT_MODERATION_NOT_INITIALIZED',error:'V3 comment moderation migration has not been applied'},503);
+  const status=String(c.req.query('status')||'open');
+  if(!['open','reviewed','dismissed'].includes(status)) return c.json({ok:false,error:'Invalid report status'},422);
+  const rows=await c.env.DB.prepare(`
+    SELECT rp.id AS report_id,rp.reason,rp.status AS report_status,rp.created_at,
+      cm.id AS comment_id,cm.track_id,cm.user_id AS commenter_user_id,cm.content,cm.moderation_status,
+      u.username AS commenter_name
+    FROM v3_track_comment_reports rp
+    JOIN v3_track_comments cm ON cm.id=rp.comment_id
+    JOIN users u ON u.id=cm.user_id
+    WHERE rp.status=? ORDER BY rp.created_at ASC LIMIT 100
+  `).bind(status).all();
+  return c.json({ok:true,reports:rows.results||[]});
+});
+
+// POST /comments/:commentId/moderate — audited moderation decision
+router.post('/comments/:commentId/moderate', async (c) => {
+  const socialReady=await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v3_track_comment_moderation_events'").first();
+  if(!socialReady) return c.json({ok:false,code:'V3_COMMENT_MODERATION_NOT_INITIALIZED',error:'V3 comment moderation migration has not been applied'},503);
+  const commentId=c.req.param('commentId');
+  let body:any;try{body=await c.req.json()}catch{return c.json({ok:false,error:'Invalid JSON body'},400);}
+  const action=String(body.action||''),reviewNote=note(body.moderation_note);
+  if(!['visible','hidden','removed'].includes(action)) return c.json({ok:false,error:'action must be visible, hidden or removed'},422);
+  if(!reviewNote) return c.json({ok:false,error:'A moderation_note is required'},422);
+  const comment=await c.env.DB.prepare('SELECT id FROM v3_track_comments WHERE id=?').bind(commentId).first();
+  if(!comment) return c.json({ok:false,error:'Comment not found'},404);
+  const eventId=id(),reviewer=c.get('user');
+  const result=await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE v3_track_comments SET moderation_status=?,updated_at=datetime('now') WHERE id=?").bind(action,commentId),
+    c.env.DB.prepare("UPDATE v3_track_comment_reports SET status='reviewed' WHERE comment_id=? AND status='open'").bind(commentId),
+    c.env.DB.prepare('INSERT INTO v3_track_comment_moderation_events(id,comment_id,moderator_user_id,action,moderation_note) VALUES(?,?,?,?,?)').bind(eventId,commentId,reviewer.id,action,reviewNote)
+  ]);
+  if(Number(result[0]?.meta?.changes||0)!==1) return c.json({ok:false,error:'Comment moderation did not complete'},409);
+  return c.json({ok:true,comment_id:commentId,moderation_status:action,moderation_event_id:eventId});
+});
+
 // GET /queue — admin-only release review queue
 router.get('/queue', async (c) => {
   const rows = await c.env.DB.prepare(`
