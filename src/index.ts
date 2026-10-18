@@ -3492,10 +3492,12 @@ async function ensureTL3AssetTL(db:D1Database,fileId:number){
 }
 function tlWalletParts(user:any){
   const p=Number(user?.tl_p||0),a=Number(user?.tl_a||0),b=Number(user?.tl_b||0);
-  // Older accounts may still hold their spendable balance only in tl_balance/tl.
-  // A zero-initialized TL_P column must not mask that legacy wallet balance.
-  const legacy=Number(user?.tl_balance||user?.tl||0);
-  return p+a+b>0?{p,a,b}:{p:Math.max(0,legacy),a:0,b:0};
+  // Prefer the normalized SQL alias when present. Numeric zero must be treated
+  // as empty: legacy columns can arrive as the string "0", which is truthy in JS.
+  if(p+a+b>0) return {p,a,b};
+  const candidates=[user?.p,user?.tl_balance,user?.tl].map((v:any)=>Number(v));
+  const legacy=candidates.find((v:number)=>Number.isFinite(v)&&v>0) ?? 0;
+  return {p:Math.max(0,legacy),a:0,b:0};
 }
 async function shareAuthUser(c:any){
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
