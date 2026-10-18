@@ -1486,7 +1486,7 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
       }
     }
     if(raw.length>100*1024*1024) return c.json({ok:false,error:'TL3 음원은 100MB 이하만 지원합니다.'},413);
-    const segments=parseMp3Segments(raw,5000); // 5초 세그먼트: Spine v4 Track의 코드 발급 지연 완화
+    const segments=parseMp3Segments(raw,1000); // TL3-SPINE-1 규격: 세그먼트 최대 1000ms
     const masterSecret=String((c.env as any).TL3_MASTER_SECRET||'');
     if(!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET not set'},500);
     const build=await buildTL3SpineV4({
