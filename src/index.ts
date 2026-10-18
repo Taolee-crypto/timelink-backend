@@ -1761,7 +1761,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     const takeP=Number(Math.max(0,left).toFixed(6));
     try{
       await c.env.DB.batch([
-        c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(tl_balance,tl,0) ELSE COALESCE(tl_p,0) END)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(tl_balance,tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(tl_balance,tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(tl_balance,tl,0) ELSE COALESCE(tl_p,0) END)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(takeP,takeA,takeB,cost,cost,cost,u.id,takeP,takeA,takeB),
+        c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(takeP,takeA,takeB,cost,cost,cost,u.id,takeP,takeA,takeB),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
         c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl-?,updated_at=datetime('now') WHERE file_id=? AND remaining_tl>=?").bind(cost,fileId,cost),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
@@ -1867,7 +1867,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
             const takeP=Number(Math.max(0,left).toFixed(6));
             try {
               await c.env.DB.batch([
-                c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(tl_balance,tl,0) ELSE COALESCE(tl_p,0) END)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(tl_balance,tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(tl_balance,tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(tl_balance,tl,0) ELSE COALESCE(tl_p,0) END)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(takeP,takeA,takeB,nextCost,nextCost,nextCost,u.id,takeP,takeA,takeB),
+                c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(takeP,takeA,takeB,nextCost,nextCost,nextCost,u.id,takeP,takeA,takeB),
                 c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
                 c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl-?,updated_at=datetime('now') WHERE file_id=? AND remaining_tl>=?").bind(nextCost,fileId,nextCost),
                 c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
@@ -3422,7 +3422,7 @@ function tlWalletParts(user:any){
   const p=Number(user?.tl_p||0),a=Number(user?.tl_a||0),b=Number(user?.tl_b||0);
   // Older accounts may still hold their spendable balance only in tl_balance/tl.
   // A zero-initialized TL_P column must not mask that legacy wallet balance.
-  const legacy=Number(user?.tl_balance??user?.tl??0);
+  const legacy=Number(user?.tl_balance||user?.tl||0);
   return p+a+b>0?{p,a,b}:{p:Math.max(0,legacy),a:0,b:0};
 }
 async function shareAuthUser(c:any){
