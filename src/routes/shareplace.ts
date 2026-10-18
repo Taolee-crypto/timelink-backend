@@ -55,15 +55,15 @@ router.post('/', async (c) => {
     }
     const stored = await getD1ObjectMeta(c.env.DB, storageKey);
     if (!stored) return c.json({ ok: false, error: '완료된 TL3 저장 자산을 찾을 수 없습니다.' }, 404);
-    const prefix = await readD1Range(c.env.DB, storageKey, 0, Math.min(stored.size, 7));
-    if (prefix.byteLength < 7 || prefix[0] !== 0x54 || prefix[1] !== 0x4c || prefix[2] !== 0x4e || prefix[3] !== 0x4b || prefix[4] !== 0x02) {
-      return c.json({ ok: false, error: '유효한 TL3 v2 컨테이너가 아닙니다.' }, 400);
+    const prefix = await readD1Range(c.env.DB, storageKey, 0, Math.min(stored.size, 9));
+    if (prefix.byteLength < 9 || prefix[0] !== 0x54 || prefix[1] !== 0x4c || prefix[2] !== 0x4e || prefix[3] !== 0x4b || prefix[4] !== 0x03) {
+      return c.json({ ok: false, error: '유효한 TL3 v3 컨테이너가 아닙니다.' }, 400);
     }
-    const headerLength = (prefix[5] << 8) | prefix[6];
-    if (headerLength <= 0 || 7 + headerLength > stored.size) {
+    const headerLength = new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength).getUint32(5, false);
+    if (headerLength <= 0 || 9 + headerLength > stored.size) {
       return c.json({ ok: false, error: 'TL3 메타데이터가 손상되었습니다.' }, 400);
     }
-    const headerBytes = await readD1Range(c.env.DB, storageKey, 7, headerLength);
+    const headerBytes = await readD1Range(c.env.DB, storageKey, 9, headerLength);
     let header: any;
     try {
       header = JSON.parse(new TextDecoder().decode(headerBytes));
@@ -75,10 +75,10 @@ router.post('/', async (c) => {
     }
 
     const approvedFile = await c.env.DB.prepare(
-      "SELECT id FROM tl_files WHERE user_id = ? AND LOWER(file_type) = 'audio/tl3' AND (stream_url = ? OR file_url = ?) AND auth_status = 'verified' AND shared = 1 AND COALESCE(revenue_held, 0) = 0 LIMIT 1"
+      "SELECT f.id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.user_id = ? AND LOWER(f.file_type) = 'audio/tl3' AND (f.stream_url = ? OR f.file_url = ?) AND f.shared = 1 AND COALESCE(f.revenue_held, 0) = 0 AND r.status='released' AND r.rights_confirmed=1 LIMIT 1"
     ).bind(userId, streamUrl, streamUrl).first<any>();
     if (!approvedFile) {
-      return c.json({ ok: false, error: '관리자 권리 검증과 창작자 공개 승인이 완료된 TL3만 공유할 수 있습니다.' }, 403);
+      return c.json({ ok: false, error: '창작자 권리 확인을 마친 TL3 자산을 먼저 발행해야 합니다.' }, 403);
     }
 
     const hash = String(body.origin_hash || '').trim().toLowerCase();
@@ -119,15 +119,26 @@ router.get('/', async (c) => {
   const offset = Math.max(0, Number(c.req.query('offset') || 0));
   const orderCol = sort === 'new' ? 'f.created_at' : sort === 'tl' ? 'f.file_tl' : 'f.pulse';
 
+  // SharePlace shows V4 only when the matching TL3 Spine release was actually sealed.
+  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_spine_v4_releases (
+    file_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, share_id TEXT NOT NULL,
+    object_key TEXT NOT NULL, header_json TEXT NOT NULL, segment_count INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL, spine_root TEXT NOT NULL, spine_latest TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'sealed', created_at TEXT DEFAULT (datetime('now'))
+  )`).run();
+
   let query = `SELECT f.id, f.user_id, u.username, f.title, f.artist, f.genre,
     f.file_type, f.file_tl, f.duration_seconds, f.cover_image, f.pulse,
     f.play_count, f.created_at,
+    (SELECT sv.status FROM tl3_spine_v4_releases sv
+      WHERE sv.file_id=f.id AND sv.status='sealed' LIMIT 1) AS spine_v4_status,
     (SELECT c.cert_no FROM tl_asset_certs c
       JOIN tl_assets a ON a.asset_id = c.asset_id
       WHERE a.file_id = f.id AND c.status = 'active' LIMIT 1) AS cert_no
     FROM tl_files f JOIN users u ON f.user_id = u.id
     WHERE LOWER(f.file_type)='audio/tl3'
-      AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0`;
+      AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+      AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)`;
   const params: (string | number)[] = [];
   if (genre) { query += ' AND f.genre = ?'; params.push(genre); }
   query += ` ORDER BY ${orderCol} DESC LIMIT ? OFFSET ?`;
@@ -144,7 +155,8 @@ router.get('/', async (c) => {
     play_count: Number(f.play_count || 0), created_at: f.created_at,
     content_kind: 'tl3', shared: 1, auth_status: 'verified',
     stream_url: origin + '/api/legacy-stream/' + encodeURIComponent(String(f.id)),
-    source_table: 'tl_file', cert_no: f.cert_no || null
+    source_table: 'tl_file', cert_no: f.cert_no || null,
+    spine_v4_status: f.spine_v4_status || null
   }));
 
   let modern: any[] = [];
@@ -153,14 +165,19 @@ router.get('/', async (c) => {
       SELECT s.id, s.user_id, u.username, s.title, s.artist, s.album,
         s.duration, s.file_tl, s.category, s.category_type, s.description,
         s.plan, s.cover_url, s.country, s.content_lang, s.pulse, s.created_at,
-        s.composer, s.lyricist, s.lyrics, s.release_mode, s.content_kind
+        s.composer, s.lyricist, s.lyrics, s.release_mode, s.content_kind,
+        (SELECT sv.status FROM tl3_spine_v4_releases sv
+          JOIN tl_files vf ON vf.id=sv.file_id
+          WHERE (vf.stream_url=s.stream_url OR vf.file_url=s.stream_url)
+            AND sv.status='sealed' LIMIT 1) AS spine_v4_status
       FROM tl_shares s
       JOIN users u ON CAST(s.user_id AS INTEGER) = u.id
       WHERE EXISTS (
         SELECT 1 FROM tl_files f
         WHERE (f.stream_url=s.stream_url OR f.file_url=s.stream_url)
           AND LOWER(f.file_type)='audio/tl3'
-          AND f.auth_status='verified' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+          AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+          AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)
       )
       ORDER BY s.pulse DESC, s.created_at DESC
       LIMIT ? OFFSET ?
@@ -179,7 +196,7 @@ router.get('/', async (c) => {
       lyrics: String(s.lyrics || ''), release_mode: 'tl3', content_kind: 'tl3',
       file_type: 'audio/tl3', shared: 1, auth_status: 'verified',
       stream_url: origin + '/api/stream/' + encodeURIComponent(String(s.id)),
-      source_table: 'share'
+      source_table: 'share', spine_v4_status: s.spine_v4_status || null
     }));
   } catch (e) {
     console.error('tl_shares list error:', e);
