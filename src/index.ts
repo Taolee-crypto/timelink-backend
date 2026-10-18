@@ -1946,6 +1946,21 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
       c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
       c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
     ]);
+    // If playback stops instead of advancing, release the independently reserved
+    // next segment. A prefetched reservation must never remain charged or stranded.
+    if(nextSegment===null&&ss.prefetch_segment!==null&&ss.prefetch_segment!==undefined){
+      const preCost=Number(ss.prefetch_cost||0);
+      const preP=Number(ss.prefetch_tl_p||0),preA=Number(ss.prefetch_tl_a||0),preB=Number(ss.prefetch_tl_b||0);
+      await c.env.DB.batch([
+        c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(preP,preA,preB,preP,preA,preB,preCost,u.id),
+        c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+        c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(preCost,fileId),
+        c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+        c.env.DB.prepare("UPDATE tl3_stream_sessions SET prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,updated_at=datetime('now') WHERE id=? AND prefetch_segment=?").bind(sessionId,Number(ss.prefetch_segment)),
+        c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+        c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
+      ]);
+    }
     const creator=await c.env.DB.prepare('SELECT id,COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
     if(creator&&revenue>0){
       const creatorTotal=Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0);
