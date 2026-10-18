@@ -1876,6 +1876,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
                 c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
               ]);
               const masterSecret=c.env.TL3_MASTER_SECRET;
+              if(!masterSecret) throw new Error('TL3_MASTER_SECRET is not configured');
               const release=await c.env.DB.prepare("SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
               const lic=await deriveLicenseBytes(masterSecret,release?.share_id||'tl3_'+fileId);
               const walletAfter=await c.env.DB.prepare('SELECT COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
