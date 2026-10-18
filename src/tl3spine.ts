@@ -55,6 +55,7 @@ export interface TL3SpineBuildInput {
   masterSecret: string;
   licId: string;
   rightsConfirmed: true;
+  lpMeta?: Record<string, any> | null;
 }
 
 export interface TL3SpineHeader {
@@ -81,6 +82,7 @@ export interface TL3SpineHeader {
   spine_latest: string;
   rights: { ownership: 'creator'; license: 'TL3-SPINE-1'; rights_confirmed: true };
   created_at: string;
+  lp_meta?: Record<string, any> | null;
 }
 
 export interface TL3SpineBuildResult {
@@ -205,6 +207,7 @@ export async function buildTL3SpineV4(input: TL3SpineBuildInput): Promise<TL3Spi
     spine_root: tokens[0],
     spine_latest: tokens[tokens.length - 1],
     rights,
+    lp_meta: input.lpMeta || null,
     created_at: new Date().toISOString()
   };
   const headerBytes = enc(JSON.stringify(header));
