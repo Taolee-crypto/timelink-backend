@@ -119,6 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_v3_track_releases_track_status
 CREATE UNIQUE INDEX IF NOT EXISTS idx_v3_track_one_published_release
   ON v3_track_releases(track_id)
   ON v3_track_releases(track_id, release_type)
+
   WHERE status = 'published';
 
 CREATE TABLE IF NOT EXISTS v3_shareplace_entries (
@@ -184,6 +185,7 @@ END;
 CREATE TRIGGER IF NOT EXISTS trg_v3_release_asset_update
 BEFORE UPDATE OF status, asset_id, source_asset_id, track_id, release_type ON v3_track_releases
 BEFORE UPDATE OF status, asset_id, track_id, release_type ON v3_track_releases
+
 WHEN NEW.status = 'published'
 BEGIN
   SELECT CASE WHEN NEW.asset_id IS NULL
@@ -196,7 +198,6 @@ BEGIN
       AND NEW.release_type = 'TL3' AND a.asset_type = 'tl3_release_file'
   ) THEN RAISE(ABORT, 'Published release requires a matching available asset') END;
   SELECT CASE WHEN NOT EXISTS (
-
     SELECT 1 FROM v3_track_assets source
     WHERE source.id = NEW.source_asset_id
       AND source.track_id = NEW.track_id
@@ -204,8 +205,6 @@ BEGIN
       AND source.availability_status IN ('available','local_only')
   ) THEN RAISE(ABORT, 'TL3 conversion requires a source MP3 asset') END;
   SELECT CASE WHEN NOT EXISTS (
-
-
     SELECT 1 FROM v3_track_rights r
     WHERE r.track_id = NEW.track_id
       AND r.verification_status = 'verified'

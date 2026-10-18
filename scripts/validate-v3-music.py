@@ -76,8 +76,8 @@ VALUES ('invalid-mp3-release','track-1','MP3',1,'draft','asset-source',0)
 """)
 fails("""
 INSERT INTO v3_track_releases
-(id,track_id,release_type,version,status,asset_id,price_tl)
-VALUES ('invalid-zero-price','track-1','TL3',1,'draft',NULL,0)
+(id,track_id,release_type,version,status,asset_id,source_asset_id,price_tl)
+VALUES ('invalid-zero-price','track-1','TL3',1,'draft',NULL,'asset-source',0)
 """)
 fails("""
 INSERT INTO v3_track_assets
@@ -158,6 +158,7 @@ assert "'pending','poc-v1'" in route_source
 assert "type!=='TL3'" in route_source
 assert "source_asset_id" in route_source
 assert "json_extract(metadata_json,'$.source_asset_id')" in route_source
+assert "source_asset_id:sourceAssetId" in route_source
 assert "release_type IN ('MP3','TL3')" not in music_sql
 
 print(
