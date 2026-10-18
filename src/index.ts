@@ -1526,9 +1526,10 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
       title TEXT NOT NULL, artist TEXT NOT NULL, price_tl INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'released', tl3_key TEXT, payload_offset INTEGER DEFAULT 0,
       duration_ms INTEGER DEFAULT 0, segment_count INTEGER DEFAULT 0,
-      header_json TEXT, share_id TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+      header_json TEXT, share_id TEXT, rights_confirmed INTEGER NOT NULL DEFAULT 0, rights_confirmed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
     )`).run();
-    for(const sql of ['ALTER TABLE tl3_releases ADD COLUMN header_json TEXT','ALTER TABLE tl3_releases ADD COLUMN share_id TEXT','ALTER TABLE tl3_releases ADD COLUMN updated_at TEXT']) {
+    for(const sql of ['ALTER TABLE tl3_releases ADD COLUMN header_json TEXT','ALTER TABLE tl3_releases ADD COLUMN share_id TEXT','ALTER TABLE tl3_releases ADD COLUMN rights_confirmed INTEGER NOT NULL DEFAULT 0','ALTER TABLE tl3_releases ADD COLUMN rights_confirmed_at TEXT','ALTER TABLE tl3_releases ADD COLUMN updated_at TEXT']) {
       try{ await c.env.DB.prepare(sql).run(); }catch(_){}
     }
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_segments (
@@ -1542,12 +1543,12 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
     const headerBytes=new TextEncoder().encode(JSON.stringify(build.header));
     const payloadOffset=9+headerBytes.length;
     await c.env.DB.prepare(`INSERT INTO tl3_releases
-      (file_id,user_id,title,artist,price_tl,status,tl3_key,payload_offset,duration_ms,segment_count,header_json,share_id)
-      VALUES(?,?,?,?,0,'released',?,?,?,?,?,?)
+      (file_id,user_id,title,artist,price_tl,status,tl3_key,payload_offset,duration_ms,segment_count,header_json,share_id,rights_confirmed,rights_confirmed_at)
+      VALUES(?,?,?,?,0,'released',?,?,?,?,?,?,1,datetime('now'))
       ON CONFLICT(file_id) DO UPDATE SET user_id=excluded.user_id,title=excluded.title,artist=excluded.artist,
       status='released',tl3_key=excluded.tl3_key,payload_offset=excluded.payload_offset,
       duration_ms=excluded.duration_ms,segment_count=excluded.segment_count,
-      header_json=excluded.header_json,share_id=excluded.share_id,updated_at=datetime('now')`
+      header_json=excluded.header_json,share_id=excluded.share_id,rights_confirmed=1,rights_confirmed_at=datetime('now'),updated_at=datetime('now')`
     ).bind(fileId,Number(user.id),String(file.title),String(file.artist),objectKey,payloadOffset,
       build.header.duration_ms,build.header.segment_count,JSON.stringify(build.header),shareId).run();
     await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(fileId).run();
