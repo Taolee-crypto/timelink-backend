@@ -23,8 +23,6 @@ export interface Env {
   CF_ACCESS_CLIENT_SECRET?: string;
 
   TLD_SERVER_URL?: string;  // TimeLink TLD server (default: https://score.timelink.digital)
-
-
 }
 
 export interface JWTPayload {

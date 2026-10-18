@@ -367,7 +367,8 @@ ads.get('/stream/:adId', async (c) => {
     const obj   = await c.env.R2.get(tlKey);
     if (!obj) return new Response(JSON.stringify({error:'.tl 파일 없음'}),{status:404,headers:cors});
 
-    const secret = (c.env as any).TL_SECRET || 'timelink_default_secret_2026';
+    const secret = c.env.TL_SECRET || '';
+    if (!secret) return c.json({ ok:false, error:'TL_SECRET is not configured' }, 503);
 
     // .tl 복호화
     const tlData   = new Uint8Array(await obj.arrayBuffer());

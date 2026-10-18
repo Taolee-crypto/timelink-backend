@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
 import { buildTL3SpineV4, verifyTL3SpineV4Container } from './tl3spine';
-
 import { cors } from 'hono/cors';
 import type { Env } from './types';
 import { verifyToken, makeAccessToken, hashPassword, verifyPassword } from './auth';
@@ -21,6 +20,7 @@ import ecoRouter from './economics';
 import economyV3Router from './routes/economy-v3';
 import musicV3Router from './routes/music-v3';
 import musicV3AdminRouter from './routes/music-v3-admin';
+import musicV3PublicRouter from './routes/music-v3-public';
 import musicV3SocialRouter from './routes/music-v3-social';
 import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
@@ -40,6 +40,9 @@ import uploadPdfRouter from './routes/upload-pdf';
 import { ensureStorageTables, beginStorageConnect, finishStorageConnect, createUploadSession, finalizeUpload, registerObject, externalStream, disconnectStorage } from './storage';
 import { buildTL3V4FromMp3, deriveLicenseBytes, initialToken, nextToken, ivFor, hex, enc, sha256 } from './tl3v3';
 
+
+const D1_CHUNK_SIZE = D1_OBJECT_CHUNK_SIZE;
+const D1_MAX_FILE_SIZE = D1_MAX_OBJECT_SIZE;
 
 const app = new Hono<{ Bindings: Env }>();
 app.use('/api/upload/*', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
@@ -346,6 +349,8 @@ app.route('/api/v1/users', usersRouter);
 app.route('/api/v3/economy', economyV3Router);
 app.route('/api/v3/music', musicV3Router);
 app.route('/api/v3/music-admin', musicV3AdminRouter);
+app.route('/api/v3/public/music', musicV3PublicRouter);
+app.route('/api/v3/social/music', musicV3SocialRouter);
 app.route('/api/v3/music-social', musicV3SocialRouter);
 app.route('/api/v1/files', filesRouter);
 app.route('/api/v1/playback', playbackRouter);
@@ -860,21 +865,22 @@ app.get('/api/tracks', async (c) => {
 // POST /api/files/sync
 // 소유권은 요청 본문이 아니라 검증된 Bearer JWT 주체에서만 결정한다.
 app.post('/api/files/sync', async (c) => {
-
+  const session=await storageUser(c);
+  const userId=Number(session?.sub||0);
+  if(!Number.isSafeInteger(userId)||userId<=0) return c.json({ok:false,error:'인증 필요'},401);
   const session = await storageUser(c);
   const userId = Number(session?.sub || 0);
   if (!Number.isSafeInteger(userId) || userId <= 0) return c.json({ ok: false, error: '인증 필요' }, 401);
-
   try {
     const owner = await c.env.DB.prepare('SELECT id FROM users WHERE id = ?')
       .bind(userId).first<{ id: number }>();
     if (!owner) return c.json({ ok: false, error: '인증 사용자 확인 불가' }, 401);
     const body = await c.req.json<any>();
 
+    if (!String(body.title||'').trim()) return c.json({ error: 'title required' }, 422);
     if (!String(body.title || '').trim()) return c.json({ error: 'title required' }, 422);
-
     if (!body.title) return c.json({ error: 'title required' }, 422);
-
+    const existing = await c.env.DB.prepare(
     const existing = body.force_new === true ? null : await c.env.DB.prepare(
       'SELECT id FROM tl_files WHERE title = ? AND user_id = ?'
     ).bind(body.title, userId).first<{ id: number }>();
@@ -929,6 +935,8 @@ app.post('/api/tracks/:id/play', async (c) => {
 // share 생성 전용 단계이며 파일명/경로는 서버가 결정한다.
 // ── 무료 MP3 원본 저장 ──
 // 무료 공개 음원은 재생을 위해 TimeLink D1 Object Storage에 저장한다.
+app.use('/api/upload/*', bodyLimit({ maxSize: D1_MAX_FILE_SIZE }));
+app.use('/api/upload', bodyLimit({ maxSize: D1_MAX_FILE_SIZE }));
 app.post('/api/upload/mp3', async (c) => {
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
   const user=token ? await verifyToken(token,c.env.JWT_SECRET).catch(()=>null) : null;
@@ -981,6 +989,10 @@ app.post('/api/upload/tl3', async (c) => {
 });
 
 // ── TL3 / 파일 업로드 — R2 없는 D1 Object Storage
+app.post('/api/upload/init',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const b=await c.req.json<any>(),id=String(b.trackId||'').trim(),name=String(b.fileName||`${id}.tl3`),size=Number(b.totalSize||0);if(!/^[A-Za-z0-9_-]{1,100}$/.test(id))return c.json({ok:false,error:'유효하지 않은 trackId'},400);if(!Number.isSafeInteger(size)||size<=0||size>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'파일 크기가 올바르지 않습니다.'},413);const key=`tracks/u${uid}/${id}.tl3`;await initD1Upload(c.env.DB,key,name,size,'application/octet-stream');return c.json({ok:true,key,uploadId:id,chunkSize:D1_CHUNK_SIZE,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 초기화 실패'},500);}});
+app.put('/api/upload/part',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const key=String(c.req.query('key')||''),pn=Number(c.req.query('partNumber')||0);if(!key.startsWith(`tracks/u${uid}/`)||!key.endsWith('.tl3'))return c.json({ok:false,error:'업로드 소유권 불일치'},403);if(!Number.isInteger(pn)||pn<1)return c.json({ok:false,error:'partNumber 필수'},400);const data=await c.req.arrayBuffer();if(!data.byteLength)return c.json({ok:false,error:'빈 청크'},400);if(data.byteLength>D1_CHUNK_SIZE)return c.json({ok:false,error:'청크가 너무 큽니다.',max_chunk_size:D1_CHUNK_SIZE},413);await writeD1UploadPart(c.env.DB,key,pn,new Uint8Array(data));return c.json({ok:true,partNumber:pn,etag:`d1-${pn}-${data.byteLength}`,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 청크 업로드 실패'},500);}});
+app.post('/api/upload/complete',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const b=await c.req.json<any>(),key=String(b.key||'');if(!key.startsWith(`tracks/u${uid}/`)||!key.endsWith('.tl3'))return c.json({ok:false,error:'업로드 소유권 불일치'},403);const meta=await completeD1Upload(c.env.DB,key),url=`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`;return c.json({ok:true,url,stream_url:url,key,trackId:key.split('/').pop()?.replace(/\.tl3$/,''),file_type:'audio/tl3',release_mode:'tl3',size:meta.size,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'TL3 업로드 완료 실패'},500);}});
+app.get('/api/storage/:key{.+}',async(c)=>{try{await ensureD1Storage(c.env.DB);const key=decodeURIComponent(c.req.param('key')),meta=await getD1ObjectMeta(c.env.DB,key);if(!meta)return c.json({error:'파일 없음'},404);let isPublic=false;const ownerMatch=key.match(/^(?:tracks|tl)\/u(\d+)\//),ownerId=ownerMatch?Number(ownerMatch[1]):0,session=await storageUser(c),viewerId=Number(session?.sub||0);if(ownerId>0){if(key.startsWith('tl/')||/\.(tl3|tl)$/i.test(key)){if(viewerId!==ownerId)return c.json({error:'보호된 파일입니다.'},403);}else{const url=`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`;const legacyFile=await c.env.DB.prepare("SELECT id FROM tl_files WHERE (stream_url=? OR cover_image=?) AND (shared=1 OR shared_to_shareplace=1) LIMIT 1").bind(url,url).first();const legacyShare=await c.env.DB.prepare("SELECT id FROM tl_shares WHERE stream_url=? AND (content_kind='mp3' OR release_mode LIKE 'free_mp3%') LIMIT 1").bind(url).first().catch(()=>null);const publicCover=await c.env.DB.prepare("SELECT id FROM tl_shares WHERE cover_url=? LIMIT 1").bind(url).first().catch(()=>null);isPublic=!!legacyFile||!!legacyShare||!!publicCover;if(!isPublic&&viewerId!==ownerId)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);}}else{isPublic=true;}const cors:any={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET, HEAD, OPTIONS','Access-Control-Allow-Headers':'Range, Content-Type, Authorization','Access-Control-Expose-Headers':'Content-Range, Accept-Ranges, Content-Length','Accept-Ranges':'bytes','Cache-Control':isPublic?'public, max-age=3600':'private, no-store'};const rh=c.req.header('Range')||'';let start=0,end=meta.size-1,status=200;if(rh){const m=rh.match(/bytes=(\d+)-(\d*)/);if(!m)return new Response('Invalid Range',{status:416,headers:cors});start=Number(m[1]);end=m[2]!==''?Math.min(Number(m[2]),meta.size-1):Math.min(start+D1_CHUNK_SIZE-1,meta.size-1);status=206;}if(start<0||start>=meta.size||end<start)return new Response('Range Not Satisfiable',{status:416,headers:cors});const bytes=await readD1Range(c.env.DB,key,start,end-start+1);const h:any={...cors,'Content-Type':meta.content_type||'application/octet-stream','Content-Length':String(bytes.byteLength)};if(status===206)h['Content-Range']=`bytes ${start}-${end}/${meta.size}`;return new Response(bytes,{status,headers:h});}catch(e:any){return c.json({error:e?.message||'파일 읽기 실패'},500);}});
 const D1_CHUNK_SIZE=D1_OBJECT_CHUNK_SIZE,D1_MAX_FILE_SIZE=D1_MAX_OBJECT_SIZE;
 app.post('/api/upload/init',async(c)=>{
   const uid=await playbackUserId(c,false);
@@ -1083,6 +1095,7 @@ app.get('/api/storage/:key{.+}', async (c) => {
     return new Response(bytes,{status,headers});
   }catch(e:any){return c.json({error:e?.message||'파일 읽기 실패'},500);}
 });
+
 app.options('/api/storage/:key{.+}',()=>new Response(null,{status:204}));
 app.post('/api/upload',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0);if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);try{await ensureD1Storage(c.env.DB);const f=await c.req.parseBody(),file=f['file'] as File,id=String(f['trackId']||'').trim(),mode=String(f['release_mode']||'').trim().toLowerCase(),isTl3=String(f['isTl3']||'').toLowerCase()==='true';if(!file||!/^[A-Za-z0-9_-]{1,100}$/.test(id))return c.json({ok:false,error:'file, 유효한 trackId 필수'},400);if(file.size<=0||file.size>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'파일 크기가 올바르지 않습니다.'},413);if(isTl3){if(file.size<7)return c.json({ok:false,error:'잘못된 TL3 파일입니다.'},400);const h=new Uint8Array(await file.slice(0,7).arrayBuffer());if(h[0]!==0x54||h[1]!==0x4c||h[2]!==0x4e||h[3]!==0x4b||h[4]!==0x02)return c.json({ok:false,error:'TL3 v2 헤더가 아닙니다.'},400);}const ext=isTl3?'tl3':(mode==='free_mp3'?'mp3':(file.name.split('.').pop()||'bin').toLowerCase());if(!/^[a-z0-9]{1,8}$/.test(ext))return c.json({ok:false,error:'파일 확장자가 올바르지 않습니다.'},400);const key=`tracks/u${uid}/${id}.${ext}`,ct=isTl3?'application/octet-stream':(mode==='free_mp3'?'audio/mpeg':(file.type||'application/octet-stream'));await putD1Object(c.env.DB,key,new Uint8Array(await file.arrayBuffer()),ct,file.name||key);const url=`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`;return c.json({ok:true,url,stream_url:url,key,trackId:id,file_type:isTl3?'audio/tl3':ct,release_mode:isTl3?'tl3':(mode||'original'),size:file.size,storage_mode:'d1'});}catch(e:any){return c.json({ok:false,error:e?.message||'D1 파일 저장 실패'},500);}});
 // ── TL3 시간 세그먼트: MP3 프레임 경계 기반 ─────────────────────────
@@ -1820,6 +1833,15 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     // sub-second MP3 frame groups and is therefore intentionally omitted.
     const masterSecret = c.env.TL3_MASTER_SECRET;
     if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
+
+    const cost = Number((Number(seg.duration_ms)/1000).toFixed(3));
+    const debit = await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance-?,total_tl_spent=total_tl_spent+? WHERE id=? AND tl_balance>=?').bind(cost,cost,u.id,cost).run();
+    if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:cost,balance:u.tl_balance},402);
+    const shareIdKey = `tl3_${fileId}`;
+    const masterSecret = c.env.TL3_MASTER_SECRET;
+    if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
+    const licN = await deriveLicenseBytes(masterSecret, shareIdKey);
+
     const cost=Number((Number(seg.duration_ms)/1000).toFixed(3));
     const wallet=tlWalletParts(u),walletTotal=wallet.p+wallet.a+wallet.b;
     const assetFresh=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
@@ -1846,16 +1868,23 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       return c.json({ok:false,error:'TL 예약이 동시에 변경되었습니다. 잔액을 새로 확인해 주세요.',wallet_tl:Number(fw?.p||0)+Number(fw?.a||0)+Number(fw?.b||0),asset_remaining_tl:Number(fa?.remaining_tl||0)},409);
     }
 
+
     // 파일 생성 시 사용한 share_id와 동일한 키로 라이선스를 계산한다.
     const releaseRow = await c.env.DB.prepare(
       "SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'"
     ).bind(fileId).first<any>();
     const shareIdKey = releaseRow?.share_id || `tl3_${fileId}`;
     const licN = await deriveLicenseBytes(masterSecret, shareIdKey);
+    const nextNs = Math.max(Number(ss.next_segment||0), segmentIndex + 1);
+    await c.env.DB.prepare('UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime(\'now\') WHERE id=?').bind(nextNs,segmentIndex,cost,Number(seg.duration_ms),now,now,sessionId).run();
+    const fresh = await c.env.DB.prepare('SELECT tl_balance FROM users WHERE id=?').bind(u.id).first<any>();
+    return c.json({ok:true, lic_n: hex(licN), segment: segmentIndex, cost: cost, remaining_tl: Number(fresh?.tl_balance||0)});
 
+    const fresh=await c.env.DB.prepare('SELECT COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
     const fresh=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
     const freshAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
     return c.json({ok:true,lic_n:hex(licN),segment:segmentIndex,cost,remaining_tl:Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0),wallet_tl:Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0),asset_remaining_tl:Number(freshAsset?.remaining_tl||0)});
+
   } catch(e:any) { return c.json({ok:false,error:e.message||'code error'},500); }
 });
 
@@ -4456,7 +4485,10 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
+app.post('/api/upload/tl',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0),secret=String((c.env as any).TL_SECRET||'');if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);if(!secret)return c.json({ok:false,error:'TL_SECRET 설정이 필요합니다.'},503);try{await ensureD1Storage(c.env.DB);const f=await c.req.parseBody(),file=f['file'] as File,shareId=String(f['shareId']||('s_'+Date.now())),meta=JSON.parse((f['meta'] as string)||'{}');if(!file||file.size<=0)return c.json({ok:false,error:'유효한 파일이 필요합니다.'},400);if(file.size>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'100MB 초과'},413);if(!/^[A-Za-z0-9_-]{1,100}$/.test(shareId))return c.json({ok:false,error:'유효하지 않은 shareId'},400);const raw=new Uint8Array(await file.arrayBuffer()),hash=await sha256Hex(raw),ext=(file.name.split('.').pop()||'bin').toLowerCase(),tlPerSec=Number(meta.tl_per_sec||1),duration=Number(meta.duration||0),fileTL=Math.ceil(duration*tlPerSec)||3600,xorKey=shareId+secret+'TIMELINK_v1',header={shareId,creatorId:uid,creatorName:String(meta.creatorName||''),title:String(meta.title||file.name.replace(/\\.[^.]+$/, '')),artist:String(meta.artist||''),fileType:file.type||'application/octet-stream',ext,duration,tl_per_sec:tlPerSec,plan:String(meta.plan||'A'),tl_balance:fileTL,tl_max:fileTL,xorKey,uploadedAt:new Date().toISOString(),contentHash:hash,platform:'timelink.digital',version:1},tlData=buildTLFile(header,raw,secret),key=`tl/u${uid}/${shareId}.tl`;await putD1Object(c.env.DB,key,tlData,'application/octet-stream',`${shareId}.tl`);return c.json({ok:true,key,shareId,size:tlData.length,hash,storage_mode:'d1',url:`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`});}catch(e:any){return c.json({ok:false,error:e.message},500);}});
+
 app.post('/api/upload/tl',async(c)=>{const session=await storageUser(c),uid=Number(session?.sub||0),secret=c.env.TL_SECRET||'';if(!Number.isSafeInteger(uid)||uid<=0)return c.json({ok:false,error:'인증 필요'},401);if(!secret)return c.json({ok:false,error:'TL_SECRET 설정이 필요합니다.'},503);try{await ensureD1Storage(c.env.DB);const f=await c.req.parseBody(),file=f['file'] as File,shareId=String(f['shareId']||('s_'+Date.now())),meta=JSON.parse((f['meta'] as string)||'{}');if(!file||file.size<=0)return c.json({ok:false,error:'유효한 파일이 필요합니다.'},400);if(file.size>D1_MAX_FILE_SIZE)return c.json({ok:false,error:'100MB 초과'},413);if(!/^[A-Za-z0-9_-]{1,100}$/.test(shareId))return c.json({ok:false,error:'유효하지 않은 shareId'},400);const raw=new Uint8Array(await file.arrayBuffer()),hash=await sha256Hex(raw),ext=(file.name.split('.').pop()||'bin').toLowerCase(),tlPerSec=Number(meta.tl_per_sec||1),duration=Number(meta.duration||0),fileTL=Math.ceil(duration*tlPerSec)||3600,xorKey=shareId+secret+'TIMELINK_v1',header={shareId,creatorId:uid,creatorName:String(meta.creatorName||''),title:String(meta.title||file.name.replace(/\\.[^.]+$/, '')),artist:String(meta.artist||''),fileType:file.type||'application/octet-stream',ext,duration,tl_per_sec:tlPerSec,plan:String(meta.plan||'A'),tl_balance:fileTL,tl_max:fileTL,xorKey,uploadedAt:new Date().toISOString(),contentHash:hash,platform:'timelink.digital',version:1},tlData=buildTLFile(header,raw,secret),key=`tl/u${uid}/${shareId}.tl`;await putD1Object(c.env.DB,key,tlData,'application/octet-stream',`${shareId}.tl`);return c.json({ok:true,key,shareId,size:tlData.length,hash,storage_mode:'d1',url:`https://api.timelink.digital/api/storage/${encodeURIComponent(key)}`});}catch(e:any){return c.json({ok:false,error:e.message},500);}});
+
 app.get('/api/download/:shareId', async (c) => {
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
   const userId=parseTokenUserId(token);

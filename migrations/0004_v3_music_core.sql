@@ -118,6 +118,8 @@ CREATE INDEX IF NOT EXISTS idx_v3_track_releases_track_status
   ON v3_track_releases(track_id, release_type, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_v3_track_one_published_release
   ON v3_track_releases(track_id)
+  ON v3_track_releases(track_id, release_type)
+
   WHERE status = 'published';
 
 CREATE TABLE IF NOT EXISTS v3_shareplace_entries (
@@ -182,6 +184,8 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS trg_v3_release_asset_update
 BEFORE UPDATE OF status, asset_id, source_asset_id, track_id, release_type ON v3_track_releases
+BEFORE UPDATE OF status, asset_id, track_id, release_type ON v3_track_releases
+
 WHEN NEW.status = 'published'
 BEGIN
   SELECT CASE WHEN NEW.asset_id IS NULL

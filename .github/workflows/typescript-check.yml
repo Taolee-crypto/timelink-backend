@@ -17,6 +17,9 @@ jobs:
           cache: npm
       - name: Install locked application dependencies
         run: npm ci
+
+      - name: Install type-check tooling
+        run: npm install --no-save --package-lock=false typescript @cloudflare/workers-types
       - name: TypeScript strict check
         run: npx --no-install tsc --noEmit
       - name: Cloudflare Worker dry run

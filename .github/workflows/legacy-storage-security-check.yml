@@ -2,6 +2,8 @@ name: Legacy storage security validation
 
 on:
   pull_request:
+
+    branches: [v3/legacy-storage-compat]
     branches: [main, v3/legacy-storage-compat]
     paths:
       - "src/index.ts"
