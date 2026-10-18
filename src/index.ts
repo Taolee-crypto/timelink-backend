@@ -50,6 +50,7 @@ app.use('*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
+  exposeHeaders: ['X-TL3-Segment-Duration-Ms'],
   maxAge: 86400,
 }));
 
