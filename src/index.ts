@@ -1980,7 +1980,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
       } else {
         const prefetched=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
         if(prefetched&&Number(prefetched.prefetch_segment)===nextSegment){
-          const promoted=await c.env.DB.prepare("UPDATE tl3_stream_sessions SET pending_segment=prefetch_segment,pending_cost=prefetch_cost,pending_tl_p=prefetch_tl_p,pending_tl_a=prefetch_tl_a,pending_tl_b=prefetch_tl_b,pending_duration_ms=prefetch_duration_ms,pending_delivered_at=prefetch_delivered_at,last_segment_at=prefetch_delivered_at,prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,next_segment=?,updated_at=datetime('now') WHERE id=? AND pending_segment IS NULL AND prefetch_segment=?").bind(nextSegment+1,sessionId,nextSegment);
+          const promoted=await c.env.DB.prepare("UPDATE tl3_stream_sessions SET pending_segment=prefetch_segment,pending_cost=prefetch_cost,pending_tl_p=prefetch_tl_p,pending_tl_a=prefetch_tl_a,pending_tl_b=prefetch_tl_b,pending_duration_ms=prefetch_duration_ms,pending_delivered_at=?,last_segment_at=?,prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,next_segment=?,updated_at=datetime('now') WHERE id=? AND pending_segment IS NULL AND prefetch_segment=?").bind(now,now,nextSegment+1,sessionId,nextSegment);
           await promoted.run();
           const masterSecret=c.env.TL3_MASTER_SECRET;
           if(!masterSecret) throw new Error('TL3_MASTER_SECRET is not configured');
