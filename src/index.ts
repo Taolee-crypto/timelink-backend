@@ -66,8 +66,62 @@ async function storageUser(c:any){
   if(!token) return null;
   return await verifyToken(token,c.env.JWT_SECRET);
 }
+
+// Authenticated Creator Studio source-asset registration.
+// Caller-supplied email, username, publication flags and verification status are never trusted.
+app.post('/api/files/sync', async (c) => {
+  const session = await storageUser(c);
+  const userId = Number(session?.sub || 0);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return c.json({ ok: false, error: '인증 필요' }, 401);
+  try {
+    const body = await c.req.json<any>();
+    const title = String(body.title || '').trim().slice(0, 200);
+    if (!title) return c.json({ ok: false, error: 'title required' }, 422);
+    const streamUrl = String(body.stream_url || '').trim().slice(0, 2048);
+    if (streamUrl) {
+      if (streamUrl.startsWith('tracks/') || streamUrl.startsWith('tl/')) {
+        if (!streamUrl.startsWith(`tracks/u${userId}/`) && !streamUrl.startsWith(`tl/u${userId}/`)) {
+          return c.json({ ok: false, error: '저장 파일 소유권이 일치하지 않습니다.' }, 403);
+        }
+      } else if (/\/api\/storage\//.test(streamUrl)) {
+        let key = '';
+        try { key = decodeURIComponent(streamUrl.split('/api/storage/')[1].split('?')[0]); } catch {}
+        if (!key.startsWith(`tracks/u${userId}/`) && !key.startsWith(`tl/u${userId}/`)) {
+          return c.json({ ok: false, error: '저장 파일 소유권이 일치하지 않습니다.' }, 403);
+        }
+      } else if (!/^https:\/\//i.test(streamUrl)) {
+        return c.json({ ok: false, error: '지원하지 않는 원본 주소입니다.' }, 422);
+      }
+    }
+    const artist = String(body.artist || '').trim().slice(0, 200);
+    const genre = String(body.genre || 'Music').trim().slice(0, 80);
+    const cover = String(body.cover_image || '').trim().slice(0, 2048);
+    const fileType = String(body.file_type || 'audio/mpeg').toLowerCase() === 'audio/tl3' ? 'audio/mpeg' : String(body.file_type || 'audio/mpeg').slice(0, 80);
+    const existing = body.force_new === true ? null : await c.env.DB.prepare(
+      'SELECT id FROM tl_files WHERE title = ? AND user_id = ? ORDER BY id DESC LIMIT 1'
+    ).bind(title, userId).first<{ id: number }>();
+    if (existing) {
+      await c.env.DB.prepare(`
+        UPDATE tl_files SET artist=?,genre=?,file_type=?,stream_url=?,cover_image=?,
+          shared_to_shareplace=0,shared=0,auth_status='unverified',icon=?,updated_at=datetime('now')
+        WHERE id=? AND user_id=?
+      `).bind(artist,genre,fileType,streamUrl,cover,String(body.icon||'🎵').slice(0,16),existing.id,userId).run();
+      return c.json({ok:true,action:'updated',d1_id:existing.id,file_id:existing.id,id:existing.id,stream_url:streamUrl});
+    }
+    const created = await c.env.DB.prepare(`
+      INSERT INTO tl_files
+        (user_id,title,artist,genre,file_type,stream_url,cover_image,price_per_sec,
+         spotify_album,shared_to_shareplace,pulse,auth_status,icon,file_tl,max_file_tl,shared)
+      VALUES(?,?,?,?,?,?,?,1,'',0,0,'unverified',?,0,0,0) RETURNING id
+    `).bind(userId,title,artist,genre,fileType,streamUrl,cover,String(body.icon||'🎵').slice(0,16)).first<{id:number}>();
+    if (!created?.id) return c.json({ok:false,error:'원본 자산 등록에 실패했습니다.'},500);
+    return c.json({ok:true,action:'created',d1_id:created.id,file_id:created.id,id:created.id,stream_url:streamUrl},201);
+  } catch (e:any) {
+    return c.json({ok:false,error:e?.message||'원본 자산 등록 실패'},500);
+  }
+});
 async function playbackUserId(c:any,allowQueryToken=true):Promise<number>{
-  const header=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
+  const header=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
   const token=header||(allowQueryToken?String(c.req.query('tk')||'').trim():'');
   if(!token) return 0;
   const payload=await verifyToken(token,c.env.JWT_SECRET);
