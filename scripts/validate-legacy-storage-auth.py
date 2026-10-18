@@ -22,7 +22,7 @@ checks = {
     "public TL3 stream requires verified shared record": "auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0" in source,
     "private stream is not cached publicly": "'Cache-Control':isPublic?'public, max-age=300':'private, no-store'" in source,
     "sync no longer creates fallback user": "VALUES (?, ?, 'local_sync', 1000) RETURNING id" not in source,
-    "Bearer token parsing removes scheme correctly": ".replace(/^Bearer\\s+/,'').trim()" not in source and ".replace(/^Bearer\\s+/,'').trim()" not in source,
+    "Bearer token parsing removes scheme correctly": ".replace(/^Bearer\\s+/,'').trim()" in source and ".replace(/^Bearer\\\\s+/,'').trim()" not in source,
 }
 failed = [name for name, ok in checks.items() if not ok]
 for name, ok in checks.items():
