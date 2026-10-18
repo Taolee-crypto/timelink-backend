@@ -3565,7 +3565,7 @@ app.get('/api/shares/:id/my-tl', async (c) => {
         .bind(userId,shareId).run();
       row={tl_balance:0,total_charged:0};
     }
-    return c.json({ok:true,tl_balance:Number(row.tl_balance||0),total_charged:Number(row.total_charged||0),file_tl:Number(share.file_tl||0)});
+    return c.json({ok:true,tl_balance:Number(row.tl_balance||0),total_charged:Number(row.total_charged||0),file_tl:Number(share?.file_tl||0)});
   }catch(e:any){
     return c.json({error:e?.message||'TL 잔액 조회 실패'},500);
   }
