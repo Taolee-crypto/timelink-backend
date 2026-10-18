@@ -1568,11 +1568,14 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
       const takeA=Math.min(left,wallet.a);left=Number((left-takeA).toFixed(6));
       const takeB=Math.min(left,wallet.b);left=Number((left-takeB).toFixed(6));
       const debit=await c.env.DB.prepare(`UPDATE users SET
-        tl_p=COALESCE(tl_p,tl,tl_balance,0)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,
-        tl=COALESCE(tl_p,tl,tl_balance,0)-?+COALESCE(tl_a,0)-?+COALESCE(tl_b,0)-?,
+        tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)-?,
+        tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,
+        tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,
+        tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,
         total_tl_spent=COALESCE(total_tl_spent,0)+?,updated_at=datetime('now')
-        WHERE id=? AND COALESCE(tl_p,tl,tl_balance,0)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?`)
-        .bind(takeP,takeA,takeB,takeP,takeA,takeB,lpPrice,user.id,takeP,takeA,takeB).run();
+        WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)>=?
+        AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?`)
+        .bind(takeP,takeA,takeB,lpPrice,lpPrice,lpPrice,user.id,takeP,takeA,takeB).run();
       if(!debit.meta?.changes)return c.json({ok:false,error:'LP 요금 차감 충돌',code:'LP_DEBIT_CONFLICT'},409);
       try{await c.env.DB.prepare("INSERT INTO transactions (user_id,tx_type,amount,note,created_at) VALUES (?,'lp_charge',?,'LP 음질 향상',datetime('now'))").bind(user.id,-lpPrice).run();}catch(_){}
     }
