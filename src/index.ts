@@ -1591,6 +1591,28 @@ app.get('/api/v1/tl3/spine/:id/verify', async (c) => {
   } catch(e:any) { return c.json({ok:false,error:e?.message||'Spine 검증 실패'},500); }
 });
 
+// Public authenticated TL3 Spine v4 header consumed by the v4 Track player.
+app.get('/api/v1/tl3/spine/header/:id', async (c) => {
+  try {
+    const auth=c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+    const payload=auth?await verifyToken(auth,c.env.JWT_SECRET):null;
+    if(!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const rawId=String(c.req.param('id')||'');
+    const numeric=Number(rawId);
+    const fileId=Number.isSafeInteger(numeric)&&numeric>0&&String(numeric)===rawId
+      ? numeric : await resolveTL3FileId(c.env.DB,rawId);
+    if(!fileId) return c.json({ok:false,error:'TL3 v4 자산을 찾을 수 없습니다.'},404);
+    const row=await c.env.DB.prepare("SELECT header_json,segment_count,duration_ms,share_id,status FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>();
+    if(!row) return c.json({ok:false,error:'공개된 TL3 v4 자산이 없습니다.'},404);
+    const header=JSON.parse(String(row.header_json||'{}'));
+    const tokenRows=await c.env.DB.prepare('SELECT token_index,token FROM tl3_spine_v4_tokens WHERE file_id=? ORDER BY token_index').bind(fileId).all<any>();
+    const tokens=(tokenRows.results||[]).map((x:any)=>String(x.token));
+    if(tokens.length!==Number(row.segment_count)+1) return c.json({ok:false,error:'Spine token chain is incomplete.'},409);
+    return c.json({ok:true,version:4,file_id:fileId,share_id:String(row.share_id),
+      duration_ms:Number(row.duration_ms),segment_count:Number(row.segment_count),header,spine_tokens:tokens});
+  } catch(e:any) { return c.json({ok:false,error:e?.message||'TL3 v4 header error'},500); }
+});
+
 app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
   try {
     const shareId = c.req.param('shareId');
