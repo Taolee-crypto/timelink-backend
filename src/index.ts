@@ -2086,6 +2086,11 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
       await c.env.DB.prepare(`INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained)
         VALUES(?,'consume',?,?,?)`).bind(u.id,played,consumedP,pocGained).run().catch(()=>{});
     }
+    // One listening contribution per completed or stopped playback session.
+    if(nextSegment===null){
+      await c.env.DB.prepare(`INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained)
+        VALUES(?,'listen',0,0,0)`).bind(u.id).run().catch(()=>{});
+    }
     let nextLicense:any=null;
     let nextError:string|null=null;
     if(nextSegment!==null){
