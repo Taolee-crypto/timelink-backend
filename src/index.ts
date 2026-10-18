@@ -25,7 +25,7 @@ import musicV3SocialRouter from './routes/music-v3-social';
 import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
-import { ensureD1Storage, putD1Object, getD1ObjectMeta, readD1Range, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE, createD1UploadSession, writeD1UploadSessionPart, completeD1UploadSession } from './d1-storage';
+import { ensureD1Storage, putD1Object, getD1ObjectMeta, readD1Range, readD1RangeFast, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE, createD1UploadSession, writeD1UploadSessionPart, completeD1UploadSession } from './d1-storage';
 import sunoVerifyRouter from './routes/suno-verify';
 import cafeRouter from './routes/cafe';
 import incarRouter from './routes/incar';
@@ -1249,7 +1249,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
     if (raw.length > 100*1024*1024) return c.json({ok:false,error:'TL3 출시용 음원은 100MB 이하만 지원합니다.'},413);
 
     // TL3 정식 규격: MP3 프레임 경계를 보존하며 최대 1초 단위로 분할한다.
-    const segments = parseMp3Segments(raw,1000);
+    const segments = parseMp3Segments(raw,5000);  // 2026-10-19: 5초 세그먼트 (1초 세그먼트 응답 지연 해결)
     const durationMs = segments.reduce((n,x)=>n+x.durationMs,0);
 
     // ★ 음원 길이(초) = 재생에 필요한 TL량 (초당 1TL)
@@ -1712,7 +1712,7 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     if (!seg) return c.json({ok:false,error:'세그먼트 없음'},404);
     const ctOffset=Number(seg.ct_offset ?? (Number(file.payload_offset)+Number(seg.offset)));
     const ctLength=Number(seg.ct_length ?? seg.length);
-    const ciphertext=await readD1Range(c.env.DB,String(file.tl3_key),ctOffset,ctLength);
+    const ciphertext=await readD1RangeFast(c.env.DB,String(file.tl3_key),ctOffset,ctOffset+ctLength);
     if (!ciphertext.byteLength) return c.json({ok:false,error:'TL3 세그먼트 로드 실패'},502);
     const headers=new Headers({
       'Content-Type':'application/octet-stream',

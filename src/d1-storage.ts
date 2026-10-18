@@ -109,3 +109,33 @@ export async function completeD1UploadSession(
 export async function putD1Object(db:D1Database,key:string,data:Uint8Array,contentType='application/octet-stream',fileName=''):Promise<ObjectMeta>{if(data.byteLength>D1_MAX_OBJECT_SIZE)throw new Error('무료 D1 저장 한도(100MB)를 초과했습니다.');await initD1Upload(db,key,fileName||key,data.byteLength,contentType);let batch:D1PreparedStatement[]=[];let p=1;for(let o=0;o<data.byteLength;o+=D1_OBJECT_CHUNK_SIZE){const ch=data.slice(o,Math.min(o+D1_OBJECT_CHUNK_SIZE,data.byteLength));batch.push(db.prepare('INSERT OR REPLACE INTO tl_d1_object_parts(object_key,part_number,data,size)VALUES(?,?,?,?)').bind(key,p++,ch,ch.byteLength));if(batch.length>=40){await db.batch(batch);batch=[];}}if(batch.length)await db.batch(batch);return completeD1Upload(db,key);}
 export async function getD1ObjectMeta(db:D1Database,key:string):Promise<ObjectMeta|null>{const r=await db.prepare("SELECT object_key as key,size,content_type,file_name,part_count,status FROM tl_d1_objects WHERE object_key=? AND status='complete'").bind(key).first<any>();return r?{key:String(r.key),size:Number(r.size),content_type:String(r.content_type||'application/octet-stream'),file_name:String(r.file_name||''),part_count:Number(r.part_count||0),status:String(r.status)}:null;}
 export async function readD1Range(db:D1Database,key:string,start:number,length:number):Promise<Uint8Array>{const m=await getD1ObjectMeta(db,key);if(!m)throw new Error('파일 없음');const s=Math.max(0,Math.floor(start)),len=Math.max(0,Math.floor(length));if(s>=m.size||len===0)return new Uint8Array();const end=Math.min(m.size,s+len),first=Math.floor(s/D1_OBJECT_CHUNK_SIZE)+1,last=Math.floor((end-1)/D1_OBJECT_CHUNK_SIZE)+1;const rows=await db.prepare('SELECT part_number,data FROM tl_d1_object_parts WHERE object_key=? AND part_number BETWEEN ? AND ? ORDER BY part_number').bind(key,first,last).all<any>();const out=new Uint8Array(end-s);let written=0;for(const row of rows.results||[]){const b=row.data instanceof Uint8Array?row.data:new Uint8Array(row.data as ArrayBuffer),pn=Number(row.part_number),ps=(pn-1)*D1_OBJECT_CHUNK_SIZE,from=Math.max(s,ps),to=Math.min(end,ps+b.byteLength);if(to>from){out.set(b.slice(from-ps,to-ps),from-s);written+=to-from;}}if(written!==out.byteLength)throw new Error('파일 데이터가 불완전합니다.');return out;}
+
+// 2026-10-19: readD1Range 최적화 버전. getD1ObjectMeta 조회를 생략한다.
+// segment 라우트에서 이미 meta.size를 알고 있으므로 중복 조회를 제거한다.
+export async function readD1RangeFast(
+  db: D1Database, key: string, start: number, end: number
+): Promise<Uint8Array> {
+  const s = Math.max(0, Math.floor(start));
+  const e = Math.max(0, Math.floor(end));
+  if (e <= s) return new Uint8Array();
+  const first = Math.floor(s / D1_OBJECT_CHUNK_SIZE) + 1;
+  const last = Math.floor((e - 1) / D1_OBJECT_CHUNK_SIZE) + 1;
+  const rows = await db.prepare(
+    'SELECT part_number, data FROM tl_d1_object_parts WHERE object_key=? AND part_number BETWEEN ? AND ? ORDER BY part_number'
+  ).bind(key, first, last).all<any>();
+  const out = new Uint8Array(e - s);
+  let written = 0;
+  for (const row of rows.results || []) {
+    const b = row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data as ArrayBuffer);
+    const pn = Number(row.part_number);
+    const ps = (pn - 1) * D1_OBJECT_CHUNK_SIZE;
+    const from = Math.max(s, ps);
+    const to = Math.min(e, ps + b.byteLength);
+    if (to > from) {
+      out.set(b.slice(from - ps, to - ps), from - s);
+      written += to - from;
+    }
+  }
+  if (written !== out.byteLength) throw new Error('파일 데이터가 불완전합니다.');
+  return out;
+}
