@@ -1538,7 +1538,7 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
         .bind(fileId,i,plainOffset,seg.length,build.header.segment_durations_ms[i],cipherOffset,cipherLength).run();
       plainOffset+=seg.length; cipherOffset+=cipherLength;
     }
-    await c.env.DB.prepare("UPDATE tl_files SET file_type='audio/tl3',shared=1,shared_to_shareplace=1,updated_at=datetime('now') WHERE id=?").bind(fileId).run();
+    await c.env.DB.prepare("UPDATE tl_files SET file_type='audio/tl3',stream_url=?,shared=1,shared_to_shareplace=1,updated_at=datetime('now') WHERE id=?").bind('https://api.timelink.digital/api/v1/tl3/spine/header/'+fileId,fileId).run();
     const lpLicense=body.lp_license||null;
     const lpPrice=lpLicense&&lpLicense.lp_enabled===true?Math.max(0,Math.floor(Number(lpLicense.lp_price_tl||1000))):0;
     if(lpPrice>0){
