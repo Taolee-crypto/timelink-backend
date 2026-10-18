@@ -1436,7 +1436,14 @@ app.post('/api/v1/tl3/releases', async (c) => {
 // v3 릴리스/재생 경로는 변경하지 않는다. v4 플레이어 배포 전에는 공개 재생으로 노출하지 않는다.
 app.post('/api/v1/tl3/spine/releases', async (c) => {
   try {
-    const body = await c.req.json<any>();
+    let body:any;
+    let sourceFile:File|null=null;
+    const contentType=String(c.req.header('Content-Type')||'');
+    if(contentType.includes('multipart/form-data')){
+      const form=await c.req.parseBody();
+      sourceFile=(form['file'] instanceof File)?form['file'] as File:null;
+      try{ body=JSON.parse(String(form['metadata']||'{}')); }catch(_){ body={}; }
+    }else{ body=await c.req.json<any>(); }
     if (body.rights_confirmed !== true) return c.json({ok:false,error:'저작권 또는 적법한 이용 권한 확인이 필요합니다.'},400);
     const fileId = Number(body.file_id || 0);
     const shareId = String(body.share_id || '');
@@ -1448,20 +1455,35 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
     if (!user) return c.json({ok:false,error:'사용자를 확인할 수 없습니다.'},401);
     const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_files WHERE id=?').bind(fileId).first<any>();
     if (!file || Number(file.user_id)!==Number(user.id)) return c.json({ok:false,error:'본인의 음원만 TL3로 자산화할 수 있습니다.'},403);
-    const sourceUrl=String(file.stream_url||'');
-    if (!sourceUrl) return c.json({ok:false,error:'원본 음원 주소가 없습니다.'},400);
+    const lpLicense=body.lp_license||null;
+    const lpPrice=lpLicense&&lpLicense.lp_enabled===true?Math.max(0,Math.floor(Number(lpLicense.lp_price_tl||1000))):0;
+    let lpAlreadyCharged=false;
+    const priorV4=await c.env.DB.prepare('SELECT header_json,status FROM tl3_spine_v4_releases WHERE file_id=?').bind(fileId).first<any>().catch(()=>null);
+    if(priorV4){try{lpAlreadyCharged=JSON.parse(String(priorV4.header_json||'{}'))?.lp_meta?.enabled===true;}catch(_){}}
+    if(lpPrice>0&&!lpAlreadyCharged){
+      const wr=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(user.id).first<any>();
+      const wp=tlWalletParts(wr);
+      if(wp.p+wp.a+wp.b<lpPrice)return c.json({ok:false,error:'LP 적용에 필요한 TL이 부족합니다.',code:'LP_INSUFFICIENT_TL',required:lpPrice,balance:wp.p+wp.a+wp.b},402);
+    }
     let raw:Uint8Array;
-    const storagePath='/api/storage/';
-    const storageIndex=sourceUrl.indexOf(storagePath);
-    if(storageIndex>=0){
-      const key=decodeURIComponent(sourceUrl.slice(storageIndex+storagePath.length).split('?')[0]);
-      const meta=await getD1ObjectMeta(c.env.DB,key);
-      if(!meta) return c.json({ok:false,error:'원본 음원을 찾을 수 없습니다.'},404);
-      raw=await readD1Range(c.env.DB,key,0,meta.size);
+    if(sourceFile){
+      if(sourceFile.size<=0 || sourceFile.size>100*1024*1024) return c.json({ok:false,error:'TL3 원본은 100MB 이하만 지원합니다.'},413);
+      raw=new Uint8Array(await sourceFile.arrayBuffer());
     }else{
-      const upstream=await fetch(sourceUrl);
-      if(!upstream.ok) return c.json({ok:false,error:'원본 음원 가져오기 실패 (HTTP '+upstream.status+')'},502);
-      raw=new Uint8Array(await upstream.arrayBuffer());
+      const sourceUrl=String(file.stream_url||'');
+      if(!sourceUrl) return c.json({ok:false,error:'로컬 원본 MP3 전송이 필요합니다.'},400);
+      const storagePath='/api/storage/';
+      const storageIndex=sourceUrl.indexOf(storagePath);
+      if(storageIndex>=0){
+        const key=decodeURIComponent(sourceUrl.slice(storageIndex+storagePath.length).split('?')[0]);
+        const meta=await getD1ObjectMeta(c.env.DB,key);
+        if(!meta) return c.json({ok:false,error:'원본 음원을 찾을 수 없습니다.'},404);
+        raw=await readD1Range(c.env.DB,key,0,meta.size);
+      }else{
+        const upstream=await fetch(sourceUrl);
+        if(!upstream.ok) return c.json({ok:false,error:'원본 음원 가져오기 실패 (HTTP '+upstream.status+')'},502);
+        raw=new Uint8Array(await upstream.arrayBuffer());
+      }
     }
     if(raw.length>100*1024*1024) return c.json({ok:false,error:'TL3 음원은 100MB 이하만 지원합니다.'},413);
     const segments=parseMp3Segments(raw,1000);
@@ -1470,7 +1492,7 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
     const build=await buildTL3SpineV4({
       fileId,shareId,title:String(file.title),artist:String(file.artist),
       creatorId:Number(user.id),mp3Raw:raw,segments,masterSecret,
-      licId:'k_2026_spine_1',rightsConfirmed:true
+      licId:'k_2026_spine_1',rightsConfirmed:true,lpMeta:body.lp_license||null
     });
     const objectKey=`tl3/spine-v4/${fileId}/${Date.now()}.tl3`;
     await putD1Object(c.env.DB,objectKey,build.data,'application/octet-stream',String(file.title)+'.tl3');
@@ -1498,11 +1520,70 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
       status='sealed',created_at=datetime('now')`
     ).bind(fileId,Number(user.id),shareId,objectKey,JSON.stringify(build.header),
       build.header.segment_count,build.header.duration_ms,build.header.spine_root,build.header.spine_latest).run();
+    // Publish the v4 container through the existing metered segment/session ledger.
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_releases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL UNIQUE, user_id INTEGER NOT NULL,
+      title TEXT NOT NULL, artist TEXT NOT NULL, price_tl INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'released', tl3_key TEXT, payload_offset INTEGER DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0, segment_count INTEGER DEFAULT 0,
+      header_json TEXT, share_id TEXT, rights_confirmed INTEGER NOT NULL DEFAULT 0, rights_confirmed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )`).run();
+    for(const sql of ['ALTER TABLE tl3_releases ADD COLUMN header_json TEXT','ALTER TABLE tl3_releases ADD COLUMN share_id TEXT','ALTER TABLE tl3_releases ADD COLUMN rights_confirmed INTEGER NOT NULL DEFAULT 0','ALTER TABLE tl3_releases ADD COLUMN rights_confirmed_at TEXT','ALTER TABLE tl3_releases ADD COLUMN updated_at TEXT']) {
+      try{ await c.env.DB.prepare(sql).run(); }catch(_){}
+    }
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_segments (
+      file_id INTEGER NOT NULL, segment_index INTEGER NOT NULL, offset INTEGER NOT NULL,
+      length INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
+      PRIMARY KEY(file_id, segment_index)
+    )`).run();
+    for(const sql of ['ALTER TABLE tl3_segments ADD COLUMN ct_offset INTEGER','ALTER TABLE tl3_segments ADD COLUMN ct_length INTEGER']) {
+      try{ await c.env.DB.prepare(sql).run(); }catch(_){}
+    }
+    const headerBytes=new TextEncoder().encode(JSON.stringify(build.header));
+    const payloadOffset=9+headerBytes.length;
+    await c.env.DB.prepare(`INSERT INTO tl3_releases
+      (file_id,user_id,title,artist,price_tl,status,tl3_key,payload_offset,duration_ms,segment_count,header_json,share_id,rights_confirmed,rights_confirmed_at)
+      VALUES(?,?,?,?,0,'released',?,?,?,?,?,?,1,datetime('now'))
+      ON CONFLICT(file_id) DO UPDATE SET user_id=excluded.user_id,title=excluded.title,artist=excluded.artist,
+      status='released',tl3_key=excluded.tl3_key,payload_offset=excluded.payload_offset,
+      duration_ms=excluded.duration_ms,segment_count=excluded.segment_count,
+      header_json=excluded.header_json,share_id=excluded.share_id,rights_confirmed=1,rights_confirmed_at=datetime('now'),updated_at=datetime('now')`
+    ).bind(fileId,Number(user.id),String(file.title),String(file.artist),objectKey,payloadOffset,
+      build.header.duration_ms,build.header.segment_count,JSON.stringify(build.header),shareId).run();
+    await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(fileId).run();
+    let cipherOffset=payloadOffset,plainOffset=0;
+    for(let i=0;i<segments.length;i++){
+      const seg=segments[i],cipherLength=build.ciphertextLengths[i];
+      await c.env.DB.prepare('INSERT INTO tl3_segments(file_id,segment_index,offset,length,duration_ms,ct_offset,ct_length) VALUES(?,?,?,?,?,?,?)')
+        .bind(fileId,i,plainOffset,seg.length,build.header.segment_durations_ms[i],cipherOffset,cipherLength).run();
+      plainOffset+=seg.length; cipherOffset+=cipherLength;
+    }
+    await c.env.DB.prepare("UPDATE tl_files SET file_type='audio/tl3',stream_url=?,shared=1,shared_to_shareplace=1,updated_at=datetime('now') WHERE id=?").bind('https://api.timelink.digital/api/v1/tl3/spine/header/'+fileId,fileId).run();
+    if(lpPrice>0&&!lpAlreadyCharged){
+      const walletRow=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(user.id).first<any>();
+      if(!walletRow)return c.json({ok:false,error:'LP 요금 결제 중 사용자 잔액 조회 실패'},500);
+      const wallet=tlWalletParts(walletRow);
+      if(wallet.p+wallet.a+wallet.b<lpPrice)return c.json({ok:false,error:'LP 요금 결제 중 잔액이 변경되었습니다.',code:'LP_INSUFFICIENT_TL'},402);
+      let left=lpPrice;const takeP=Math.min(left,wallet.p);left=Number((left-takeP).toFixed(6));
+      const takeA=Math.min(left,wallet.a);left=Number((left-takeA).toFixed(6));
+      const takeB=Math.min(left,wallet.b);left=Number((left-takeB).toFixed(6));
+      const debit=await c.env.DB.prepare(`UPDATE users SET
+        tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)-?,
+        tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,
+        tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,
+        tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,
+        total_tl_spent=COALESCE(total_tl_spent,0)+?,updated_at=datetime('now')
+        WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)>=?
+        AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?`)
+        .bind(takeP,takeA,takeB,lpPrice,lpPrice,lpPrice,user.id,takeP,takeA,takeB).run();
+      if(!debit.meta?.changes)return c.json({ok:false,error:'LP 요금 차감 충돌',code:'LP_DEBIT_CONFLICT'},409);
+      try{await c.env.DB.prepare("INSERT INTO transactions (user_id,tx_type,amount,note,created_at) VALUES (?,'lp_charge',?,'LP 음질 향상',datetime('now'))").bind(user.id,-lpPrice).run();}catch(_){}
+    }
     return c.json({ok:true,profile:'TL3-SPINE-1',version:4,file_id:fileId,share_id:shareId,
-      status:'sealed_not_published',duration_ms:build.header.duration_ms,
-      segment_count:build.header.segment_count,container_bytes:build.data.length,
-      spine_root:build.header.spine_root,spine_latest:build.header.spine_latest,
-      message:'v4 제조 및 서버 보관 완료. v4 플레이어 연결 전까지 공개 재생에는 사용하지 않습니다.'});
+      status:'released',duration_ms:build.header.duration_ms,segment_count:build.header.segment_count,
+      container_bytes:build.data.length,spine_root:build.header.spine_root,spine_latest:build.header.spine_latest,
+      message:'TL3 v4 제조·무결성 체인 저장 및 Track 공개가 완료되었습니다.'});
   } catch(e:any) {
     return c.json({ok:false,error:e?.message||'TL3 Spine v4 변환 실패'},500);
   }
@@ -1538,6 +1619,28 @@ app.get('/api/v1/tl3/spine/:id/verify', async (c) => {
       segment_count:Number(row.segment_count),spine_tokens:chain.length,
       status:result.valid?row.status:'integrity_error'});
   } catch(e:any) { return c.json({ok:false,error:e?.message||'Spine 검증 실패'},500); }
+});
+
+// Public authenticated TL3 Spine v4 header consumed by the v4 Track player.
+app.get('/api/v1/tl3/spine/header/:id', async (c) => {
+  try {
+    const auth=c.req.header('Authorization')?.replace('Bearer ','').trim()||'';
+    const payload=auth?await verifyToken(auth,c.env.JWT_SECRET):null;
+    if(!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const rawId=String(c.req.param('id')||'');
+    const numeric=Number(rawId);
+    const fileId=Number.isSafeInteger(numeric)&&numeric>0&&String(numeric)===rawId
+      ? numeric : await resolveTL3FileId(c.env.DB,rawId);
+    if(!fileId) return c.json({ok:false,error:'TL3 v4 자산을 찾을 수 없습니다.'},404);
+    const row=await c.env.DB.prepare("SELECT header_json,segment_count,duration_ms,share_id,status FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>();
+    if(!row) return c.json({ok:false,error:'공개된 TL3 v4 자산이 없습니다.'},404);
+    const header=JSON.parse(String(row.header_json||'{}'));
+    const tokenRows=await c.env.DB.prepare('SELECT token_index,token FROM tl3_spine_v4_tokens WHERE file_id=? ORDER BY token_index').bind(fileId).all<any>();
+    const tokens=(tokenRows.results||[]).map((x:any)=>String(x.token));
+    if(tokens.length!==Number(row.segment_count)+1) return c.json({ok:false,error:'Spine token chain is incomplete.'},409);
+    return c.json({ok:true,version:4,file_id:fileId,share_id:String(row.share_id),
+      duration_ms:Number(row.duration_ms),segment_count:Number(row.segment_count),header,spine_tokens:tokens});
+  } catch(e:any) { return c.json({ok:false,error:e?.message||'TL3 v4 header error'},500); }
 });
 
 app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
@@ -1973,6 +2076,21 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     }
     await c.env.DB.prepare(`INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,?)`)
       .bind(fileId,u.id,played,revenue,null,Math.round(played),0).run();
+    // Keep the established POC contribution ledger in sync with metered TL3 playback.
+    // Only actually consumed TL is counted; refunded reservation amounts do not earn POC.
+    const consumedP=Number(Math.max(0,reservedP-refundP).toFixed(6));
+    const consumedA=Number(Math.max(0,reservedA-refundA).toFixed(6));
+    const consumedB=Number(Math.max(0,reservedB-refundB).toFixed(6));
+    const pocGained=consumedP*0.01+(consumedA+consumedB)*0.0005;
+    if(played>0){
+      await c.env.DB.prepare(`INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained)
+        VALUES(?,'consume',?,?,?)`).bind(u.id,played,consumedP,pocGained).run().catch(()=>{});
+    }
+    // One listening contribution per completed or stopped playback session.
+    if(nextSegment===null){
+      await c.env.DB.prepare(`INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained)
+        VALUES(?,'listen',0,0,0)`).bind(u.id).run().catch(()=>{});
+    }
     let nextLicense:any=null;
     let nextError:string|null=null;
     if(nextSegment!==null){
@@ -3545,6 +3663,17 @@ async function ensureTL3AssetTL(db:D1Database,fileId:number){
     file_id INTEGER PRIMARY KEY, share_id TEXT NOT NULL,
     initial_tl REAL NOT NULL DEFAULT 0, remaining_tl REAL NOT NULL DEFAULT 0,
     consumed_tl REAL NOT NULL DEFAULT 0, updated_at TEXT DEFAULT (datetime('now'))
+  )`).run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS tl3_stream_sessions (
+    id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, file_id INTEGER NOT NULL, share_id TEXT NOT NULL,
+    next_segment INTEGER NOT NULL DEFAULT 0, last_segment_at INTEGER DEFAULT 0,
+    pending_segment INTEGER DEFAULT NULL, pending_cost REAL DEFAULT 0,
+    pending_duration_ms INTEGER DEFAULT 0, pending_delivered_at INTEGER DEFAULT 0,
+    pending_tl_p REAL DEFAULT 0, pending_tl_a REAL DEFAULT 0, pending_tl_b REAL DEFAULT 0,
+    prefetch_segment INTEGER DEFAULT NULL, prefetch_cost REAL DEFAULT 0,
+    prefetch_tl_p REAL DEFAULT 0, prefetch_tl_a REAL DEFAULT 0, prefetch_tl_b REAL DEFAULT 0,
+    prefetch_duration_ms INTEGER DEFAULT 0, prefetch_delivered_at INTEGER DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now'))
   )`).run();
   await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN pending_tl_p REAL DEFAULT 0").run().catch(()=>{});
   await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN pending_tl_a REAL DEFAULT 0").run().catch(()=>{});
