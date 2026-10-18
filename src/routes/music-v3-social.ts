@@ -36,7 +36,7 @@ async function trackAccess(db: D1Database, trackId: string, userId = 0) {
 
 // Public counters; no source MP3 URL or storage URI is returned.
 router.get('/tracks/:id/social', async (c) => {
-  const track = await trackAccess(c.env.DB, c.req.param('id'));
+  const track = await trackAccess(c.env.DB, String(c.req.param('id') || ''));
   if (!track) return c.json({ ok: false, error: 'Public Track not found' }, 404);
   const [likes, comments] = await Promise.all([
     c.env.DB.prepare('SELECT COUNT(*) AS n FROM v3_track_likes WHERE track_id=?').bind(track.id).first<any>(),
@@ -46,7 +46,7 @@ router.get('/tracks/:id/social', async (c) => {
 });
 
 router.get('/tracks/:id/comments', async (c) => {
-  const track = await trackAccess(c.env.DB, c.req.param('id'));
+  const track = await trackAccess(c.env.DB, String(c.req.param('id') || ''));
   if (!track) return c.json({ ok: false, error: 'Public Track not found' }, 404);
   const rows = await c.env.DB.prepare(`
     SELECT cm.id,cm.user_id,u.username,cm.content,cm.created_at
@@ -58,7 +58,7 @@ router.get('/tracks/:id/comments', async (c) => {
 });
 
 router.post('/tracks/:id/like', authMiddleware, async (c) => {
-  const user = c.get('user'), track = await trackAccess(c.env.DB, c.req.param('id'), user.id);
+  const user = c.get('user'), track = await trackAccess(c.env.DB, String(c.req.param('id') || ''), user.id);
   if (!track) return c.json({ ok: false, error: 'Track not found or not public' }, 404);
   await c.env.DB.prepare('INSERT OR IGNORE INTO v3_track_likes(id,track_id,user_id) VALUES(?,?,?)')
     .bind(makeId(), track.id, user.id).run();
@@ -67,7 +67,7 @@ router.post('/tracks/:id/like', authMiddleware, async (c) => {
 });
 
 router.delete('/tracks/:id/like', authMiddleware, async (c) => {
-  const user = c.get('user'), track = await trackAccess(c.env.DB, c.req.param('id'), user.id);
+  const user = c.get('user'), track = await trackAccess(c.env.DB, String(c.req.param('id') || ''), user.id);
   if (!track) return c.json({ ok: false, error: 'Track not found or not public' }, 404);
   await c.env.DB.prepare('DELETE FROM v3_track_likes WHERE track_id=? AND user_id=?').bind(track.id, user.id).run();
   const row = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM v3_track_likes WHERE track_id=?').bind(track.id).first<any>();
@@ -75,7 +75,7 @@ router.delete('/tracks/:id/like', authMiddleware, async (c) => {
 });
 
 router.post('/tracks/:id/comments', authMiddleware, async (c) => {
-  const user = c.get('user'), track = await trackAccess(c.env.DB, c.req.param('id'), user.id);
+  const user = c.get('user'), track = await trackAccess(c.env.DB, String(c.req.param('id') || ''), user.id);
   if (!track) return c.json({ ok: false, error: 'Track not found or not public' }, 404);
   let body:any; try { body = await c.req.json(); } catch { return c.json({ ok: false, error: 'Invalid JSON body' }, 400); }
   const content = String(body.content || '').trim();
@@ -93,7 +93,7 @@ router.post('/tracks/:id/comments', authMiddleware, async (c) => {
 router.post('/comments/:commentId/report', authMiddleware, async (c) => {
   const user = c.get('user');
   const comment = await c.env.DB.prepare('SELECT id,track_id FROM v3_track_comments WHERE id=? AND moderation_status=\'visible\'')
-    .bind(c.req.param('commentId')).first<any>();
+    .bind(String(c.req.param('commentId') || '')).first<any>();
   if (!comment) return c.json({ ok: false, error: 'Visible comment not found' }, 404);
   const track = await trackAccess(c.env.DB, String(comment.track_id), user.id);
   if (!track) return c.json({ ok: false, error: 'Track not found or not public' }, 404);
@@ -106,7 +106,7 @@ router.post('/comments/:commentId/report', authMiddleware, async (c) => {
 });
 
 router.post('/creators/:id/follow', authMiddleware, async (c) => {
-  const user = c.get('user'), targetId = Number(c.req.param('id'));
+  const user = c.get('user'), targetId = Number(String(c.req.param('id') || ''));
   if (!Number.isSafeInteger(targetId) || targetId <= 0) return c.json({ ok: false, error: 'Invalid creator ID' }, 422);
   if (targetId === user.id) return c.json({ ok: false, error: 'Cannot follow yourself' }, 422);
   const target = await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0').bind(targetId).first<any>();
@@ -117,14 +117,14 @@ router.post('/creators/:id/follow', authMiddleware, async (c) => {
 });
 
 router.delete('/creators/:id/follow', authMiddleware, async (c) => {
-  const user = c.get('user'), targetId = Number(c.req.param('id'));
+  const user = c.get('user'), targetId = Number(String(c.req.param('id') || ''));
   if (!Number.isSafeInteger(targetId) || targetId <= 0) return c.json({ ok: false, error: 'Invalid creator ID' }, 422);
   await c.env.DB.prepare('DELETE FROM v3_track_follows WHERE follower_user_id=? AND followed_user_id=?').bind(user.id, targetId).run();
   return c.json({ ok: true, following: false });
 });
 
 router.get('/creators/:id/follow-status', authMiddleware, async (c) => {
-  const user = c.get('user'), targetId = Number(c.req.param('id'));
+  const user = c.get('user'), targetId = Number(String(c.req.param('id') || ''));
   if (!Number.isSafeInteger(targetId) || targetId <= 0) return c.json({ ok: false, error: 'Invalid creator ID' }, 422);
   const row = await c.env.DB.prepare('SELECT 1 AS following FROM v3_track_follows WHERE follower_user_id=? AND followed_user_id=?')
     .bind(user.id, targetId).first<any>();
