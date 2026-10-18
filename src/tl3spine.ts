@@ -207,7 +207,18 @@ export async function buildTL3SpineV4(input: TL3SpineBuildInput): Promise<TL3Spi
     spine_root: tokens[0],
     spine_latest: tokens[tokens.length - 1],
     rights,
-    lp_meta: input.lpMeta || null,
+    lp_meta: input.lpMeta ? {
+      enabled: input.lpMeta.lp_enabled === true,
+      price_tl: Math.max(0, Math.floor(Number(input.lpMeta.lp_price_tl || 0))),
+      patent: String(input.lpMeta.lp_patent || ''),
+      seed: Number(input.lpMeta.lp_seed || 7),
+      g: input.lpMeta.lp_g || null,
+      fs: Number(input.lpMeta.lp_fs || 0),
+      n: Number(input.lpMeta.lp_n || 0),
+      version: String(input.lpMeta.lp_version || 'lp-v1-runtime'),
+      processing: 'player-realtime',
+      audio_payload_bytes: 0
+    } : null,
     created_at: new Date().toISOString()
   };
   const headerBytes = enc(JSON.stringify(header));
