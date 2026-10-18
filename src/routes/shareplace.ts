@@ -119,9 +119,19 @@ router.get('/', async (c) => {
   const offset = Math.max(0, Number(c.req.query('offset') || 0));
   const orderCol = sort === 'new' ? 'f.created_at' : sort === 'tl' ? 'f.file_tl' : 'f.pulse';
 
+  // SharePlace shows V4 only when the matching TL3 Spine release was actually sealed.
+  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_spine_v4_releases (
+    file_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, share_id TEXT NOT NULL,
+    object_key TEXT NOT NULL, header_json TEXT NOT NULL, segment_count INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL, spine_root TEXT NOT NULL, spine_latest TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'sealed', created_at TEXT DEFAULT (datetime('now'))
+  )`).run();
+
   let query = `SELECT f.id, f.user_id, u.username, f.title, f.artist, f.genre,
     f.file_type, f.file_tl, f.duration_seconds, f.cover_image, f.pulse,
     f.play_count, f.created_at,
+    (SELECT sv.status FROM tl3_spine_v4_releases sv
+      WHERE sv.file_id=f.id AND sv.status='sealed' LIMIT 1) AS spine_v4_status,
     (SELECT c.cert_no FROM tl_asset_certs c
       JOIN tl_assets a ON a.asset_id = c.asset_id
       WHERE a.file_id = f.id AND c.status = 'active' LIMIT 1) AS cert_no
@@ -145,7 +155,8 @@ router.get('/', async (c) => {
     play_count: Number(f.play_count || 0), created_at: f.created_at,
     content_kind: 'tl3', shared: 1, auth_status: 'verified',
     stream_url: origin + '/api/legacy-stream/' + encodeURIComponent(String(f.id)),
-    source_table: 'tl_file', cert_no: f.cert_no || null
+    source_table: 'tl_file', cert_no: f.cert_no || null,
+    spine_v4_status: f.spine_v4_status || null
   }));
 
   let modern: any[] = [];
@@ -154,7 +165,11 @@ router.get('/', async (c) => {
       SELECT s.id, s.user_id, u.username, s.title, s.artist, s.album,
         s.duration, s.file_tl, s.category, s.category_type, s.description,
         s.plan, s.cover_url, s.country, s.content_lang, s.pulse, s.created_at,
-        s.composer, s.lyricist, s.lyrics, s.release_mode, s.content_kind
+        s.composer, s.lyricist, s.lyrics, s.release_mode, s.content_kind,
+        (SELECT sv.status FROM tl3_spine_v4_releases sv
+          JOIN tl_files vf ON vf.id=sv.file_id
+          WHERE (vf.stream_url=s.stream_url OR vf.file_url=s.stream_url)
+            AND sv.status='sealed' LIMIT 1) AS spine_v4_status
       FROM tl_shares s
       JOIN users u ON CAST(s.user_id AS INTEGER) = u.id
       WHERE EXISTS (
@@ -181,7 +196,7 @@ router.get('/', async (c) => {
       lyrics: String(s.lyrics || ''), release_mode: 'tl3', content_kind: 'tl3',
       file_type: 'audio/tl3', shared: 1, auth_status: 'verified',
       stream_url: origin + '/api/stream/' + encodeURIComponent(String(s.id)),
-      source_table: 'share'
+      source_table: 'share', spine_v4_status: s.spine_v4_status || null
     }));
   } catch (e) {
     console.error('tl_shares list error:', e);
