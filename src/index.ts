@@ -1146,7 +1146,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
       try { lpAlreadyCharged = JSON.parse(String(priorRelease.header_json || '{}'))?.lp_meta?.enabled === true; } catch (_) {}
     }
     if (lpPrice > 0 && !lpAlreadyCharged) {
-      const walletRow = await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(user.id).first<any>();
+      const walletRow = await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(user.id).first<any>();
       if (!walletRow) return c.json({ok:false,error:'사용자 잔액 조회 실패'},500);
       const wallet = tlWalletParts(walletRow);
       const balance = wallet.p + wallet.a + wallet.b;
@@ -1229,7 +1229,7 @@ app.post('/api/v1/tl3/releases', async (c) => {
 
     // LP 요금은 TL3 파일 생성과 D1 저장이 성공한 뒤 한 번만 차감한다.
     if (lpPrice > 0 && !lpAlreadyCharged) {
-      const walletRow = await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(user.id).first<any>();
+      const walletRow = await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(user.id).first<any>();
       if (!walletRow) return c.json({ok:false,error:'LP 요금 결제 중 사용자 잔액 조회 실패'},500);
       const wallet = tlWalletParts(walletRow);
       if (wallet.p + wallet.a + wallet.b < lpPrice) return c.json({ok:false,error:'LP 요금 결제 중 잔액이 변경되었습니다. 다시 시도해 주세요.',code:'LP_INSUFFICIENT_TL'},402);
@@ -1740,7 +1740,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       if(!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET is not configured'},503);
       const releaseRow=await c.env.DB.prepare("SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
       const licN=await deriveLicenseBytes(masterSecret,releaseRow?.share_id||`tl3_${fileId}`);
-      const fw=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(u.id).first<any>();
+      const fw=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
       const fa=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
       return c.json({ok:true,duplicate:true,lic_n:hex(licN),segment:segmentIndex,cost:Number(ss.pending_cost||0),wallet_tl:Number(fw?.p||0)+Number(fw?.a||0)+Number(fw?.b||0),asset_remaining_tl:Number(fa?.remaining_tl||0)});
     }
@@ -1770,7 +1770,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
         c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
       ]);
     }catch(_){
-      const fw=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(u.id).first<any>();
+      const fw=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
       const fa=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
       return c.json({ok:false,error:'TL 예약이 동시에 변경되었습니다. 잔액을 새로 확인해 주세요.',wallet_tl:Number(fw?.p||0)+Number(fw?.a||0)+Number(fw?.b||0),asset_remaining_tl:Number(fa?.remaining_tl||0)},409);
     }
@@ -1782,7 +1782,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     const shareIdKey = releaseRow?.share_id || `tl3_${fileId}`;
     const licN = await deriveLicenseBytes(masterSecret, shareIdKey);
 
-    const fresh=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(u.id).first<any>();
+    const fresh=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
     const freshAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
     return c.json({ok:true,lic_n:hex(licN),segment:segmentIndex,cost,remaining_tl:Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0),wallet_tl:Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0),asset_remaining_tl:Number(freshAsset?.remaining_tl||0)});
   } catch(e:any) { return c.json({ok:false,error:e.message||'code error'},500); }
@@ -1855,7 +1855,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
         if(!nextRow) nextError='다음 세그먼트를 찾을 수 없습니다.';
         else {
           const nextCost=Number((Number(nextRow.duration_ms)/1000).toFixed(3));
-          const nextWallet=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(u.id).first<any>();
+          const nextWallet=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
           const nextParts=tlWalletParts(nextWallet), nextTotal=nextParts.p+nextParts.a+nextParts.b;
           const nextAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
           if(nextTotal+1e-9<nextCost) nextError='사용자 지갑 TL이 부족합니다.';
@@ -1878,7 +1878,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
               const masterSecret=c.env.TL3_MASTER_SECRET;
               const release=await c.env.DB.prepare("SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
               const lic=await deriveLicenseBytes(masterSecret,release?.share_id||'tl3_'+fileId);
-              const walletAfter=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(u.id).first<any>();
+              const walletAfter=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
               const assetAfter=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
               nextLicense={ok:true,lic_n:hex(lic),segment:nextSegment,cost:nextCost,wallet_tl:Number(walletAfter?.p||0)+Number(walletAfter?.a||0)+Number(walletAfter?.b||0),asset_remaining_tl:Number(assetAfter?.remaining_tl||0)};
             } catch(_){ nextError='다음 세그먼트 TL 예약에 실패했습니다.'; }
@@ -1886,7 +1886,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
         }
       }
     }
-    const fresh=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl FROM users WHERE id=?').bind(u.id).first<any>();
+    const fresh=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
     const freshAsset=await c.env.DB.prepare('SELECT remaining_tl,consumed_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
     const walletNow=Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0);
     return c.json({ok:true,segment:Number(ss.pending_segment),reserved,played_seconds:played,refund,settled_tl:played,creator_revenue:revenue,remaining_tl:walletNow,wallet_tl:walletNow,asset_remaining_tl:Number(freshAsset?.remaining_tl||0),asset_consumed_tl:Number(freshAsset?.consumed_tl||0),next_license:nextLicense,next_error:nextError});
