@@ -1961,6 +1961,18 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
       if(nextSegment!==Number(ss.pending_segment)+1 || nextSegment>=Number(file.segment_count||0)){
         nextError='다음 세그먼트 순서가 올바르지 않습니다.';
       } else {
+        const prefetched=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
+        if(prefetched&&Number(prefetched.prefetch_segment)===nextSegment){
+          const promoted=await c.env.DB.prepare("UPDATE tl3_stream_sessions SET pending_segment=prefetch_segment,pending_cost=prefetch_cost,pending_tl_p=prefetch_tl_p,pending_tl_a=prefetch_tl_a,pending_tl_b=prefetch_tl_b,pending_duration_ms=prefetch_duration_ms,pending_delivered_at=prefetch_delivered_at,last_segment_at=prefetch_delivered_at,prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,next_segment=?,updated_at=datetime('now') WHERE id=? AND pending_segment IS NULL AND prefetch_segment=?").bind(nextSegment+1,sessionId,nextSegment);
+          await promoted.run();
+          const masterSecret=c.env.TL3_MASTER_SECRET;
+          if(!masterSecret) throw new Error('TL3_MASTER_SECRET is not configured');
+          const release=await c.env.DB.prepare("SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
+          const lic=await deriveLicenseBytes(masterSecret,release?.share_id||'tl3_'+fileId);
+          const walletAfter=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
+          const assetAfter=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+          nextLicense={ok:true,prefetched:true,lic_n:hex(lic),segment:nextSegment,cost:Number(prefetched.prefetch_cost||0),wallet_tl:Number(walletAfter?.p||0)+Number(walletAfter?.a||0)+Number(walletAfter?.b||0),asset_remaining_tl:Number(assetAfter?.remaining_tl||0)};
+        } else {
         const nextRow=await c.env.DB.prepare('SELECT duration_ms FROM tl3_segments WHERE file_id=? AND segment_index=?').bind(fileId,nextSegment).first<any>();
         if(!nextRow) nextError='다음 세그먼트를 찾을 수 없습니다.';
         else {
@@ -1995,6 +2007,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
             } catch(_){ nextError='다음 세그먼트 TL 예약에 실패했습니다.'; }
           }
         }
+      }
       }
     }
     const fresh=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
