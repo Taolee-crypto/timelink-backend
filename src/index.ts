@@ -1929,7 +1929,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
           const nextWallet=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
           const nextParts=tlWalletParts(nextWallet), nextTotal=nextParts.p+nextParts.a+nextParts.b;
           const nextAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
-          if(nextTotal+1e-9<nextCost) nextError='사용자 지갑 TL이 부족합니다.';
+          if(nextTotal+1e-9<nextCost) nextError=`사용자 지갑 TL이 부족합니다. (확인 잔액 ${nextTotal.toFixed(3)} TL / 다음 구간 필요 ${nextCost.toFixed(3)} TL; P:${nextParts.p.toFixed(3)} A:${nextParts.a.toFixed(3)} B:${nextParts.b.toFixed(3)}; 구형 tl_balance:${Number(nextWallet?.tl_balance||0).toFixed(3)} tl:${Number(nextWallet?.tl||0).toFixed(3)})`;
           else if(Number(nextAsset?.remaining_tl||0)+1e-9<nextCost) nextError='음원의 자산 TL이 소진되었습니다.';
           else {
             let left=nextCost;
