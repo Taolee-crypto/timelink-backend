@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
 import { buildTL3SpineV4, verifyTL3SpineV4Container } from './tl3spine';
+import tl3PlayerSessionRouter from './tl3-player-session';
 
 import { cors } from 'hono/cors';
 import type { Env } from './types';
@@ -66,6 +67,9 @@ app.onError((err, c) => {
 });
 
 app.options('*', () => new Response(null, { status: 204 }));
+
+// Player-session routes are mounted after the global CORS middleware.
+app.route('/api/v1/tl3/player', tl3PlayerSessionRouter);
 
 // ══════════════════════════════════════════════════════════
 
@@ -1962,8 +1966,8 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     ).bind(fileId).first<any>();
     if(v4){
       if(segmentIndex>=Number(v4.segment_count||0)) return c.json({ok:false,error:'재생 구간 오류'},416);
-      const lic=await deriveLicenseBytes(masterSecret,String(v4.share_id||('tl3_'+fileId)));
-      return c.json({ok:true,version:4,lic_n:hex(lic),segment:segmentIndex,charging:'audible_time_meter'});
+      return c.json({ok:false,code:'PLAYER_SESSION_REQUIRED',
+        error:'V4 라이선스는 등록된 TimeLink Player의 세션 키로만 발급됩니다.'},403);
     }
 
     const release=await c.env.DB.prepare("SELECT segment_count,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
