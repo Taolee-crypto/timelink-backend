@@ -2045,7 +2045,7 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
       return c.json({ok:true,billed_seconds:already,charged_tl:already,delta_tl:0,wallet_tl:Number((w.p+w.a+w.b).toFixed(6)),stop:false});
     }
     const wallet=tlWalletParts(user),balance=Number((wallet.p+wallet.a+wallet.b).toFixed(6));
-    const delta=Number(Math.min(Math.max(0,targetSeconds-already),balance).toFixed(3));
+    const delta=Number((Math.floor(Math.min(Math.max(0,targetSeconds-already),balance)*1000+1e-9)/1000).toFixed(3));
     if(delta<=0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'보유 TL이 부족하여 재생을 중지합니다.',billed_seconds:already,charged_tl:already,wallet_tl:balance,stop:true},402);
     let left=delta;
     const takeA=Math.min(left,wallet.a);left=Number((left-takeA).toFixed(6));
