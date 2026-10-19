@@ -1879,7 +1879,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
   }catch(e:any){return c.json({ok:false,error:e?.message||'license error'},500);}
 });
 
-// 재생 전 전체 곡 가격과 잔액 확인. 예약·차감은 하지 않는다.
+// 재생 전 자산 길이와 지갑 잔액을 조회한다. 재생 시작 조건은 최소 1 TL이며 예약·차감은 하지 않는다.
 app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
   try {
     const auth=c.req.header('Authorization')?.replace(/^Bearer /,'').trim()||'';
@@ -1973,7 +1973,7 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const fresh=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(user.id).first<any>();
     const after=tlWalletParts(fresh);
     const remaining=Number((after.p+after.a+after.b).toFixed(6));
-    const stop=delta<(targetSeconds-already)||remaining<1;
+    const stop=chargedSeconds<Math.ceil(totalMs/1000)&&(delta<(targetSeconds-already)||remaining<1);
     return c.json({ok:true,billed_seconds:chargedSeconds,charged_tl:chargedSeconds,delta_tl:delta,wallet_tl:remaining,creator_revenue:revenue,stop});
   }catch(e:any){
     const message=String(e?.message||'TL3 재생 시간 정산 실패');
