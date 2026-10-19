@@ -1912,6 +1912,41 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       }
       // 10초 안 지났고 다른 세그먼트여도 → 프리버퍼 허용
     }
+    // Reserve a second segment ahead so the player can keep two seconds buffered.
+    if(ss.pending_segment!==null&&ss.pending_segment!==undefined&&Number(segmentIndex)===Number(ss.pending_segment)+2){
+      const masterSecret=c.env.TL3_MASTER_SECRET;
+      if(!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET is not configured'},503);
+      const licN=await deriveLicenseBytes(masterSecret,file.share_id||('tl3_'+fileId));
+      if(Number(ss.prefetch2_segment)===segmentIndex){
+        const fw=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
+        const fa=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+        return c.json({ok:true,duplicate:true,prefetched:true,lookahead:2,lic_n:hex(licN),segment:segmentIndex,cost:Number(ss.prefetch2_cost||0),wallet_tl:Number(fw?.p||0)+Number(fw?.a||0)+Number(fw?.b||0),asset_remaining_tl:Number(fa?.remaining_tl||0)});
+      }
+      if(Number(ss.prefetch_segment)!==Number(ss.pending_segment)+1) return c.json({ok:false,error:'첫 번째 선예약이 아직 준비되지 않았습니다.'},409);
+      if(ss.prefetch2_segment!==null&&ss.prefetch2_segment!==undefined) return c.json({ok:false,error:'두 번째 선예약 구간이 이미 존재합니다.'},409);
+      const preCost=Number((Number(seg.duration_ms)/1000).toFixed(3));
+      const preWallet=tlWalletParts(u),preTotal=preWallet.p+preWallet.a+preWallet.b;
+      const preAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+      const preAssetRemaining=Number(preAsset?.remaining_tl||0);
+      if(preAssetRemaining+1e-9<preCost) return c.json({ok:false,error:'이 음원의 자산 TL이 소진되었습니다.',required:preCost,asset_remaining_tl:preAssetRemaining},402);
+      if(preTotal+1e-9<preCost) return c.json({ok:false,error:'사용자 지갑 TL이 부족합니다.',required:preCost,wallet_tl:preTotal},402);
+      let preLeft=preCost;
+      const preA=Math.min(preLeft,preWallet.a); preLeft=Number((preLeft-preA).toFixed(6));
+      const preB=Math.min(preLeft,preWallet.b); preLeft=Number((preLeft-preB).toFixed(6));
+      const preP=Number(Math.max(0,preLeft).toFixed(6));
+      try{
+        await c.env.DB.batch([
+          c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(preP,preA,preB,preCost,preCost,preCost,u.id,preP,preA,preB),
+          c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+          c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl-?,updated_at=datetime('now') WHERE file_id=? AND remaining_tl>=?").bind(preCost,fileId,preCost),
+          c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+          c.env.DB.prepare("UPDATE tl3_stream_sessions SET prefetch2_segment=?,prefetch2_cost=?,prefetch2_tl_p=?,prefetch2_tl_a=?,prefetch2_tl_b=?,prefetch2_duration_ms=?,prefetch2_delivered_at=?,updated_at=datetime('now') WHERE id=? AND pending_segment=? AND prefetch_segment=? AND prefetch2_segment IS NULL").bind(segmentIndex,preCost,preP,preA,preB,Number(seg.duration_ms),now,sessionId,Number(ss.pending_segment),Number(ss.prefetch_segment)),
+          c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+          c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
+        ]);
+      }catch(_){return c.json({ok:false,error:'두 번째 선예약에 실패했습니다.'},409);}
+      return c.json({ok:true,prefetched:true,lookahead:2,lic_n:hex(licN),segment:segmentIndex,cost:preCost,wallet_tl:Number((preTotal-preCost).toFixed(6)),asset_remaining_tl:Number((preAssetRemaining-preCost).toFixed(6))});
+    }
     // Reserve and license the following segment while the current one remains pending.
     // This is a second reservation slot: current playback settlement is never closed early.
     if(ss.pending_segment!==null&&ss.pending_segment!==undefined&&Number(segmentIndex)===Number(ss.pending_segment)+1){
