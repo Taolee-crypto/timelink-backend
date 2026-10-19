@@ -32,7 +32,7 @@ async function userFromRequest(c: any): Promise<number> {
   if (!Number.isSafeInteger(userId) || userId <= 0) return 0;
   const user = await c.env.DB.prepare(
     'SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0'
-  ).bind(userId).first<any>();
+  ).bind(userId).first();
   return user ? userId : 0;
 }
 
@@ -80,11 +80,11 @@ router.post('/session-license/:id', async (c) => {
     if (!validPlayerId(playerId)) return c.json({ ok: false, error: '등록된 플레이어 ID가 필요합니다.' }, 400);
     const player = await c.env.DB.prepare(
       'SELECT public_jwk,key_thumbprint FROM tl3_player_keys WHERE user_id=? AND player_id=? AND revoked_at IS NULL'
-    ).bind(userId, playerId).first<any>();
+    ).bind(userId, playerId).first();
     if (!player) return c.json({ ok: false, code: 'PLAYER_KEY_REQUIRED', error: '이 기기에 등록된 TimeLink Player 키가 없습니다.' }, 403);
     const release = await c.env.DB.prepare(
       "SELECT segment_count,share_id FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
-    ).bind(fileId).first<any>();
+    ).bind(fileId).first();
     if (!release) return c.json({ ok: false, error: '봉인된 TL3 V4 자산을 찾을 수 없습니다.' }, 404);
     const segmentCount = Number(release.segment_count || 0);
     if (segmentCount < 1) return c.json({ ok: false, error: 'TL3 세그먼트 정보가 올바르지 않습니다.' }, 409);
@@ -98,7 +98,7 @@ router.post('/session-license/:id', async (c) => {
       { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']
     ) as CryptoKeyPair;
     const shared = new Uint8Array(await crypto.subtle.deriveBits(
-      { name: 'ECDH', public: memberPublic }, ephemeral.privateKey, 256
+      { name: 'ECDH', public: memberPublic } as any, ephemeral.privateKey, 256
     ));
     const salt = crypto.getRandomValues(new Uint8Array(32));
     const nonce = crypto.getRandomValues(new Uint8Array(12));
@@ -120,7 +120,7 @@ router.post('/session-license/:id', async (c) => {
     const wrapped = new Uint8Array(await crypto.subtle.encrypt(
       { name: 'AES-GCM', iv: nonce, additionalData: aad, tagLength: 128 }, wrapKey, license
     ));
-    const ephemeralPublic = await crypto.subtle.exportKey('jwk', ephemeral.publicKey);
+    const ephemeralPublic = await crypto.subtle.exportKey('jwk', ephemeral.publicKey) as JsonWebKey;
     await c.env.DB.prepare(
       "UPDATE tl3_player_keys SET last_used_at=datetime('now') WHERE user_id=? AND player_id=?"
     ).bind(userId, playerId).run();
