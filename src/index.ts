@@ -1731,11 +1731,19 @@ app.get('/api/v1/tl3/file/:shareId', async (c) => {
     const fileId=Number.isSafeInteger(numericFileId)&&numericFileId>0&&String(numericFileId)===shareId
       ? numericFileId : await resolveTL3FileId(c.env.DB,shareId);
     if(!fileId) return c.json({ok:false,error:'해당 SharePlace 항목에 연결된 TL3 자산을 하나로 특정할 수 없습니다.',share_id:shareId},404);
-    const row = await c.env.DB.prepare(
-      "SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released'"
-    ).bind(fileId).first<any>();
-    if (!row) return c.json({ok:false,error:'TL3 release not found'},404);
-    const key = `tl3/releases/${row.file_id}.tl3`;
+    // Spine V4 stores its sealed container under the per-release object_key.
+    // Legacy V3 releases continue to use tl3/releases/{file_id}.tl3.
+    const v4Release = await c.env.DB.prepare(
+      "SELECT object_key FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
+    ).bind(fileId).first<any>().catch(()=>null);
+    let key = String(v4Release?.object_key || '');
+    if (!key) {
+      const legacyRelease = await c.env.DB.prepare(
+        "SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released'"
+      ).bind(fileId).first<any>();
+      if (!legacyRelease) return c.json({ok:false,error:'TL3 release not found'},404);
+      key = `tl3/releases/${legacyRelease.file_id}.tl3`;
+    }
     const meta = await getD1ObjectMeta(c.env.DB, key);
     if (!meta) return c.json({ok:false,error:'TL3 파일 없음: '+key},404);
     const tf = await c.env.DB.prepare('SELECT title FROM tl_files WHERE id=?').bind(row.file_id).first<any>();
