@@ -75,8 +75,8 @@ router.post('/', async (c) => {
     }
 
     const approvedFile = await c.env.DB.prepare(
-      "SELECT f.id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.user_id = ? AND LOWER(f.file_type) = 'audio/tl3' AND (f.stream_url = ? OR f.file_url = ?) AND f.shared = 1 AND COALESCE(f.revenue_held, 0) = 0 AND r.status='released' AND r.rights_confirmed=1 LIMIT 1"
-    ).bind(userId, streamUrl, streamUrl).first<any>();
+      "SELECT f.id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.user_id = ? AND LOWER(f.file_type) = 'audio/tl3' AND f.stream_url = ? AND f.shared = 1 AND COALESCE(f.revenue_held, 0) = 0 AND r.status='released' AND r.rights_confirmed=1 LIMIT 1"
+    ).bind(userId, streamUrl).first<any>();
     if (!approvedFile) {
       return c.json({ ok: false, error: '창작자 권리 확인을 마친 TL3 자산을 먼저 발행해야 합니다.' }, 403);
     }
@@ -168,15 +168,17 @@ router.get('/', async (c) => {
         s.composer, s.lyricist, s.lyrics, s.release_mode, s.content_kind,
         (SELECT sv.status FROM tl3_spine_v4_releases sv
           JOIN tl_files vf ON vf.id=sv.file_id
-          WHERE (vf.stream_url=s.stream_url OR vf.file_url=s.stream_url)
-            AND sv.status='sealed' LIMIT 1) AS spine_v4_status
+          WHERE sv.share_id=CAST(s.id AS TEXT) AND sv.status='sealed' LIMIT 1) AS spine_v4_status
       FROM tl_shares s
       JOIN users u ON CAST(s.user_id AS INTEGER) = u.id
       WHERE EXISTS (
         SELECT 1 FROM tl_files f
-        WHERE (f.stream_url=s.stream_url OR f.file_url=s.stream_url)
-          AND LOWER(f.file_type)='audio/tl3'
+        WHERE LOWER(f.file_type)='audio/tl3'
           AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+          AND (
+            f.stream_url=s.stream_url
+            OR EXISTS (SELECT 1 FROM tl3_spine_v4_releases sv WHERE sv.file_id=f.id AND sv.share_id=CAST(s.id AS TEXT) AND sv.status='sealed')
+          )
           AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)
       )
       ORDER BY s.pulse DESC, s.created_at DESC
