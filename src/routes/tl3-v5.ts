@@ -11,7 +11,7 @@ const router = new Hono<{ Bindings: Env }>();
 const te = new TextEncoder();
 const td = new TextDecoder();
 const MAGIC = new Uint8Array([0x54, 0x4c, 0x4e, 0x4b]);
-const MAX_MP3_BYTES = 100 * 1024 * 1024;
+const MAX_MP3_BYTES = 99 * 1024 * 1024;
 
 function bytes(value: Uint8Array): ArrayBuffer {
   return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
@@ -159,7 +159,7 @@ router.post('/manufacture', async (c) => {
     const fileId = Number(metadata.file_id || 0);
     const shareId = String(metadata.share_id || '');
     const clientDuration = Number(metadata.duration_ms || 0);
-    if (!Number.isSafeInteger(fileId) || fileId <= 0 || !shareId || !Number.isFinite(clientDuration) || clientDuration <= 0) {
+    if (!Number.isSafeInteger(fileId) || fileId <= 0 || !shareId || shareId.length > 180 || !Number.isFinite(clientDuration) || clientDuration <= 0) {
       return c.json({ ok:false, error:'file_id, share_id, duration_ms가 필요합니다.' }, 400);
     }
     const file = await c.env.DB.prepare('SELECT id,user_id,title,artist FROM tl_files WHERE id=?').bind(fileId).first<any>();
@@ -296,7 +296,7 @@ router.post('/session-license/:id', async (c) => {
     const shared = new Uint8Array(await crypto.subtle.deriveBits({name:'ECDH',public:memberPublic} as any,ephemeral.privateKey,256));
     const salt = crypto.getRandomValues(new Uint8Array(32));
     const nonce = crypto.getRandomValues(new Uint8Array(12));
-    const expiresAt = Math.floor(Date.now()/1000)+300;
+    const expiresAt = Math.floor(Date.now()/1000)+21600;
     const infoText = ['timelink:tl3:v5:player-session:v1',userId,playerId,fileId,String(release.share_id),sessionId,expiresAt].join(':');
     const hkdf = await crypto.subtle.importKey('raw',bytes(shared),'HKDF',false,['deriveKey']);
     const wrapKey = await crypto.subtle.deriveKey({name:'HKDF',hash:'SHA-256',salt:bytes(salt),info:te.encode(infoText)},hkdf,{name:'AES-GCM',length:256},false,['encrypt']);
