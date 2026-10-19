@@ -128,7 +128,10 @@ router.get('/', async (c) => {
   )`).run();
 
   let query = `SELECT f.id, f.user_id, u.username, f.title, f.artist, f.genre,
-    f.file_type, f.file_tl, f.duration_seconds, f.cover_image, f.pulse,
+    f.file_type,
+    COALESCE((SELECT CAST((r.duration_ms+999)/1000 AS INTEGER) FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(f.duration_seconds,0),NULLIF(f.file_tl,0),0) AS required_file_tl,
+    COALESCE((SELECT CAST((r.duration_ms+999)/1000 AS INTEGER) FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(f.duration_seconds,0),0) AS duration_seconds,
+    f.cover_image, f.pulse,
     f.play_count, f.created_at,
     (SELECT sv.status FROM tl3_spine_v4_releases sv
       WHERE sv.file_id=f.id AND sv.status='sealed' LIMIT 1) AS spine_v4_status,
@@ -149,7 +152,7 @@ router.get('/', async (c) => {
     id: String(f.id), user_id: Number(f.user_id || 0),
     username: String(f.username || 'User'), creator: String(f.username || 'User'),
     title: String(f.title || ''), artist: String(f.artist || ''),
-    duration: Number(f.duration_seconds || 0), file_tl: Number(f.file_tl || 0),
+    duration: Number(f.duration_seconds || 0), file_tl: Number(f.required_file_tl || 0),
     category: String(f.genre || 'Music'), file_type: 'audio/tl3',
     cover_url: f.cover_image || null, pulse: Number(f.pulse || 0),
     play_count: Number(f.play_count || 0), created_at: f.created_at,
@@ -163,7 +166,9 @@ router.get('/', async (c) => {
   try {
     const modernRows = await c.env.DB.prepare(`
       SELECT s.id, s.user_id, u.username, s.title, s.artist, s.album,
-        s.duration, s.file_tl, s.category, s.category_type, s.description,
+        COALESCE((SELECT CAST((r.duration_ms+999)/1000 AS INTEGER) FROM tl3_releases r WHERE r.share_id=CAST(s.id AS TEXT) AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(s.duration,0),0) AS duration,
+        COALESCE((SELECT COALESCE(NULLIF(r.price_tl,0),CAST((r.duration_ms+999)/1000 AS INTEGER)) FROM tl3_releases r WHERE r.share_id=CAST(s.id AS TEXT) AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(s.duration,0),NULLIF(s.file_tl,0),0) AS file_tl,
+        s.category, s.category_type, s.description,
         s.plan, s.cover_url, s.country, s.content_lang, s.pulse, s.created_at,
         s.composer, s.lyricist, s.lyrics, s.release_mode, s.content_kind,
         (SELECT sv.status FROM tl3_spine_v4_releases sv
