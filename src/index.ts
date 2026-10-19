@@ -3,6 +3,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
 import { buildTL3SpineV4, verifyTL3SpineV4Container } from './tl3spine';
 import tl3V5Router from './routes/tl3-v5';
+import tl3PlayerSessionRouter from './tl3-player-session';
 
 import { cors } from 'hono/cors';
 import type { Env } from './types';
@@ -68,6 +69,9 @@ app.onError((err, c) => {
 });
 
 app.options('*', () => new Response(null, { status: 204 }));
+
+// Player-session routes are mounted after the global CORS middleware.
+app.route('/api/v1/tl3/player', tl3PlayerSessionRouter);
 
 // ══════════════════════════════════════════════════════════
 
@@ -1983,8 +1987,8 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     ).bind(fileId).first<any>();
     if(v4){
       if(segmentIndex>=Number(v4.segment_count||0)) return c.json({ok:false,error:'재생 구간 오류'},416);
-      const lic=await deriveLicenseBytes(masterSecret,String(v4.share_id||('tl3_'+fileId)));
-      return c.json({ok:true,version:4,lic_n:hex(lic),segment:segmentIndex,charging:'audible_time_meter'});
+      return c.json({ok:false,code:'PLAYER_SESSION_REQUIRED',
+        error:'V4 라이선스는 등록된 TimeLink Player의 세션 키로만 발급됩니다.'},403);
     }
 
     const release=await c.env.DB.prepare("SELECT segment_count,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
@@ -2067,26 +2071,28 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
     const boundedPlayedMs=Math.min(playedMs,totalMs);
-    const targetSeconds=boundedPlayedMs>=totalMs?Math.ceil(totalMs/1000):Math.floor(boundedPlayedMs/1000);
+    // Bill every audible millisecond proportionally: 1 second = 1 TL.
+    // Do not round partial playback down or the final track fraction up.
+    const targetSeconds=Number((boundedPlayedMs/1000).toFixed(3));
     // tl3_play_meter_sessions is provisioned by migration 0007, not at playback time.
     await c.env.DB.prepare('INSERT OR IGNORE INTO tl3_play_meter_sessions(session_id,user_id,file_id) VALUES(?,?,?)').bind(sessionId,user.id,fileId).run();
     const prior=await c.env.DB.prepare('SELECT user_id,file_id,billed_seconds,played_ms FROM tl3_play_meter_sessions WHERE session_id=?').bind(sessionId).first<any>();
     if(!prior||Number(prior.user_id)!==Number(user.id)||Number(prior.file_id)!==fileId)
       return c.json({ok:false,error:'재생 세션이 다른 사용자 또는 자산에 연결되어 있습니다.'},409);
     const already=Number(prior.billed_seconds||0);
-    if(targetSeconds<=already){
+    if(targetSeconds<=already+1e-9){
       const fresh=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(user.id).first<any>();
       const w=tlWalletParts(fresh);
       return c.json({ok:true,billed_seconds:already,charged_tl:already,delta_tl:0,wallet_tl:Number((w.p+w.a+w.b).toFixed(6)),stop:false});
     }
     const wallet=tlWalletParts(user),balance=Number((wallet.p+wallet.a+wallet.b).toFixed(6));
-    const delta=Math.min(targetSeconds-already,Math.floor(balance+1e-9));
+    const delta=Number((Math.floor(Math.min(Math.max(0,targetSeconds-already),balance)*1000+1e-9)/1000).toFixed(3));
     if(delta<=0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'보유 TL이 부족하여 재생을 중지합니다.',billed_seconds:already,charged_tl:already,wallet_tl:balance,stop:true},402);
     let left=delta;
     const takeA=Math.min(left,wallet.a);left=Number((left-takeA).toFixed(6));
     const takeB=Math.min(left,wallet.b);left=Number((left-takeB).toFixed(6));
     const takeP=Number(Math.max(0,left).toFixed(6));
-    const chargedSeconds=already+delta;
+    const chargedSeconds=Number((already+delta).toFixed(3));
     const creator=await c.env.DB.prepare('SELECT id,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
     const revenue=Number((delta*0.7).toFixed(6));
     const creatorBefore=creator?Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0):0;
@@ -2110,7 +2116,7 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const fresh=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(user.id).first<any>();
     const after=tlWalletParts(fresh);
     const remaining=Number((after.p+after.a+after.b).toFixed(6));
-    const stop=chargedSeconds<Math.ceil(totalMs/1000)&&(delta<(targetSeconds-already)||remaining<1);
+    const stop=chargedSeconds+1e-9<totalMs/1000&&(delta+1e-9<targetSeconds-already||remaining<0.001);
     return c.json({ok:true,billed_seconds:chargedSeconds,charged_tl:chargedSeconds,delta_tl:delta,wallet_tl:remaining,creator_revenue:revenue,stop});
   }catch(e:any){
     const message=String(e?.message||'TL3 재생 시간 정산 실패');
