@@ -218,6 +218,8 @@ router.post('/manufacture', async (c) => {
     await c.env.DB.prepare(
       "UPDATE tl_files SET file_type='audio/tl3',stream_url=?,shared=1,shared_to_shareplace=1,updated_at=datetime('now') WHERE id=? AND user_id=?"
     ).bind('https://api.timelink.digital/api/v1/tl3/v5/resolve/' + fileId,fileId,userId).run();
+    await c.env.DB.prepare("UPDATE tl_shares SET stream_url=?,file_type='audio/tl3' WHERE CAST(id AS TEXT)=? AND CAST(user_id AS INTEGER)=?")
+      .bind('https://api.timelink.digital/api/v1/tl3/v5/resolve/' + fileId,shareId,userId).run().catch(()=>{});
     return c.json({
       ok:true, profile:'TL3-V5', version:5, status:'released',
       file_id:fileId, share_id:shareId, duration_ms:durationMs,
