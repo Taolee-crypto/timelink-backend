@@ -2051,7 +2051,7 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const takeA=Math.min(left,wallet.a);left=Number((left-takeA).toFixed(6));
     const takeB=Math.min(left,wallet.b);left=Number((left-takeB).toFixed(6));
     const takeP=Number(Math.max(0,left).toFixed(6));
-    const chargedSeconds=already+delta;
+    const chargedSeconds=Number((already+delta).toFixed(3));
     const creator=await c.env.DB.prepare('SELECT id,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
     const revenue=Number((delta*0.7).toFixed(6));
     const creatorBefore=creator?Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0):0;
