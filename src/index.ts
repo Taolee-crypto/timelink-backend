@@ -1925,7 +1925,8 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const duration=await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
-    const targetSeconds=Math.min(Math.floor(Math.min(playedMs,totalMs)/1000),Math.ceil(totalMs/1000));
+    const boundedPlayedMs=Math.min(playedMs,totalMs);
+    const targetSeconds=boundedPlayedMs>=totalMs?Math.ceil(totalMs/1000):Math.floor(boundedPlayedMs/1000);
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_play_meter_sessions (
       session_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,file_id INTEGER NOT NULL,
       billed_seconds INTEGER NOT NULL DEFAULT 0,played_ms INTEGER NOT NULL DEFAULT 0,
