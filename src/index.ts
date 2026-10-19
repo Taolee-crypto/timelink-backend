@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
 import { buildTL3SpineV4, verifyTL3SpineV4Container } from './tl3spine';
+import tl3V5Router from './routes/tl3-v5';
 import tl3PlayerSessionRouter from './tl3-player-session';
 
 import { cors } from 'hono/cors';
@@ -46,6 +47,7 @@ const app = new Hono<{ Bindings: Env }>();
 app.use('/api/upload/*', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
 app.use('/api/upload', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
 app.use('/api/upload/part', bodyLimit({ maxSize: D1_OBJECT_CHUNK_SIZE }));
+app.use('/api/v1/tl3/v5/manufacture', bodyLimit({ maxSize: 17 * 1024 * 1024 }));
 
 app.use('*', cors({
   origin: '*',
@@ -161,9 +163,19 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
     "SELECT DISTINCT r.file_id FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1) LIMIT 2"
   ).bind(id).all().catch(()=>({results:[]}));
   const linkedRows:any[]=(linked.results||[]) as any[];
+  const linkedV5=await db.prepare("SELECT DISTINCT v.file_id FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_v5_releases v ON v.file_id=f.id AND v.status='sealed' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 2").bind(id).all().catch(()=>({results:[]}));
+  const linkedV5Ids=[...new Set<number>((linkedV5.results||[]).map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
+  if(linkedV5Ids.length===1) return linkedV5Ids[0];
+  if(linkedV5Ids.length>1) return 0;
   const linkedIds:number[]=[...new Set<number>(linkedRows.map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
   if(linkedIds.length===1) return linkedIds[0];
   if(linkedIds.length>1) return 0;
+
+  // V5 share IDs resolve independently from legacy V3/V4 releases.
+  const v5Direct=await db.prepare("SELECT file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 2").bind(id).all().catch(()=>({results:[]}));
+  const v5Ids=[...new Set<number>((v5Direct.results||[]).map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
+  if(v5Ids.length===1) return v5Ids[0];
+  if(v5Ids.length>1) return 0;
 
   // Backward compatibility for callers that pass a release share_id directly.
   // This fallback is safe only when that identifier resolves to exactly one asset.
@@ -193,6 +205,9 @@ async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   // TL3 becomes public only when a matching server-verified TL3 file is shared.
   const shareId=String(share?.id||'').trim();
   if(shareId){
+    const v5=await db.prepare("SELECT 1 FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.share_id=? AND v.status='sealed' AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1").bind(shareId).first().catch(()=>null);
+    const v5Linked=await db.prepare("SELECT 1 FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_v5_releases v ON v.file_id=f.id AND v.status='sealed' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1").bind(shareId).first().catch(()=>null);
+    if(v5||v5Linked) return true;
     const v4=await db.prepare(
       "SELECT f.id FROM tl3_spine_v4_releases sv JOIN tl_files f ON f.id=sv.file_id WHERE sv.share_id=? AND sv.status='sealed' AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1"
     ).bind(shareId).first().catch(()=>null);
@@ -361,6 +376,7 @@ app.get('/api/v1/health', async (c) => {
 });
 
 app.route('/api/v1/auth', authRouter);
+app.route('/api/v1/tl3/v5', tl3V5Router);
 app.route('/api/v1/users', usersRouter);
 app.route('/api/v3/economy', economyV3Router);
 app.route('/api/v3/music', musicV3Router);
@@ -1669,6 +1685,11 @@ app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
     const fileId=Number.isSafeInteger(numericFileId)&&numericFileId>0&&String(numericFileId)===shareId
       ? numericFileId : await resolveTL3FileId(c.env.DB,shareId);
     if(!fileId) return c.json({ok:false,error:'해당 SharePlace 항목에 연결된 TL3 자산을 하나로 특정할 수 없습니다.',share_id:shareId},404);
+    const v5row = await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>().catch(()=>null);
+    if(v5row){
+      const meta=await c.env.DB.prepare('SELECT title,artist FROM tl_files WHERE id=?').bind(fileId).first<any>();
+      return c.json({ok:true,version:5,file_id:fileId,share_id:String(v5row.share_id),title:String(meta?.title||''),artist:String(meta?.artist||''),duration_ms:Number(v5row.duration_ms),segment_count:1,price_tl:0});
+    }
     const row = await c.env.DB.prepare(
       "SELECT file_id,title,artist,duration_ms,segment_count,price_tl FROM tl3_releases WHERE file_id=? AND status='released'"
     ).bind(fileId).first<any>();
@@ -1993,15 +2014,18 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
     if(!fileId||String(fileId)!==rawId) fileId=Number(await resolveTL3FileId(c.env.DB,rawId)||0);
     if(!fileId) return c.json({ok:false,error:'TL3 자산을 찾을 수 없습니다.'},404);
     const file=await c.env.DB.prepare(
-      "SELECT f.user_id,f.revenue_held,COALESCE(v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
+      "SELECT f.user_id,f.revenue_held,COALESCE(v5.share_id,v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_v5_releases v5 ON v5.file_id=f.id AND v5.status='sealed' LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (v5.file_id IS NOT NULL OR r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
     ).bind(fileId).first<any>();
     if(!file||file.revenue_held) return c.json({ok:false,error:'재생할 수 없는 TL3 자산입니다.'},404);
+    const v5Duration=await c.env.DB.prepare("SELECT duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>();
     const v4Duration=await c.env.DB.prepare(
       "SELECT duration_ms,segment_count FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
     ).bind(fileId).first<any>();
-    const duration=v4Duration
-      ? {total_ms:Number(v4Duration.duration_ms||0),segment_count:Number(v4Duration.segment_count||0)}
-      : await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms,COUNT(*) segment_count FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
+    const duration=v5Duration
+      ? {total_ms:Number(v5Duration.duration_ms||0),segment_count:1}
+      : v4Duration
+        ? {total_ms:Number(v4Duration.duration_ms||0),segment_count:Number(v4Duration.segment_count||0)}
+        : await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms,COUNT(*) segment_count FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0||Number(duration?.segment_count||0)<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
     const requiredTL=Math.ceil(totalMs/1000-1e-9);
@@ -2028,17 +2052,22 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     if(!/^[A-Za-z0-9_-]{8,100}$/.test(sessionId)||!Number.isFinite(playedMs)||playedMs<0||playedMs>86400000)
       return c.json({ok:false,error:'재생 세션 또는 재생 시간 값이 올바르지 않습니다.'},400);
     const file=await c.env.DB.prepare(
-      "SELECT f.id,f.user_id,f.revenue_held,COALESCE(v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
+      "SELECT f.id,f.user_id,f.revenue_held,COALESCE(v5.share_id,v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_v5_releases v5 ON v5.file_id=f.id AND v5.status='sealed' LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (v5.file_id IS NOT NULL OR r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
     ).bind(fileId).first<any>();
     if(!file||file.revenue_held) return c.json({ok:false,error:'재생할 수 없는 TL3 자산입니다.'},404);
-    // Meter only audible media time. Spine v4's signed header is the
-    // authoritative duration; v3 segment rows remain a legacy fallback.
+    const v5Session=await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=? AND expires_at>?').bind(sessionId,user.id,fileId,Math.floor(Date.now()/1000)).first().catch(()=>null);
+    const isV5=!!(await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first().catch(()=>null));
+    if(isV5&&!v5Session) return c.json({ok:false,error:'V5 Player 세션 인증이 필요합니다.'},403);
+    // V5's encrypted inner manifest is the authoritative duration source.
+    const v5Duration=await c.env.DB.prepare("SELECT duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>();
     const v4Duration=await c.env.DB.prepare(
       "SELECT duration_ms FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
     ).bind(fileId).first<any>();
-    const duration=v4Duration
-      ? {total_ms:Number(v4Duration.duration_ms||0)}
-      : await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
+    const duration=v5Duration
+      ? {total_ms:Number(v5Duration.duration_ms||0)}
+      : v4Duration
+        ? {total_ms:Number(v4Duration.duration_ms||0)}
+        : await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
     const boundedPlayedMs=Math.min(playedMs,totalMs);
