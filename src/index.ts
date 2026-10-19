@@ -1942,7 +1942,7 @@ app.post('/api/v1/tl3/play/charge/:id', async (c) => {
     const takeB=Math.min(left,wallet.b); left=Number((left-takeB).toFixed(6));
     const takeP=Number(Math.max(0,left).toFixed(6));
     const revenue=Number((cost*0.7).toFixed(3));
-    const creator=await c.env.DB.prepare('SELECT id,COALESCE(tl_p,tl,tl_balance,0) p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
+    const creator=await c.env.DB.prepare('SELECT id,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
     const creatorBefore=creator?Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0):0;
     const creatorBalanceBeforeReward=creatorBefore-(creator&&Number(creator.id)===Number(user.id)?cost:0);
     try{
@@ -1954,7 +1954,7 @@ app.post('/api/v1/tl3/play/charge/:id', async (c) => {
         c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
       ];
       if(creator&&revenue>0){
-        statements.push(c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl=COALESCE(tl_p,tl,tl_balance,0)+?+COALESCE(tl_a,0)+COALESCE(tl_b,0),total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,revenue,creator.id));
+        statements.push(c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)+?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)+?,total_tl_earned=COALESCE(total_tl_earned,0)+? WHERE id=?').bind(revenue,revenue,revenue,creator.id));
         statements.push(c.env.DB.prepare("INSERT INTO transactions(user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES(?,?,'earn',?,?,?,?)").bind(creator.id,fileId,revenue,creatorBalanceBeforeReward+revenue,user.id,'TL3 1회 전체 재생 보상'));
       }
       statements.push(c.env.DB.prepare('INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)').bind(fileId,user.id,cost,revenue,null,Math.round(totalMs/1000)));
