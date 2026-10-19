@@ -250,10 +250,18 @@ router.get('/resolve/:id', async (c) => {
     await ensureV5Tables(c.env.DB);
     const rawId = String(c.req.param('id') || '');
     const numeric = resolveId(rawId);
-    let row = numeric
-      ? await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.file_id=? AND v.status='sealed'").bind(numeric).first<any>()
-      : await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.share_id=? AND v.status='sealed'").bind(rawId).first<any>();
-    if (!row && !numeric) {
+    // Track URLs carry share_id, which may itself be numeric. The V5 Player
+    // therefore identifies the lookup key explicitly; Creator verification
+    // keeps the backward-compatible numeric file_id behavior.
+    const lookupBy = String(c.req.query('by') || '');
+    let row = lookupBy === 'share_id'
+      ? await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.share_id=? AND v.status='sealed'").bind(rawId).first<any>()
+      : lookupBy === 'file_id'
+        ? (numeric ? await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.file_id=? AND v.status='sealed'").bind(numeric).first<any>() : null)
+        : numeric
+          ? await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.file_id=? AND v.status='sealed'").bind(numeric).first<any>()
+          : await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.share_id=? AND v.status='sealed'").bind(rawId).first<any>();
+    if (!row && lookupBy !== 'file_id') {
       row = await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_v5_releases v ON v.file_id=f.id AND v.status='sealed' WHERE CAST(s.id AS TEXT)=? AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1").bind(rawId).first<any>().catch(()=>null);
     }
     if (!row) return c.json({ok:false,error:'TL3 V5 자산을 찾을 수 없습니다.'},404);
