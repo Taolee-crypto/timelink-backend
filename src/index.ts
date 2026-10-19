@@ -1872,7 +1872,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     const segmentIndex = Math.max(0, Number(c.req.query('segment')||0));
     const sessionId = String(c.req.query('session_id')||'').slice(0,80);
     if (!fileId || !sessionId) return c.json({ok:false,error:'재생 세션이 필요합니다.'},400);
-    const file = await c.env.DB.prepare(`SELECT r.segment_count,r.status FROM tl3_releases r WHERE r.file_id=? AND r.status='released'`).bind(fileId).first<any>();
+    const file = await c.env.DB.prepare(`SELECT r.segment_count,r.status,r.share_id FROM tl3_releases r WHERE r.file_id=? AND r.status='released'`).bind(fileId).first<any>();
     if (!file) return c.json({ok:false,error:'TL3 release not found'},404);
     if (segmentIndex >= Number(file.segment_count||0)) return c.json({ok:false,error:'재생 종료'},416);
     const seg = await c.env.DB.prepare('SELECT duration_ms FROM tl3_segments WHERE file_id=? AND segment_index=?').bind(fileId,segmentIndex).first<any>();
@@ -1917,8 +1917,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     if(ss.pending_segment!==null&&ss.pending_segment!==undefined&&Number(segmentIndex)===Number(ss.pending_segment)+1){
       const masterSecret=c.env.TL3_MASTER_SECRET;
       if(!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET is not configured'},503);
-      const releaseRow=await c.env.DB.prepare("SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
-      const licN=await deriveLicenseBytes(masterSecret,releaseRow?.share_id||`tl3_${fileId}`);
+      const licN=await deriveLicenseBytes(masterSecret,file.share_id||`tl3_${fileId}`);
       if(Number(ss.prefetch_segment)===segmentIndex){
         const fw=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
         const fa=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
@@ -1928,7 +1927,8 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       const preCost=Number((Number(seg.duration_ms)/1000).toFixed(3));
       const preWallet=tlWalletParts(u),preTotal=preWallet.p+preWallet.a+preWallet.b;
       const preAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
-      if(Number(preAsset?.remaining_tl||0)+1e-9<preCost) return c.json({ok:false,error:'이 음원의 자산 TL이 소진되었습니다.',required:preCost,asset_remaining_tl:Number(preAsset?.remaining_tl||0)},402);
+      const preAssetRemaining=Number(preAsset?.remaining_tl||0);
+      if(preAssetRemaining+1e-9<preCost) return c.json({ok:false,error:'이 음원의 자산 TL이 소진되었습니다.',required:preCost,asset_remaining_tl:preAssetRemaining},402);
       if(preTotal+1e-9<preCost) return c.json({ok:false,error:'사용자 지갑 TL이 부족합니다.',required:preCost,wallet_tl:preTotal},402);
       let preLeft=preCost;
       const preA=Math.min(preLeft,preWallet.a); preLeft=Number((preLeft-preA).toFixed(6));
@@ -1947,15 +1947,12 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       }catch(_){
         return c.json({ok:false,error:'다음 구간 선예약에 실패했습니다. 현재 구간은 유지됩니다.'},409);
       }
-      const fw=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
-      const fa=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
-      return c.json({ok:true,prefetched:true,lic_n:hex(licN),segment:segmentIndex,cost:preCost,wallet_tl:Number(fw?.p||0)+Number(fw?.a||0)+Number(fw?.b||0),asset_remaining_tl:Number(fa?.remaining_tl||0)});
+      return c.json({ok:true,prefetched:true,lic_n:hex(licN),segment:segmentIndex,cost:preCost,wallet_tl:Number((preTotal-preCost).toFixed(6)),asset_remaining_tl:Number((preAssetRemaining-preCost).toFixed(6))});
     }
     if(ss.pending_segment!==null&&ss.pending_segment!==undefined&&Number(ss.pending_segment)===segmentIndex){
       const masterSecret=c.env.TL3_MASTER_SECRET;
       if(!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET is not configured'},503);
-      const releaseRow=await c.env.DB.prepare("SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
-      const licN=await deriveLicenseBytes(masterSecret,releaseRow?.share_id||`tl3_${fileId}`);
+      const licN=await deriveLicenseBytes(masterSecret,file.share_id||`tl3_${fileId}`);
       const fw=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
       const fa=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
       return c.json({ok:true,duplicate:true,lic_n:hex(licN),segment:segmentIndex,cost:Number(ss.pending_cost||0),wallet_tl:Number(fw?.p||0)+Number(fw?.a||0)+Number(fw?.b||0),asset_remaining_tl:Number(fa?.remaining_tl||0)});
@@ -1992,15 +1989,11 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     }
 
     // 파일 생성 시 사용한 share_id와 동일한 키로 라이선스를 계산한다.
-    const releaseRow = await c.env.DB.prepare(
-      "SELECT share_id FROM tl3_releases WHERE file_id=? AND status='released'"
-    ).bind(fileId).first<any>();
-    const shareIdKey = releaseRow?.share_id || `tl3_${fileId}`;
-    const licN = await deriveLicenseBytes(masterSecret, shareIdKey);
+    const licN = await deriveLicenseBytes(masterSecret, file.share_id || `tl3_${fileId}`);
 
-    const fresh=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
-    const freshAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
-    return c.json({ok:true,lic_n:hex(licN),segment:segmentIndex,cost,remaining_tl:Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0),wallet_tl:Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0),asset_remaining_tl:Number(freshAsset?.remaining_tl||0)});
+    const walletAfter=Number((walletTotal-cost).toFixed(6));
+    const assetAfter=Number((assetRemaining-cost).toFixed(6));
+    return c.json({ok:true,lic_n:hex(licN),segment:segmentIndex,cost,remaining_tl:walletAfter,wallet_tl:walletAfter,asset_remaining_tl:assetAfter});
   } catch(e:any) { return c.json({ok:false,error:e.message||'code error'},500); }
 });
 
