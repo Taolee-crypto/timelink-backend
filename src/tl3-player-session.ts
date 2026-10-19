@@ -102,7 +102,11 @@ router.post('/session-license/:id', async (c) => {
     ));
     const salt = crypto.getRandomValues(new Uint8Array(32));
     const nonce = crypto.getRandomValues(new Uint8Array(12));
-    const sessionId = randomId(24);
+    const requestedSessionId = String(body?.session_id || '');
+    if (!/^[A-Za-z0-9_-]{12,128}$/.test(requestedSessionId)) {
+      return c.json({ ok: false, error: '재생 세션 ID 형식이 올바르지 않습니다.' }, 400);
+    }
+    const sessionId = requestedSessionId;
     const expiresAt = Math.floor(Date.now() / 1000) + 300;
     const infoText = ['timelink:tl3:player-session:v1', userId, playerId, fileId, String(release.share_id), sessionId, expiresAt].join(':');
     const info = te.encode(infoText);
