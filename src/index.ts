@@ -1922,6 +1922,7 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
       return c.json({ok:false,error:'재생 세션 또는 재생 시간 값이 올바르지 않습니다.'},400);
     const file=await c.env.DB.prepare("SELECT f.id,f.user_id,f.revenue_held,r.share_id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'").bind(fileId).first<any>();
     if(!file||file.revenue_held) return c.json({ok:false,error:'재생할 수 없는 TL3 자산입니다.'},404);
+    await ensureTL3AssetTL(c.env.DB,fileId);
     const duration=await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
