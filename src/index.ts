@@ -2023,8 +2023,25 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     if(!file||file.revenue_held) return c.json({ok:false,error:'TL3 release not available'},404);
     const assetTL=await ensureTL3AssetTL(c.env.DB,fileId);
     if(!assetTL) return c.json({ok:false,error:'음원 TL 풀을 확인할 수 없습니다.'},409);
+    const requestedSegment=body.segment_index===undefined||body.segment_index===null?null:Number(body.segment_index);
+    if(requestedSegment!==null&&(!Number.isInteger(requestedSegment)||requestedSegment<0)) return c.json({ok:false,error:'세그먼트 번호가 올바르지 않습니다.'},400);
     const ss=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
-    if(!ss||ss.pending_segment===null||ss.pending_segment===undefined) return c.json({ok:false,error:'대기 중인 세그먼트가 없습니다.'},409);
+    if(!ss) return c.json({ok:false,error:'재생 세션을 찾을 수 없습니다.'},404);
+    const pendingSegment=ss.pending_segment===null||ss.pending_segment===undefined?null:Number(ss.pending_segment);
+    if(requestedSegment!==null){
+      // A repeated or delayed confirmation must never settle a newer pending segment.
+      // The player sends the zero-based segment_index on every confirmation.
+      if(pendingSegment===null||requestedSegment<pendingSegment){
+        if(requestedSegment<Number(ss.next_segment||0)){
+          const fresh=await c.env.DB.prepare('SELECT tl_p,tl_a,tl_b,tl_balance,tl,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(u.id).first<any>();
+          const freshAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
+          return c.json({ok:true,duplicate:true,already_settled:true,segment:requestedSegment,wallet_tl:Number(fresh?.p||0)+Number(fresh?.a||0)+Number(fresh?.b||0),asset_remaining_tl:Number(freshAsset?.remaining_tl||0),settled_tl:0});
+        }
+        return c.json({ok:false,error:'대기 중인 세그먼트가 없습니다.',expected_segment:pendingSegment},409);
+      }
+      if(requestedSegment>pendingSegment) return c.json({ok:false,error:'세그먼트 정산 순서가 올바르지 않습니다.',expected_segment:pendingSegment},409);
+    }
+    if(pendingSegment===null) return c.json({ok:false,error:'대기 중인 세그먼트가 없습니다.'},409);
     const now=Math.floor(Date.now()/1000);
     const duration=Number(ss.pending_duration_ms||0)/1000;
     const wallCap=Math.min(duration,Math.max(0,now-Number(ss.pending_delivered_at||now))+1);
