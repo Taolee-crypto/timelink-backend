@@ -240,9 +240,12 @@ router.get('/resolve/:id', async (c) => {
     await ensureV5Tables(c.env.DB);
     const rawId = String(c.req.param('id') || '');
     const numeric = resolveId(rawId);
-    const row = numeric
+    let row = numeric
       ? await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.file_id=? AND v.status='sealed'").bind(numeric).first<any>()
       : await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.share_id=? AND v.status='sealed'").bind(rawId).first<any>();
+    if (!row && !numeric) {
+      row = await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_v5_releases v ON v.file_id=f.id AND v.status='sealed' WHERE CAST(s.id AS TEXT)=? AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1").bind(rawId).first<any>().catch(()=>null);
+    }
     if (!row) return c.json({ok:false,error:'TL3 V5 자산을 찾을 수 없습니다.'},404);
     return c.json({ok:true,version:5,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
