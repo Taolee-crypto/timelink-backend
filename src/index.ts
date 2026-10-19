@@ -1968,6 +1968,8 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     }
     statements.push(c.env.DB.prepare('INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)').bind(fileId,user.id,delta,revenue,null,delta));
     await c.env.DB.batch(statements);
+    await c.env.DB.prepare("INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained) VALUES(?,'consume',?,?,?)")
+      .bind(user.id,delta,takeP,takeP*0.01+(takeA+takeB)*0.0005).run().catch(()=>{});
     const fresh=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(user.id).first<any>();
     const after=tlWalletParts(fresh);
     const remaining=Number((after.p+after.a+after.b).toFixed(6));
