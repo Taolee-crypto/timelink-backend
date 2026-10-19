@@ -217,6 +217,46 @@ router.get('/', async (c) => {
   } catch (e) {
     console.error('tl_shares list error:', e);
   }
+  // V5 releases created by the Creator V5 flow may not have a legacy tl_shares row.
+  // Include those sealed, explicitly shared TL3 assets directly from the release registry.
+  try {
+    const directV5Rows = await c.env.DB.prepare(`
+      SELECT v.file_id, v.share_id, v.duration_ms, f.user_id, u.username,
+        f.title, f.artist, f.genre, f.cover_image, f.pulse, f.play_count, f.created_at
+      FROM tl3_v5_releases v
+      JOIN tl_files f ON f.id = v.file_id
+      JOIN users u ON u.id = f.user_id
+      WHERE v.status = 'sealed'
+        AND LOWER(f.file_type) = 'audio/tl3'
+        AND f.shared = 1
+        AND COALESCE(f.revenue_held, 0) = 0
+        AND NOT EXISTS (
+          SELECT 1 FROM tl_shares s
+          WHERE CAST(s.id AS TEXT) = CAST(v.share_id AS TEXT)
+        )
+      ORDER BY f.pulse DESC, f.created_at DESC
+      LIMIT ? OFFSET ?
+    `).bind(limit, offset).all();
+    const directV5 = ((directV5Rows.results || []) as any[]).map((v: any) => ({
+      id: String(v.share_id), user_id: Number(v.user_id || 0),
+      username: String(v.username || 'User'), creator: String(v.username || 'User'),
+      title: String(v.title || ''), artist: String(v.artist || ''),
+      duration: Math.ceil(Number(v.duration_ms || 0) / 1000),
+      file_tl: Math.ceil(Number(v.duration_ms || 0) / 1000),
+      category: String(v.genre || 'Music'), category_type: '',
+      description: '', plan: 'FREE', cover_url: v.cover_image || null,
+      country: 'KR', content_lang: 'ko', pulse: Number(v.pulse || 0),
+      created_at: v.created_at, composer: '', lyricist: '', lyrics: '',
+      release_mode: 'tl3', content_kind: 'tl3', file_type: 'audio/tl3',
+      shared: 1, auth_status: 'verified',
+      stream_url: origin + '/api/stream/' + encodeURIComponent(String(v.share_id)),
+      source_table: 'v5_release', spine_v5_status: 'sealed',
+      player_version: 5, file_id: Number(v.file_id), share_id: String(v.share_id)
+    }));
+    modern.push(...directV5);
+  } catch (e) {
+    console.error('tl3_v5 direct SharePlace catalogue error:', e);
+  }
   return c.json([...modern, ...legacy]);
 });
 
