@@ -1963,7 +1963,7 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
       c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
     ];
     if(creator&&revenue>0){
-      statements.push(c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)+?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)+?,total_tl_earned=COALESCE(total_tl_earned,0)+?,updated_at=datetime('now') WHERE id=?').bind(revenue,revenue,revenue,creator.id));
+      statements.push(c.env.DB.prepare("UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)+?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)+?,total_tl_earned=COALESCE(total_tl_earned,0)+?,updated_at=datetime('now') WHERE id=?").bind(revenue,revenue,revenue,creator.id));
       statements.push(c.env.DB.prepare("INSERT INTO transactions(user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES(?,?,'earn',?,?,?,?)").bind(creator.id,fileId,revenue,creatorAfter,user.id,'TL3 실제 재생 시간 보상'));
     }
     statements.push(c.env.DB.prepare('INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)').bind(fileId,user.id,delta,revenue,null,delta));
