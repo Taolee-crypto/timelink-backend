@@ -126,7 +126,7 @@ router.post('/session-license/:id', async (c) => {
     ).bind(userId, playerId).run();
     return c.json({
       ok: true, version: 1, algorithm: 'ECDH-P256/HKDF-SHA256/AES-256-GCM',
-      player_id: playerId, file_id: fileId, session_id: sessionId,
+      player_id: playerId, user_id: userId, file_id: fileId, session_id: sessionId,
       expires_at: expiresAt, salt: b64url(salt), nonce: b64url(nonce),
       ephemeral_public_key: { kty: 'EC', crv: 'P-256', x: ephemeralPublic.x, y: ephemeralPublic.y },
       wrapped_license: b64url(wrapped), aad_thumbprint: String(player.key_thumbprint)
