@@ -46,6 +46,7 @@ const app = new Hono<{ Bindings: Env }>();
 app.use('/api/upload/*', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
 app.use('/api/upload', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
 app.use('/api/upload/part', bodyLimit({ maxSize: D1_OBJECT_CHUNK_SIZE }));
+app.use('/api/v1/tl3/v5/manufacture', bodyLimit({ maxSize: 17 * 1024 * 1024 }));
 
 app.use('*', cors({
   origin: '*',
