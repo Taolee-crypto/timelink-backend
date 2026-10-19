@@ -1802,7 +1802,7 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
   const respond = (body:unknown,status:number,extra:Record<string,string>={}) =>
     new Response(JSON.stringify(body),{status,headers:{...corsHeaders,'Content-Type':'application/json',...extra}});
   try {
-    const auth = c.req.header('Authorization')?.replace(/^Bearer\\s+/i,'').trim() || '';
+    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
     if (!payload) return respond({ok:false,error:'로그인이 필요합니다.'},401);
     const userId=Number(payload.sub);
