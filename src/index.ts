@@ -3900,8 +3900,9 @@ app.get('/api/shares/:id', async (c) => {
     if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
       // TL3의 실제 재생시간은 tl3_releases.duration_ms를 기준으로 한다.
       const releaseDuration=await c.env.DB.prepare("SELECT duration_ms,price_tl FROM tl3_releases WHERE share_id=? AND status='released' ORDER BY updated_at DESC LIMIT 1").bind(String(row.id)).first<any>().catch(()=>null);
-      const durationSec=Math.max(0,Number(row.duration||0),Math.ceil(Number(releaseDuration?.duration_ms||0)/1000));
-      const requiredTL=Math.max(0,Number(row.file_tl||0),Number(releaseDuration?.price_tl||0),durationSec);
+      const releasedDurationSec=Math.ceil(Number(releaseDuration?.duration_ms||0)/1000);
+      const durationSec=releasedDurationSec>0?releasedDurationSec:Math.max(0,Number(row.duration||0));
+      const requiredTL=Number(releaseDuration?.price_tl||0)>0?Number(releaseDuration.price_tl):durationSec>0?durationSec:Math.max(0,Number(row.file_tl||0));
       // 2026-10-16: D1 content_kind/release_mode 우선 (v3 호환)
       const _ck = String(row.content_kind||'').toLowerCase();
       const _rm = String(row.release_mode||'').toLowerCase();
