@@ -11,7 +11,7 @@ const router = new Hono<{ Bindings: Env }>();
 const te = new TextEncoder();
 const td = new TextDecoder();
 const MAGIC = new Uint8Array([0x54, 0x4c, 0x4e, 0x4b]);
-const MAX_MP3_BYTES = 24 * 1024 * 1024;
+const MAX_MP3_BYTES = 16 * 1024 * 1024;
 
 function bytes(value: Uint8Array): ArrayBuffer {
   return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
@@ -153,7 +153,7 @@ router.post('/manufacture', async (c) => {
     let metadata: any = {};
     try { metadata = JSON.parse(String(form['metadata'] || '{}')); } catch { metadata = {}; }
     if (!sourceFile || sourceFile.size <= 0 || sourceFile.size > MAX_MP3_BYTES) {
-      return c.json({ ok:false, error:'V5 1차 버전은 MP3 원본 24MB 이하를 지원합니다.' }, 413);
+      return c.json({ ok:false, error:'V5 1차 버전은 MP3 원본 16MB 이하를 지원합니다.' }, 413);
     }
     if (metadata.rights_confirmed !== true) return c.json({ ok:false, error:'저작권 또는 적법한 이용 권한 확인이 필요합니다.' }, 400);
     const fileId = Number(metadata.file_id || 0);
