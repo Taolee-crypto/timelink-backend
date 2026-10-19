@@ -3531,7 +3531,7 @@ app.get('/api/shares', async (c) => {
         pulse:Number(r.pulse||0),play_count:Number(r.play_count||0),created_at:r.created_at,
         content_kind:contentKind,shared:1,auth_status:'verified',revenue_held:0,
         source_table:isLegacy?'tl_file':(isV5?'v5_release':'share'),
-        stream_url:origin+(isV5?'/api/v1/tl3/v5/resolve/'+encodeURIComponent(String(r.file_id)):(isLegacy?'/api/legacy-stream/':'/api/stream/')+encodeURIComponent(id)),
+        stream_url:origin+(isLegacy?'/api/legacy-stream/':'/api/stream/')+encodeURIComponent(id),
         spine_v5_status:isV5?'sealed':null,
         player_version:isV5?5:(r.spine_v4_status==='sealed'?4:3),
         file_id:isV5?Number(r.file_id):null,
