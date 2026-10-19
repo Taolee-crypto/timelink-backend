@@ -3484,11 +3484,42 @@ app.get('/api/shares', async (c) => {
       WHERE LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)
       ORDER BY created_at DESC LIMIT 200
     `).all();
+    // V5 Creator releases are keyed by their sealed release/share_id and do not
+    // require a legacy tl_shares row. Read them directly so /api/shares (the
+    // endpoint used first by SharePlace) can expose every sealed V5 asset.
+    let v5Results:any[]=[];
+    try {
+      const v5Rows=await c.env.DB.prepare(`
+        SELECT CAST(v.share_id AS TEXT) AS id, v.user_id, u.username,
+          f.title, f.artist, '' AS album,
+          CAST((v.duration_ms+999)/1000 AS INTEGER) AS duration,
+          CAST((v.duration_ms+999)/1000 AS INTEGER) AS file_tl,
+          COALESCE(NULLIF(f.genre,''),'Music') AS category,
+          'audio/tl3' AS file_type, '' AS category_type, '' AS description,
+          'FREE' AS plan, '' AS spotify_id, '' AS spotify_url,
+          f.cover_image AS cover_url, '' AS preview_url, f.stream_url,
+          f.country, '' AS content_lang, f.pulse, f.play_count, f.created_at,
+          'tl3' AS content_kind, 'v5_release' AS source_table,
+          NULL AS cert_no, v.file_id, v.share_id
+        FROM tl3_v5_releases v
+        JOIN tl_files f ON f.id=v.file_id
+        LEFT JOIN users u ON u.id=v.user_id
+        WHERE v.status='sealed'
+          AND LOWER(f.file_type)='audio/tl3'
+          AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+        ORDER BY v.updated_at DESC
+        LIMIT 200
+      `).all();
+      v5Results=(v5Rows.results||[]) as any[];
+    } catch(e) {
+      console.warn('[SharePlace] V5 catalogue query unavailable:',e);
+    }
     const origin=new URL(c.req.url).origin;
-    const shares=(results||[]).map((r:any)=>{
+    const shares=([...((results||[]) as any[]),...v5Results]).map((r:any)=>{
       const isLegacy=r.source_table==='tl_file';
+      const isV5=r.source_table==='v5_release';
       const id=String(r.id);
-      const contentKind=isLegacy?'tl3':(r.content_kind||shareKind(r));
+      const contentKind=(isLegacy||isV5)?'tl3':(r.content_kind||shareKind(r));
       return {
         id,user_id:Number(r.user_id||0),username:String(r.username||'User'),
         title:String(r.title||''),artist:String(r.artist||''),album:String(r.album||''),
@@ -3499,8 +3530,12 @@ app.get('/api/shares', async (c) => {
         cover_url:r.cover_url||null,country:String(r.country||'KR'),content_lang:String(r.content_lang||'ko'),
         pulse:Number(r.pulse||0),play_count:Number(r.play_count||0),created_at:r.created_at,
         content_kind:contentKind,shared:1,auth_status:'verified',revenue_held:0,
-        source_table:isLegacy?'tl_file':'share',
-        stream_url:origin+(isLegacy?'/api/legacy-stream/':'/api/stream/')+encodeURIComponent(id)
+        source_table:isLegacy?'tl_file':(isV5?'v5_release':'share'),
+        stream_url:origin+(isLegacy?'/api/legacy-stream/':'/api/stream/')+encodeURIComponent(id),
+        spine_v5_status:isV5?'sealed':null,
+        player_version:isV5?5:(r.spine_v4_status==='sealed'?4:3),
+        file_id:isV5?Number(r.file_id):null,
+        share_id:isV5?String(r.share_id):String(id)
       };
     });
     return c.json({shares});

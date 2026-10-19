@@ -166,8 +166,12 @@ router.get('/', async (c) => {
   try {
     const modernRows = await c.env.DB.prepare(`
       SELECT s.id, s.user_id, u.username, s.title, s.artist, s.album,
-        COALESCE((SELECT CAST((r.duration_ms+999)/1000 AS INTEGER) FROM tl3_releases r WHERE r.share_id=CAST(s.id AS TEXT) AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(s.duration,0),0) AS duration,
-        COALESCE((SELECT COALESCE(NULLIF(r.price_tl,0),CAST((r.duration_ms+999)/1000 AS INTEGER)) FROM tl3_releases r WHERE r.share_id=CAST(s.id AS TEXT) AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(s.duration,0),NULLIF(s.file_tl,0),0) AS file_tl,
+        COALESCE((SELECT CAST((v5.duration_ms+999)/1000 AS INTEGER) FROM tl3_v5_releases v5 WHERE v5.share_id=CAST(s.id AS TEXT) AND v5.status='sealed' ORDER BY v5.updated_at DESC LIMIT 1),
+          (SELECT CAST((r.duration_ms+999)/1000 AS INTEGER) FROM tl3_releases r WHERE r.share_id=CAST(s.id AS TEXT) AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(s.duration,0),0) AS duration,
+        COALESCE((SELECT CAST((v5.duration_ms+999)/1000 AS INTEGER) FROM tl3_v5_releases v5 WHERE v5.share_id=CAST(s.id AS TEXT) AND v5.status='sealed' ORDER BY v5.updated_at DESC LIMIT 1),
+          (SELECT COALESCE(NULLIF(r.price_tl,0),CAST((r.duration_ms+999)/1000 AS INTEGER)) FROM tl3_releases r WHERE r.share_id=CAST(s.id AS TEXT) AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(s.duration,0),NULLIF(s.file_tl,0),0) AS file_tl,
+        (SELECT v5.file_id FROM tl3_v5_releases v5 WHERE v5.share_id=CAST(s.id AS TEXT) AND v5.status='sealed' ORDER BY v5.updated_at DESC LIMIT 1) AS v5_file_id,
+        (SELECT v5.status FROM tl3_v5_releases v5 WHERE v5.share_id=CAST(s.id AS TEXT) AND v5.status='sealed' ORDER BY v5.updated_at DESC LIMIT 1) AS v5_status,
         s.category, s.category_type, s.description,
         s.plan, s.cover_url, s.country, s.content_lang, s.pulse, s.created_at,
         s.composer, s.lyricist, s.lyrics, s.release_mode, s.content_kind,
@@ -184,7 +188,10 @@ router.get('/', async (c) => {
             f.stream_url=s.stream_url
             OR EXISTS (SELECT 1 FROM tl3_spine_v4_releases sv WHERE sv.file_id=f.id AND sv.share_id=CAST(s.id AS TEXT) AND sv.status='sealed')
           )
-          AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)
+          AND (
+            EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)
+            OR EXISTS (SELECT 1 FROM tl3_v5_releases v5 WHERE v5.file_id=f.id AND v5.share_id=CAST(s.id AS TEXT) AND v5.status='sealed')
+          )
       )
       ORDER BY s.pulse DESC, s.created_at DESC
       LIMIT ? OFFSET ?
@@ -203,7 +210,9 @@ router.get('/', async (c) => {
       lyrics: String(s.lyrics || ''), release_mode: 'tl3', content_kind: 'tl3',
       file_type: 'audio/tl3', shared: 1, auth_status: 'verified',
       stream_url: origin + '/api/stream/' + encodeURIComponent(String(s.id)),
-      source_table: 'share', spine_v4_status: s.spine_v4_status || null
+      source_table: 'share', spine_v4_status: s.spine_v4_status || null,
+      spine_v5_status: s.v5_status || null, player_version: s.v5_status === 'sealed' ? 5 : (s.spine_v4_status === 'sealed' ? 4 : 3),
+      file_id: s.v5_file_id == null ? null : Number(s.v5_file_id), share_id: String(s.id)
     }));
   } catch (e) {
     console.error('tl_shares list error:', e);
