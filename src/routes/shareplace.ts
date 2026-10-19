@@ -75,8 +75,8 @@ router.post('/', async (c) => {
     }
 
     const approvedFile = await c.env.DB.prepare(
-      "SELECT f.id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.user_id = ? AND LOWER(f.file_type) = 'audio/tl3' AND (f.stream_url = ? OR f.file_url = ?) AND f.shared = 1 AND COALESCE(f.revenue_held, 0) = 0 AND r.status='released' AND r.rights_confirmed=1 LIMIT 1"
-    ).bind(userId, streamUrl, streamUrl).first<any>();
+      "SELECT f.id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.user_id = ? AND LOWER(f.file_type) = 'audio/tl3' AND f.stream_url = ? AND f.shared = 1 AND COALESCE(f.revenue_held, 0) = 0 AND r.status='released' AND r.rights_confirmed=1 LIMIT 1"
+    ).bind(userId, streamUrl).first<any>();
     if (!approvedFile) {
       return c.json({ ok: false, error: '창작자 권리 확인을 마친 TL3 자산을 먼저 발행해야 합니다.' }, 403);
     }
