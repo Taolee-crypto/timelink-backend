@@ -3898,6 +3898,10 @@ app.get('/api/shares/:id', async (c) => {
     const isOwner=viewerId>0&&Number(row.user_id)===viewerId;
     const isPublic=await isPublicPlaybackShare(c.env.DB,row);
     if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
+      // TL3의 실제 재생시간은 tl3_releases.duration_ms를 기준으로 한다.
+      const releaseDuration=await c.env.DB.prepare("SELECT duration_ms,price_tl FROM tl3_releases WHERE share_id=? AND status='released' ORDER BY updated_at DESC LIMIT 1").bind(String(row.id)).first<any>().catch(()=>null);
+      const durationSec=Math.max(0,Number(row.duration||0),Math.ceil(Number(releaseDuration?.duration_ms||0)/1000));
+      const requiredTL=Math.max(0,Number(row.file_tl||0),Number(releaseDuration?.price_tl||0),durationSec);
       // 2026-10-16: D1 content_kind/release_mode 우선 (v3 호환)
       const _ck = String(row.content_kind||'').toLowerCase();
       const _rm = String(row.release_mode||'').toLowerCase();
@@ -3906,7 +3910,7 @@ app.get('/api/shares/:id', async (c) => {
     return c.json({
       id:String(row.id),user_id:Number(row.user_id||0),username:String(row.username||'User'),
       title:String(row.title||''),artist:String(row.artist||''),album:String(row.album||''),
-      duration:Number(row.duration||0),file_tl:Number(row.file_tl||0),category:String(row.category||'Music'),
+      duration:durationSec,duration_sec:durationSec,file_tl:requiredTL,price_tl:requiredTL,category:String(row.category||'Music'),
       file_type:String(row.file_type||''),category_type:String(row.category_type||''),description:String(row.description||''),
       plan:String(row.plan||'FREE'),spotify_id:row.spotify_id||null,spotify_url:row.spotify_url||null,
       cover_url:row.cover_url||null,country:String(row.country||'KR'),content_lang:String(row.content_lang||'ko'),
