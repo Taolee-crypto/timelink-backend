@@ -43,7 +43,6 @@ import { buildTL3V4FromMp3, deriveLicenseBytes, initialToken, nextToken, ivFor, 
 
 
 const app = new Hono<{ Bindings: Env }>();
-app.route('/api/v1/tl3/player', tl3PlayerSessionRouter);
 app.use('/api/upload/*', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
 app.use('/api/upload', bodyLimit({ maxSize: D1_MAX_OBJECT_SIZE }));
 app.use('/api/upload/part', bodyLimit({ maxSize: D1_OBJECT_CHUNK_SIZE }));
@@ -68,6 +67,9 @@ app.onError((err, c) => {
 });
 
 app.options('*', () => new Response(null, { status: 204 }));
+
+// Player-session routes are mounted after the global CORS middleware.
+app.route('/api/v1/tl3/player', tl3PlayerSessionRouter);
 
 // ══════════════════════════════════════════════════════════
 
