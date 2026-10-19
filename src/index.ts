@@ -25,7 +25,7 @@ import musicV3SocialRouter from './routes/music-v3-social';
 import adsRouter from './ads_backend';
 import { mintTLC, getJettonBalance } from './jetton';
 import { sendVerificationEmail, sendPayoutEmail } from './email';
-import { ensureD1Storage, putD1Object, getD1ObjectMeta, readD1Range, readD1RangeFast, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE, createD1UploadSession, writeD1UploadSessionPart, completeD1UploadSession } from './d1-storage';
+import { ensureD1Storage, putD1Object, getD1ObjectMeta, readD1Range, readD1RangeFast, readD1RangeCached, D1_OBJECT_CHUNK_SIZE, D1_MAX_OBJECT_SIZE, createD1UploadSession, writeD1UploadSessionPart, completeD1UploadSession } from './d1-storage';
 import sunoVerifyRouter from './routes/suno-verify';
 import cafeRouter from './routes/cafe';
 import incarRouter from './routes/incar';
@@ -1855,7 +1855,7 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
       const meta=await getD1ObjectMeta(c.env.DB,objectKey);
       if(!meta||offset+length>Number(meta.size||0))
         return respond({ok:false,error:'Spine v4 컨테이너 또는 세그먼트가 없습니다.'},404);
-      const ciphertext=await readD1RangeFast(c.env.DB,objectKey,offset,offset+length);
+      const ciphertext=await readD1RangeCached(c.env.DB,objectKey,offset,offset+length);
       if(!ciphertext.byteLength) return respond({ok:false,error:'Spine v4 세그먼트 데이터가 비어 있습니다.'},502);
       const headers=new Headers(corsHeaders);
       headers.set('Content-Type','application/octet-stream');
