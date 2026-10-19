@@ -1746,7 +1746,7 @@ app.get('/api/v1/tl3/file/:shareId', async (c) => {
     }
     const meta = await getD1ObjectMeta(c.env.DB, key);
     if (!meta) return c.json({ok:false,error:'TL3 파일 없음: '+key},404);
-    const tf = await c.env.DB.prepare('SELECT title FROM tl_files WHERE id=?').bind(row.file_id).first<any>();
+    const tf = await c.env.DB.prepare('SELECT title FROM tl_files WHERE id=?').bind(fileId).first<any>();
     const titleRaw = String(tf?.title || shareId);
     const safeTitle = titleRaw.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
     const bytes = await readD1Range(c.env.DB, key, 0, meta.size);
