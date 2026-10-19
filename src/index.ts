@@ -1993,16 +1993,8 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0||Number(duration?.segment_count||0)<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
     const requiredTL=Math.ceil(totalMs/1000-1e-9);
-    await ensureShareTLBalances(c.env.DB);
-    const shareId=String(file.share_id||fileId);
-    let asset=await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user.id,shareId).first<any>();
-    if(!asset){
-      await c.env.DB.prepare('INSERT OR IGNORE INTO tl_user_files (user_id,share_id,tl_balance,total_charged) VALUES (?,?,0,0)').bind(user.id,shareId).run();
-      asset={tl_balance:0};
-    }
-    const walletParts=tlWalletParts(user),walletBalance=Number((walletParts.p+walletParts.a+walletParts.b).toFixed(6));
-    const assetBalance=Number(asset.tl_balance||0);
-    return c.json({ok:true,file_id:fileId,share_id:shareId,required_tl:requiredTL,duration_ms:totalMs,asset_tl:assetBalance,wallet_tl:walletBalance,can_play:assetBalance+1e-9>=1});
+    const w=tlWalletParts(user),balance=Number((w.p+w.a+w.b).toFixed(6));
+    return c.json({ok:true,file_id:fileId,required_tl:requiredTL,duration_ms:totalMs,wallet_tl:balance,can_play:balance+1e-9>=1});
   }catch(e:any){return c.json({ok:false,error:e?.message||'재생 사전 확인 실패'},500);}
 });
 
@@ -2045,30 +2037,28 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     if(!prior||Number(prior.user_id)!==Number(user.id)||Number(prior.file_id)!==fileId)
       return c.json({ok:false,error:'재생 세션이 다른 사용자 또는 자산에 연결되어 있습니다.'},409);
     const already=Number(prior.billed_seconds||0);
-    await ensureShareTLBalances(c.env.DB);
-    const shareId=String(file.share_id||fileId);
-    let asset=await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user.id,shareId).first<any>();
-    if(!asset){
-      await c.env.DB.prepare('INSERT OR IGNORE INTO tl_user_files (user_id,share_id,tl_balance,total_charged) VALUES (?,?,0,0)').bind(user.id,shareId).run();
-      asset={tl_balance:0};
-    }
-    const assetBalance=Number(asset.tl_balance||0);
-    const walletParts=tlWalletParts(user),walletBalance=Number((walletParts.p+walletParts.a+walletParts.b).toFixed(6));
     if(targetSeconds<=already){
-      return c.json({ok:true,billed_seconds:already,charged_tl:already,delta_tl:0,asset_tl:assetBalance,wallet_tl:walletBalance,stop:false});
+      const fresh=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(user.id).first<any>();
+      const w=tlWalletParts(fresh);
+      return c.json({ok:true,billed_seconds:already,charged_tl:already,delta_tl:0,wallet_tl:Number((w.p+w.a+w.b).toFixed(6)),stop:false});
     }
-    const delta=Math.min(targetSeconds-already,Math.floor(assetBalance+1e-9));
-    if(delta<=0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 남은 TL이 부족합니다. 충전 후 다시 재생해 주세요.',billed_seconds:already,charged_tl:already,asset_tl:assetBalance,wallet_tl:walletBalance,stop:true},402);
+    const wallet=tlWalletParts(user),balance=Number((wallet.p+wallet.a+wallet.b).toFixed(6));
+    const delta=Math.min(targetSeconds-already,Math.floor(balance+1e-9));
+    if(delta<=0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'보유 TL이 부족하여 재생을 중지합니다.',billed_seconds:already,charged_tl:already,wallet_tl:balance,stop:true},402);
+    let left=delta;
+    const takeA=Math.min(left,wallet.a);left=Number((left-takeA).toFixed(6));
+    const takeB=Math.min(left,wallet.b);left=Number((left-takeB).toFixed(6));
+    const takeP=Number(Math.max(0,left).toFixed(6));
     const chargedSeconds=already+delta;
     const creator=await c.env.DB.prepare('SELECT id,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
     const revenue=Number((delta*0.7).toFixed(6));
     const creatorBefore=creator?Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0):0;
-    const creatorAfter=creatorBefore+revenue;
+    const creatorAfter=creatorBefore-(Number(creator?.id)===Number(user.id)?delta:0)+revenue;
     const statements=[
       c.env.DB.prepare("UPDATE tl3_play_meter_sessions SET billed_seconds=?,played_ms=?,updated_at=datetime('now') WHERE session_id=? AND user_id=? AND file_id=? AND billed_seconds=?").bind(chargedSeconds,Math.min(playedMs,totalMs),sessionId,user.id,fileId,already),
       c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
       c.env.DB.prepare('DELETE FROM tl3_assertion_guard'),
-      c.env.DB.prepare("UPDATE tl_user_files SET tl_balance=tl_balance-?,updated_at=datetime('now') WHERE user_id=? AND share_id=? AND tl_balance>=?").bind(delta,user.id,shareId,delta),
+      c.env.DB.prepare("UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,total_tl_spent=COALESCE(total_tl_spent,0)+?,updated_at=datetime('now') WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?").bind(takeP,takeA,takeB,delta,delta,delta,user.id,takeP,takeA,takeB),
       c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
       c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
     ];
@@ -2076,17 +2066,15 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
       statements.push(c.env.DB.prepare("UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)+?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)+?,total_tl_earned=COALESCE(total_tl_earned,0)+?,updated_at=datetime('now') WHERE id=?").bind(revenue,revenue,revenue,creator.id));
       statements.push(c.env.DB.prepare("INSERT INTO transactions(user_id,file_id,tx_type,amount,balance_after,counterpart_user_id,note) VALUES(?,?,'earn',?,?,?,?)").bind(creator.id,fileId,revenue,creatorAfter,user.id,'TL3 실제 재생 시간 보상'));
     }
-    statements.push(c.env.DB.prepare('INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)').bind(fileId,user.id,delta,revenue,Math.max(0,assetBalance-delta),delta));
+    statements.push(c.env.DB.prepare('INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)').bind(fileId,user.id,delta,revenue,null,delta));
     await c.env.DB.batch(statements);
-    const [freshAsset,freshUser]=await Promise.all([
-      c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user.id,shareId).first<any>(),
-      c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(user.id).first<any>()
-    ]);
-    const after=tlWalletParts(freshUser);
-    const walletAfter=Number((after.p+after.a+after.b).toFixed(6));
-    const assetAfter=Number(freshAsset?.tl_balance||0);
-    const stop=chargedSeconds<Math.ceil(totalMs/1000)&&(delta<(targetSeconds-already)||assetAfter<1);
-    return c.json({ok:true,billed_seconds:chargedSeconds,charged_tl:chargedSeconds,delta_tl:delta,asset_tl:assetAfter,wallet_tl:walletAfter,creator_revenue:revenue,stop});
+    await c.env.DB.prepare("INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained) VALUES(?,'consume',?,?,?)")
+      .bind(user.id,delta,takeP,takeP*0.01+(takeA+takeB)*0.0005).run().catch(()=>{});
+    const fresh=await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(user.id).first<any>();
+    const after=tlWalletParts(fresh);
+    const remaining=Number((after.p+after.a+after.b).toFixed(6));
+    const stop=chargedSeconds<Math.ceil(totalMs/1000)&&(delta<(targetSeconds-already)||remaining<1);
+    return c.json({ok:true,billed_seconds:chargedSeconds,charged_tl:chargedSeconds,delta_tl:delta,wallet_tl:remaining,creator_revenue:revenue,stop});
   }catch(e:any){
     const message=String(e?.message||'TL3 재생 시간 정산 실패');
     if(message.includes('CHECK constraint failed')) return c.json({ok:false,code:'METER_CONFLICT',error:'재생 정산이 겹쳤습니다. 다시 요청해 주세요.'},409);
