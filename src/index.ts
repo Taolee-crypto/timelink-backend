@@ -1894,16 +1894,16 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       if (Number(ss.pending_segment) === segmentIndex) {
         // 같은 세그먼트 재요청 → 이미 차감됨, 통과
       } else if (pendingAge > pendingDuration + 10) {
-        const pendingCost=Number(ss.pending_cost||0),preCost=Number(ss.prefetch_cost||0);
-        const refundP=Number(ss.pending_tl_p||0)+Number(ss.prefetch_tl_p||0);
-        const refundA=Number(ss.pending_tl_a||0)+Number(ss.prefetch_tl_a||0);
-        const refundB=Number(ss.pending_tl_b||0)+Number(ss.prefetch_tl_b||0);
+        const pendingCost=Number(ss.pending_cost||0),preCost=Number(ss.prefetch_cost||0)+Number(ss.prefetch2_cost||0);
+        const refundP=Number(ss.pending_tl_p||0)+Number(ss.prefetch_tl_p||0)+Number(ss.prefetch2_tl_p||0);
+        const refundA=Number(ss.pending_tl_a||0)+Number(ss.prefetch_tl_a||0)+Number(ss.prefetch2_tl_a||0);
+        const refundB=Number(ss.pending_tl_b||0)+Number(ss.prefetch_tl_b||0)+Number(ss.prefetch2_tl_b||0);
         await c.env.DB.batch([
           c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,tl,tl_balance,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,pendingCost+preCost,u.id),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
           c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(pendingCost+preCost,fileId),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-          c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,updated_at=datetime('now') WHERE id=? AND pending_segment=?").bind(sessionId,Number(ss.pending_segment)),
+          c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,prefetch2_segment=NULL,prefetch2_cost=0,prefetch2_tl_p=0,prefetch2_tl_a=0,prefetch2_tl_b=0,prefetch2_duration_ms=0,prefetch2_delivered_at=0,updated_at=datetime('now') WHERE id=? AND pending_segment=?").bind(sessionId,Number(ss.pending_segment)),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
           c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
         ]);
