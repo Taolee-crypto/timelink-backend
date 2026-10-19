@@ -187,11 +187,18 @@ async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   if(fileType!=='audio/tl3') return false;
   // Never trust release_check here: legacy clients can submit it themselves.
   // TL3 becomes public only when a matching server-verified TL3 file is shared.
+  const shareId=String(share?.id||'').trim();
+  if(shareId){
+    const v4=await db.prepare(
+      "SELECT f.id FROM tl3_spine_v4_releases sv JOIN tl_files f ON f.id=sv.file_id WHERE sv.share_id=? AND sv.status='sealed' AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1"
+    ).bind(shareId).first().catch(()=>null);
+    if(v4) return true;
+  }
   const streamUrl=String(share?.stream_url||'').trim();
   if(streamUrl){
     const file=await db.prepare(
-      "SELECT id FROM tl_files WHERE LOWER(file_type)='audio/tl3' AND auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0 AND (stream_url=? OR file_url=? OR file_url LIKE ?) LIMIT 1"
-    ).bind(streamUrl,streamUrl,'%'+streamUrl).first().catch(()=>null);
+      "SELECT id FROM tl_files WHERE LOWER(file_type)='audio/tl3' AND auth_status='verified' AND shared=1 AND COALESCE(revenue_held,0)=0 AND stream_url=? LIMIT 1"
+    ).bind(streamUrl).first().catch(()=>null);
     if(file) return true;
   }
   return false;
