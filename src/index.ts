@@ -158,6 +158,10 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
     "SELECT DISTINCT r.file_id FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1) LIMIT 2"
   ).bind(id).all().catch(()=>({results:[]}));
   const linkedRows:any[]=(linked.results||[]) as any[];
+  const linkedV5=await db.prepare("SELECT DISTINCT v.file_id FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_v5_releases v ON v.file_id=f.id AND v.status='sealed' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 2").bind(id).all().catch(()=>({results:[]}));
+  const linkedV5Ids=[...new Set<number>((linkedV5.results||[]).map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
+  if(linkedV5Ids.length===1) return linkedV5Ids[0];
+  if(linkedV5Ids.length>1) return 0;
   const linkedIds:number[]=[...new Set<number>(linkedRows.map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
   if(linkedIds.length===1) return linkedIds[0];
   if(linkedIds.length>1) return 0;
@@ -197,7 +201,8 @@ async function isPublicPlaybackShare(db:D1Database,share:any):Promise<boolean>{
   const shareId=String(share?.id||'').trim();
   if(shareId){
     const v5=await db.prepare("SELECT 1 FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.share_id=? AND v.status='sealed' AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1").bind(shareId).first().catch(()=>null);
-    if(v5) return true;
+    const v5Linked=await db.prepare("SELECT 1 FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_v5_releases v ON v.file_id=f.id AND v.status='sealed' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1").bind(shareId).first().catch(()=>null);
+    if(v5||v5Linked) return true;
     const v4=await db.prepare(
       "SELECT f.id FROM tl3_spine_v4_releases sv JOIN tl_files f ON f.id=sv.file_id WHERE sv.share_id=? AND sv.status='sealed' AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1"
     ).bind(shareId).first().catch(()=>null);
