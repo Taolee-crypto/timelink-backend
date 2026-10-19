@@ -166,7 +166,6 @@ router.get('/', async (c) => {
   try {
     const modernRows = await c.env.DB.prepare(`
       SELECT s.id, s.user_id, u.username, s.title, s.artist, s.album,
-        COALESCE((SELECT CAST((r.duration_ms+999)/1000 AS INTEGER) FROM tl3_releases r WHERE r.share_id=CAST(s.id AS TEXT) AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(s.duration,0),0) AS duration,
         COALESCE((SELECT CAST((v5.duration_ms+999)/1000 AS INTEGER) FROM tl3_v5_releases v5 WHERE v5.share_id=CAST(s.id AS TEXT) AND v5.status='sealed' ORDER BY v5.updated_at DESC LIMIT 1),
           (SELECT CAST((r.duration_ms+999)/1000 AS INTEGER) FROM tl3_releases r WHERE r.share_id=CAST(s.id AS TEXT) AND r.status='released' AND r.duration_ms>0 ORDER BY r.updated_at DESC LIMIT 1),NULLIF(s.duration,0),0) AS duration,
         COALESCE((SELECT CAST((v5.duration_ms+999)/1000 AS INTEGER) FROM tl3_v5_releases v5 WHERE v5.share_id=CAST(s.id AS TEXT) AND v5.status='sealed' ORDER BY v5.updated_at DESC LIMIT 1),
