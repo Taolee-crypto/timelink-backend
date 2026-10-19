@@ -3683,6 +3683,9 @@ async function ensureTL3AssetTL(db:D1Database,fileId:number){
     prefetch_segment INTEGER DEFAULT NULL, prefetch_cost REAL DEFAULT 0,
     prefetch_tl_p REAL DEFAULT 0, prefetch_tl_a REAL DEFAULT 0, prefetch_tl_b REAL DEFAULT 0,
     prefetch_duration_ms INTEGER DEFAULT 0, prefetch_delivered_at INTEGER DEFAULT 0,
+    prefetch2_segment INTEGER DEFAULT NULL, prefetch2_cost REAL DEFAULT 0,
+    prefetch2_tl_p REAL DEFAULT 0, prefetch2_tl_a REAL DEFAULT 0, prefetch2_tl_b REAL DEFAULT 0,
+    prefetch2_duration_ms INTEGER DEFAULT 0, prefetch2_delivered_at INTEGER DEFAULT 0,
     updated_at TEXT DEFAULT (datetime('now'))
   )`).run();
   await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN pending_tl_p REAL DEFAULT 0").run().catch(()=>{});
@@ -3695,6 +3698,13 @@ async function ensureTL3AssetTL(db:D1Database,fileId:number){
   await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch_tl_b REAL DEFAULT 0").run().catch(()=>{});
   await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch_duration_ms INTEGER DEFAULT 0").run().catch(()=>{});
   await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch_delivered_at INTEGER DEFAULT 0").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch2_segment INTEGER DEFAULT NULL").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch2_cost REAL DEFAULT 0").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch2_tl_p REAL DEFAULT 0").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch2_tl_a REAL DEFAULT 0").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch2_tl_b REAL DEFAULT 0").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch2_duration_ms INTEGER DEFAULT 0").run().catch(()=>{});
+  await db.prepare("ALTER TABLE tl3_stream_sessions ADD COLUMN prefetch2_delivered_at INTEGER DEFAULT 0").run().catch(()=>{});
   await db.prepare(`
     INSERT OR IGNORE INTO tl3_asset_tl(file_id,share_id,initial_tl,remaining_tl,consumed_tl)
     SELECT r.file_id,r.share_id,
