@@ -154,7 +154,7 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
   if(!id) return 0;
 
   const linked=await db.prepare(
-    "SELECT DISTINCT r.file_id FROM tl_shares s JOIN tl_files f ON (f.stream_url=s.stream_url OR f.file_url=s.stream_url) JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1) LIMIT 2"
+    "SELECT DISTINCT r.file_id FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' WHERE s.id=? AND LOWER(f.file_type)='audio/tl3' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1) LIMIT 2"
   ).bind(id).all().catch(()=>({results:[]}));
   const linkedRows:any[]=(linked.results||[]) as any[];
   const linkedIds:number[]=[...new Set<number>(linkedRows.map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
@@ -163,6 +163,13 @@ async function resolveTL3FileId(db:any, rawId:string):Promise<number>{
 
   // Backward compatibility for callers that pass a release share_id directly.
   // This fallback is safe only when that identifier resolves to exactly one asset.
+  const spineDirect=await db.prepare(
+    "SELECT file_id FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 2"
+  ).bind(id).all().catch(()=>({results:[]}));
+  const spineIds=[...new Set<number>((spineDirect.results||[]).map((row:any)=>Number(row.file_id)).filter((n:number)=>Number.isSafeInteger(n)&&n>0))];
+  if(spineIds.length===1) return spineIds[0];
+  if(spineIds.length>1) return 0;
+
   const direct=await db.prepare(
     "SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 2"
   ).bind(id).all().catch(()=>({results:[]}));
@@ -1819,7 +1826,42 @@ app.get('/api/v1/tl3/segment/:id', async (c) => {
     const segmentIndex=Number(c.req.query('segment')||0);
     if(!Number.isSafeInteger(segmentIndex)||segmentIndex<0) return respond({ok:false,error:'세그먼트 번호가 올바르지 않습니다.'},400);
 
-    // One indexed join replaces separate release and segment metadata queries.
+    // Spine v4 stores the complete encrypted container in D1 object parts.
+    // Read the requested ciphertext range directly from the v4 object; do not
+    // fall through to the retired tl3_segments layout for a sealed v4 release.
+    const v4=await c.env.DB.prepare(
+      "SELECT object_key,header_json,segment_count,status FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
+    ).bind(fileId).first<any>();
+    if(v4){
+      const header=JSON.parse(String(v4.header_json||'{}'));
+      const lengths=Array.isArray(header.segment_lengths)?header.segment_lengths.map(Number):[];
+      const durations=Array.isArray(header.segment_durations_ms)?header.segment_durations_ms.map(Number):[];
+      const count=Number(v4.segment_count||0);
+      if(count<1||lengths.length!==count||durations.length!==count||segmentIndex>=count)
+        return respond({ok:false,error:'Spine v4 세그먼트 메타데이터가 올바르지 않습니다.'},409);
+      let offset=9+new TextEncoder().encode(String(v4.header_json||'')).byteLength;
+      for(let i=0;i<segmentIndex;i++) offset+=lengths[i];
+      const length=lengths[segmentIndex];
+      if(!Number.isSafeInteger(offset)||offset<9||!Number.isSafeInteger(length)||length<=16)
+        return respond({ok:false,error:'Spine v4 세그먼트 범위가 올바르지 않습니다.'},502);
+      const objectKey=String(v4.object_key||'');
+      const meta=await getD1ObjectMeta(c.env.DB,objectKey);
+      if(!meta||offset+length>Number(meta.size||0))
+        return respond({ok:false,error:'Spine v4 컨테이너 또는 세그먼트가 없습니다.'},404);
+      const ciphertext=await readD1RangeFast(c.env.DB,objectKey,offset,offset+length);
+      if(!ciphertext.byteLength) return respond({ok:false,error:'Spine v4 세그먼트 데이터가 비어 있습니다.'},502);
+      const headers=new Headers(corsHeaders);
+      headers.set('Content-Type','application/octet-stream');
+      headers.set('Content-Length',String(ciphertext.byteLength));
+      headers.set('X-TL3-Segment-Index',String(segmentIndex));
+      headers.set('X-TL3-Segment-Duration-Ms',String(durations[segmentIndex]));
+      headers.set('X-TL3-Next-Segment',String(segmentIndex+1));
+      headers.set('X-TL3-Version','4');
+      return new Response(ciphertext,{status:206,headers});
+    }
+
+    // Legacy v3 compatibility: use the indexed tl3_segments layout only
+    // when no sealed Spine v4 release exists for this file.
     const row=await c.env.DB.prepare(`
       SELECT r.tl3_key,r.payload_offset,r.segment_count,
              s.offset,s.length,s.duration_ms,s.ct_offset,s.ct_length
@@ -1896,15 +1938,26 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     if(!fileId||String(fileId)!==rawId) fileId=Number(await resolveTL3FileId(c.env.DB,rawId)||0);
     if(!fileId) return c.json({ok:false,error:'검증된 TL3 출시 파일을 찾을 수 없습니다.'},404);
     const segmentIndex=Math.max(0,Number(c.req.query('segment')||0));
-    const release=await c.env.DB.prepare("SELECT segment_count,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
-    if(!release) return c.json({ok:false,error:'TL3 release not found'},404);
-    if(!Number.isInteger(segmentIndex)||segmentIndex>=Number(release.segment_count||0)) return c.json({ok:false,error:'재생 구간 오류'},416);
-    const segment=await c.env.DB.prepare('SELECT 1 FROM tl3_segments WHERE file_id=? AND segment_index=?').bind(fileId,segmentIndex).first<any>();
-    if(!segment) return c.json({ok:false,error:'세그먼트 없음'},404);
+    if(!Number.isInteger(segmentIndex)) return c.json({ok:false,error:'재생 구간 오류'},416);
     const masterSecret=c.env.TL3_MASTER_SECRET;
     if(!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET is not configured'},503);
+
+    const v4=await c.env.DB.prepare(
+      "SELECT segment_count,share_id FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
+    ).bind(fileId).first<any>();
+    if(v4){
+      if(segmentIndex>=Number(v4.segment_count||0)) return c.json({ok:false,error:'재생 구간 오류'},416);
+      const lic=await deriveLicenseBytes(masterSecret,String(v4.share_id||('tl3_'+fileId)));
+      return c.json({ok:true,version:4,lic_n:hex(lic),segment:segmentIndex,charging:'audible_time_meter'});
+    }
+
+    const release=await c.env.DB.prepare("SELECT segment_count,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(fileId).first<any>();
+    if(!release) return c.json({ok:false,error:'TL3 release not found'},404);
+    if(segmentIndex>=Number(release.segment_count||0)) return c.json({ok:false,error:'재생 구간 오류'},416);
+    const segment=await c.env.DB.prepare('SELECT 1 FROM tl3_segments WHERE file_id=? AND segment_index=?').bind(fileId,segmentIndex).first<any>();
+    if(!segment) return c.json({ok:false,error:'세그먼트 없음'},404);
     const lic=await deriveLicenseBytes(masterSecret,release.share_id||('tl3_'+fileId));
-    return c.json({ok:true,lic_n:hex(lic),segment:segmentIndex,charging:'single_play_start'});
+    return c.json({ok:true,lic_n:hex(lic),segment:segmentIndex,charging:'audible_time_meter'});
   }catch(e:any){return c.json({ok:false,error:e?.message||'license error'},500);}
 });
 
@@ -1920,9 +1973,16 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
     let fileId=Number(rawId);
     if(!fileId||String(fileId)!==rawId) fileId=Number(await resolveTL3FileId(c.env.DB,rawId)||0);
     if(!fileId) return c.json({ok:false,error:'TL3 자산을 찾을 수 없습니다.'},404);
-    const file=await c.env.DB.prepare("SELECT f.user_id,f.revenue_held,r.share_id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'").bind(fileId).first<any>();
+    const file=await c.env.DB.prepare(
+      "SELECT f.user_id,f.revenue_held,COALESCE(v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
+    ).bind(fileId).first<any>();
     if(!file||file.revenue_held) return c.json({ok:false,error:'재생할 수 없는 TL3 자산입니다.'},404);
-    const duration=await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms,COUNT(*) segment_count FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
+    const v4Duration=await c.env.DB.prepare(
+      "SELECT duration_ms,segment_count FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
+    ).bind(fileId).first<any>();
+    const duration=v4Duration
+      ? {total_ms:Number(v4Duration.duration_ms||0),segment_count:Number(v4Duration.segment_count||0)}
+      : await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms,COUNT(*) segment_count FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0||Number(duration?.segment_count||0)<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
     const requiredTL=Math.ceil(totalMs/1000-1e-9);
@@ -1948,11 +2008,18 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const playedMs=Number(body.played_ms);
     if(!/^[A-Za-z0-9_-]{8,100}$/.test(sessionId)||!Number.isFinite(playedMs)||playedMs<0||playedMs>86400000)
       return c.json({ok:false,error:'재생 세션 또는 재생 시간 값이 올바르지 않습니다.'},400);
-    const file=await c.env.DB.prepare("SELECT f.id,f.user_id,f.revenue_held,r.share_id FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'").bind(fileId).first<any>();
+    const file=await c.env.DB.prepare(
+      "SELECT f.id,f.user_id,f.revenue_held,COALESCE(v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
+    ).bind(fileId).first<any>();
     if(!file||file.revenue_held) return c.json({ok:false,error:'재생할 수 없는 TL3 자산입니다.'},404);
-    // Playback charging uses the user's wallet only; do not initialize the
-    // separate asset-TL pool on every one-second meter request.
-    const duration=await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
+    // Meter only audible media time. Spine v4's signed header is the
+    // authoritative duration; v3 segment rows remain a legacy fallback.
+    const v4Duration=await c.env.DB.prepare(
+      "SELECT duration_ms FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
+    ).bind(fileId).first<any>();
+    const duration=v4Duration
+      ? {total_ms:Number(v4Duration.duration_ms||0)}
+      : await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
     const boundedPlayedMs=Math.min(playedMs,totalMs);
