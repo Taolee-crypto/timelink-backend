@@ -1792,41 +1792,70 @@ app.get('/api/v1/tl3/header/:id', async (c) => {
 
 // GET /api/v1/tl3/segment/:id — ciphertext 반환 (복호화/차감은 클라이언트와 /code)
 app.get('/api/v1/tl3/segment/:id', async (c) => {
+  const corsHeaders: Record<string,string> = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Expose-Headers': 'X-TL3-Segment-Index, X-TL3-Segment-Duration-Ms, X-TL3-Next-Segment',
+    'Cache-Control': 'private, no-store'
+  };
+  const respond = (body:unknown,status:number,extra:Record<string,string>={}) =>
+    new Response(JSON.stringify(body),{status,headers:{...corsHeaders,'Content-Type':'application/json',...extra}});
   try {
-    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const auth = c.req.header('Authorization')?.replace(/^Bearer\\s+/i,'').trim() || '';
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
-    if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
-    const u = await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
-    if (!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
-    let fileId = Number(c.req.param('id') || 0);
-    const rawId = String(c.req.param('id') || '');
-    if (!fileId || isNaN(fileId) || String(fileId) !== rawId) {
-      const resolvedFileId = await resolveTL3FileId(c.env.DB, rawId);
-      if (!resolvedFileId) return c.json({ok:false,error:'공유 ID에 연결된 검증된 TL3 출시 파일을 찾을 수 없습니다.',share_id:rawId},404);
-      fileId = resolvedFileId;
+    if (!payload) return respond({ok:false,error:'로그인이 필요합니다.'},401);
+    const userId=Number(payload.sub);
+    if(!Number.isSafeInteger(userId)||userId<=0) return respond({ok:false,error:'인증 정보가 올바르지 않습니다.'},401);
+    const u = await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND is_active=1').bind(userId).first<any>();
+    if (!u) return respond({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
+
+    const rawId=String(c.req.param('id')||'');
+    let fileId=Number(rawId);
+    if(!Number.isSafeInteger(fileId)||fileId<=0||String(fileId)!==rawId){
+      fileId=await resolveTL3FileId(c.env.DB,rawId);
+      if(!fileId) return respond({ok:false,error:'공유 ID에 연결된 검증된 TL3 출시 파일을 찾을 수 없습니다.',share_id:rawId},404);
     }
-    const segmentIndex = Math.max(0, Number(c.req.query('segment')||0));
-    const file = await c.env.DB.prepare(`SELECT r.tl3_key,r.payload_offset,r.segment_count
-      FROM tl_files f JOIN tl3_releases r ON r.file_id=f.id WHERE f.id=? AND r.status='released'`).bind(fileId).first<any>();
-    if (!file) return c.json({ok:false,error:'TL3 release not found'},404);
-    if (segmentIndex >= Number(file.segment_count||0)) return c.json({ok:false,error:'재생 종료'},416);
-    const seg = await c.env.DB.prepare('SELECT offset,length,duration_ms,ct_offset,ct_length FROM tl3_segments WHERE file_id=? AND segment_index=?')
-      .bind(fileId,segmentIndex).first<any>();
-    if (!seg) return c.json({ok:false,error:'세그먼트 없음'},404);
-    const ctOffset=Number(seg.ct_offset ?? (Number(file.payload_offset)+Number(seg.offset)));
-    const ctLength=Number(seg.ct_length ?? seg.length);
-    const ciphertext=await readD1RangeFast(c.env.DB,String(file.tl3_key),ctOffset,ctOffset+ctLength);
-    if (!ciphertext.byteLength) return c.json({ok:false,error:'TL3 세그먼트 로드 실패'},502);
-    const headers=new Headers({
-      'Content-Type':'application/octet-stream',
-      'Content-Length':String(ciphertext.byteLength),
-      'Cache-Control':'private, no-store',
-      'X-TL3-Segment-Index':String(segmentIndex),
-      'X-TL3-Segment-Duration-Ms':String(seg.duration_ms),
-      'X-TL3-Next-Segment':String(segmentIndex+1)
-    });
+    const segmentIndex=Number(c.req.query('segment')||0);
+    if(!Number.isSafeInteger(segmentIndex)||segmentIndex<0) return respond({ok:false,error:'세그먼트 번호가 올바르지 않습니다.'},400);
+
+    // One indexed join replaces separate release and segment metadata queries.
+    const row=await c.env.DB.prepare(`
+      SELECT r.tl3_key,r.payload_offset,r.segment_count,
+             s.offset,s.length,s.duration_ms,s.ct_offset,s.ct_length
+      FROM tl3_releases r
+      JOIN tl3_segments s ON s.file_id=r.file_id AND s.segment_index=?
+      WHERE r.file_id=? AND r.status='released'
+      LIMIT 1
+    `).bind(segmentIndex,fileId).first<any>();
+    if(!row) return respond({ok:false,error:'TL3 출시 파일 또는 세그먼트를 찾을 수 없습니다.'},404);
+    if(segmentIndex>=Number(row.segment_count||0)) return respond({ok:false,error:'재생 종료'},416);
+
+    const ctOffset=Number(row.ct_offset ?? (Number(row.payload_offset)+Number(row.offset)));
+    const ctLength=Number(row.ct_length ?? row.length);
+    if(!Number.isSafeInteger(ctOffset)||ctOffset<0||!Number.isSafeInteger(ctLength)||ctLength<=0){
+      return respond({ok:false,error:'세그먼트 저장 범위가 올바르지 않습니다.'},502);
+    }
+    const ciphertext=await readD1RangeFast(c.env.DB,String(row.tl3_key),ctOffset,ctOffset+ctLength);
+    if(!ciphertext.byteLength) return respond({ok:false,error:'TL3 세그먼트 데이터가 비어 있습니다.'},502);
+    const headers=new Headers(corsHeaders);
+    headers.set('Content-Type','application/octet-stream');
+    headers.set('Content-Length',String(ciphertext.byteLength));
+    headers.set('X-TL3-Segment-Index',String(segmentIndex));
+    headers.set('X-TL3-Segment-Duration-Ms',String(row.duration_ms));
+    headers.set('X-TL3-Next-Segment',String(segmentIndex+1));
     return new Response(ciphertext,{status:206,headers});
-  } catch(e:any) { return c.json({ok:false,error:e.message||'TL3 segment error'},500); }
+  } catch(e:any) {
+    const message=String(e?.message||'TL3 segment error');
+    const transient=/D1_ERROR|overload|temporar|unavailable|busy|internal error|service/i.test(message);
+    console.error('[TL3_SEGMENT_READ_ERROR]',{file_id:c.req.param('id'),segment:c.req.query('segment'),transient,message});
+    return respond(
+      {ok:false,code:transient?'TL3_SEGMENT_TEMPORARY':'TL3_SEGMENT_ERROR',
+       error:transient?'일시적인 음원 전송 지연입니다.':'TL3 세그먼트 처리에 실패했습니다.'},
+      transient?503:500,
+      transient?{'Retry-After':'1'}:{}
+    );
+  }
 });
 
 // TL3 자산 잔여 TL 조회: 곡 전체 재생시간에서 출발한 자산 자체의 TL 풀
