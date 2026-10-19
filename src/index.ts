@@ -1902,7 +1902,6 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
   }catch(e:any){return c.json({ok:false,error:e?.message||'재생 사전 확인 실패'},500);}
 });
 
-// 정상 재생이 실제 시작된 뒤 1회만 곡 전체 TL을 차감한다. 중단·종료 시 환불하지 않는다.
 // 실제 재생 시간 누적 정산: 완전히 재생된 1초마다 1 TL 차감
 app.post('/api/v1/tl3/play/meter/:id', async (c) => {
   try {
@@ -1989,7 +1988,7 @@ app.post('/api/v1/tl3/play/charge/:id', async (c) => {
 
 // 구형 구간별 정산 API는 더 이상 환불·부분 차감을 수행하지 않는다.
 app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
-  return c.json({ok:false,code:'LEGACY_METERING_DISABLED',error:'구간별 정산은 종료되었습니다. 재생 1회당 곡 전체 TL 차감 방식을 사용하세요.'},410);
+  return c.json({ok:false,code:'LEGACY_METERING_DISABLED',error:'구형 구간 정산은 종료되었습니다. 실제 재생 시간 기준 정산 API를 사용하세요.'},410);
 });
 // ═══════════════════════════════════════════════════════════════
 // TL3 오프라인 재생 라우트 (2026-10-09)
