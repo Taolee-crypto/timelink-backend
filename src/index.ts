@@ -2099,15 +2099,15 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     ]);
     // If playback stops instead of advancing, release the independently reserved
     // next segment. A prefetched reservation must never remain charged or stranded.
-    if(nextSegment===null&&ss.prefetch_segment!==null&&ss.prefetch_segment!==undefined){
-      const preCost=Number(ss.prefetch_cost||0);
-      const preP=Number(ss.prefetch_tl_p||0),preA=Number(ss.prefetch_tl_a||0),preB=Number(ss.prefetch_tl_b||0);
+    if(nextSegment===null&&((ss.prefetch_segment!==null&&ss.prefetch_segment!==undefined)||(ss.prefetch2_segment!==null&&ss.prefetch2_segment!==undefined))){
+      const preCost=Number(ss.prefetch_cost||0)+Number(ss.prefetch2_cost||0);
+      const preP=Number(ss.prefetch_tl_p||0)+Number(ss.prefetch2_tl_p||0),preA=Number(ss.prefetch_tl_a||0)+Number(ss.prefetch2_tl_a||0),preB=Number(ss.prefetch_tl_b||0)+Number(ss.prefetch2_tl_b||0);
       await c.env.DB.batch([
         c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(preP,preA,preB,preP,preA,preB,preCost,u.id),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
         c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(preCost,fileId),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-        c.env.DB.prepare("UPDATE tl3_stream_sessions SET prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,updated_at=datetime('now') WHERE id=? AND prefetch_segment=?").bind(sessionId,Number(ss.prefetch_segment)),
+        c.env.DB.prepare("UPDATE tl3_stream_sessions SET prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,prefetch2_segment=NULL,prefetch2_cost=0,prefetch2_tl_p=0,prefetch2_tl_a=0,prefetch2_tl_b=0,prefetch2_duration_ms=0,prefetch2_delivered_at=0,updated_at=datetime('now') WHERE id=? AND prefetch_segment=?").bind(sessionId,Number(ss.prefetch_segment)),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
         c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
       ]);
@@ -2144,7 +2144,7 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
       } else {
         const prefetched=await c.env.DB.prepare('SELECT * FROM tl3_stream_sessions WHERE id=? AND user_id=? AND file_id=?').bind(sessionId,u.id,fileId).first<any>();
         if(prefetched&&Number(prefetched.prefetch_segment)===nextSegment){
-          const promoted=await c.env.DB.prepare("UPDATE tl3_stream_sessions SET pending_segment=prefetch_segment,pending_cost=prefetch_cost,pending_tl_p=prefetch_tl_p,pending_tl_a=prefetch_tl_a,pending_tl_b=prefetch_tl_b,pending_duration_ms=prefetch_duration_ms,pending_delivered_at=?,last_segment_at=?,prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,next_segment=?,updated_at=datetime('now') WHERE id=? AND pending_segment IS NULL AND prefetch_segment=?").bind(now,now,nextSegment+1,sessionId,nextSegment);
+          const promoted=await c.env.DB.prepare("UPDATE tl3_stream_sessions SET pending_segment=prefetch_segment,pending_cost=prefetch_cost,pending_tl_p=prefetch_tl_p,pending_tl_a=prefetch_tl_a,pending_tl_b=prefetch_tl_b,pending_duration_ms=prefetch_duration_ms,pending_delivered_at=?,last_segment_at=?,prefetch_segment=prefetch2_segment,prefetch_cost=prefetch2_cost,prefetch_tl_p=prefetch2_tl_p,prefetch_tl_a=prefetch2_tl_a,prefetch_tl_b=prefetch2_tl_b,prefetch_duration_ms=prefetch2_duration_ms,prefetch_delivered_at=prefetch2_delivered_at,prefetch2_segment=NULL,prefetch2_cost=0,prefetch2_tl_p=0,prefetch2_tl_a=0,prefetch2_tl_b=0,prefetch2_duration_ms=0,prefetch2_delivered_at=0,next_segment=?,updated_at=datetime('now') WHERE id=? AND pending_segment IS NULL AND prefetch_segment=?").bind(now,now,nextSegment+1,sessionId,nextSegment);
           await promoted.run();
           const masterSecret=c.env.TL3_MASTER_SECRET;
           if(!masterSecret) throw new Error('TL3_MASTER_SECRET is not configured');
