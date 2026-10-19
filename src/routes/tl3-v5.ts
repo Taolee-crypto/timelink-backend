@@ -162,7 +162,7 @@ router.post('/manufacture', async (c) => {
     if (!Number.isSafeInteger(fileId) || fileId <= 0 || !shareId || shareId.length > 180 || !Number.isFinite(clientDuration) || clientDuration <= 0) {
       return c.json({ ok:false, error:'file_id, share_id, duration_ms가 필요합니다.' }, 400);
     }
-    const file = await c.env.DB.prepare('SELECT id,user_id,title,artist FROM tl_files WHERE id=?').bind(fileId).first<any>();
+    const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_files WHERE id=?').bind(fileId).first<any>();
     if (!file || Number(file.user_id) !== userId) return c.json({ ok:false, error:'본인의 음원만 TL3로 자산화할 수 있습니다.' }, 403);
     const raw = new Uint8Array(await sourceFile.arrayBuffer());
     const frameDuration = mp3FrameDurationMs(raw);
@@ -220,6 +220,10 @@ router.post('/manufacture', async (c) => {
     ).bind('https://api.timelink.digital/api/v1/tl3/v5/resolve/' + fileId,fileId,userId).run();
     await c.env.DB.prepare("UPDATE tl_shares SET stream_url=?,file_type='audio/tl3' WHERE CAST(id AS TEXT)=? AND CAST(user_id AS INTEGER)=?")
       .bind('https://api.timelink.digital/api/v1/tl3/v5/resolve/' + fileId,shareId,userId).run().catch(()=>{});
+    if(String(file.stream_url||'')){
+      await c.env.DB.prepare("UPDATE tl_shares SET stream_url=?,file_type='audio/tl3' WHERE stream_url=? AND CAST(user_id AS INTEGER)=?")
+        .bind('https://api.timelink.digital/api/v1/tl3/v5/resolve/' + fileId,String(file.stream_url),userId).run().catch(()=>{});
+    }
     return c.json({
       ok:true, profile:'TL3-V5', version:5, status:'released',
       file_id:fileId, share_id:shareId, duration_ms:durationMs,
