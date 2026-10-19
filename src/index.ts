@@ -3599,41 +3599,57 @@ app.get('/api/shares/my', async (c) => {
 app.get('/api/shares/:id/my-tl', async (c) => {
   const userId=await shareAuthUser(c);
   if(!userId) return c.json({error:'인증 필요'},401);
-  let shareId=c.req.param('id');
+  let requestedId=String(c.req.param('id')||'').trim();
+  let canonicalShareId=requestedId;
   try{
     await ensureShareTLBalances(c.env.DB);
-    let share = await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    let tl3Release = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? AND status='released'").bind(shareId).first<any>();
-    
-    // ★ 정석 처리: shareId가 숫자(107)로 들어온 경우, 해당 file_id로 정확한 share_id를 찾아냄
-    if (!share && !tl3Release && /^\d+$/.test(shareId)) {
-      const numericId = Number(shareId);
-      // tl3_releases에서 file_id로 조회해서 진짜 share_id 추출
-      const releaseById = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE file_id=? AND status='released'").bind(numericId).first<any>();
-      if (releaseById && releaseById.share_id) {
-        tl3Release = releaseById;
-        shareId = releaseById.share_id; // 진짜 share_id로 내부 변수 교체
-      }
-      // tl_shares는 file_id를 보유하지 않는다. tl3_releases에서 확인한
-      // 정식 share_id로 tl_shares를 조회해 D1 스키마와 일치시킨다.
-      if (tl3Release?.share_id) {
-        share = await c.env.DB.prepare("SELECT * FROM tl_shares WHERE id=? LIMIT 1")
-          .bind(String(tl3Release.share_id)).first<any>();
-        shareId = String(tl3Release.share_id);
-      }
+
+    // First resolve a normal share. Do not assume tl3_releases.share_id exists:
+    // older production schemas may predate that additive column.
+    const share=await c.env.DB.prepare(
+      'SELECT id,file_tl FROM tl_shares WHERE id=? LIMIT 1'
+    ).bind(requestedId).first<any>();
+
+    if(!share && /^\d+$/.test(requestedId)){
+      const fileId=Number(requestedId);
+      const release=await c.env.DB.prepare(
+        "SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1"
+      ).bind(fileId).first<any>();
+      if(!release) return c.json({error:'파일 없음'},404);
+
+      // share_id is optional across deployed schema generations. Read it only
+      // after confirming the release exists, and fall back to the numeric ID
+      // when the column is not present in the returned row.
+      let releaseWithShare:any=release;
+      try{
+        releaseWithShare=await c.env.DB.prepare(
+          "SELECT file_id,share_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1"
+        ).bind(fileId).first<any>() || release;
+      }catch(_){}
+      canonicalShareId=String(releaseWithShare?.share_id||fileId);
+    }else if(!share){
+      return c.json({error:'파일 없음'},404);
     }
 
-    if (!share && !tl3Release) return c.json({error:'파일 없음'},404);
-    let row=await c.env.DB.prepare('SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?')
-      .bind(userId,shareId).first<any>();
+    let row=await c.env.DB.prepare(
+      'SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?'
+    ).bind(userId,canonicalShareId).first<any>();
     if(!row){
-      await c.env.DB.prepare('INSERT OR IGNORE INTO tl_user_files (user_id,share_id,tl_balance,total_charged) VALUES (?,?,0,0)')
-        .bind(userId,shareId).run();
+      await c.env.DB.prepare(
+        'INSERT OR IGNORE INTO tl_user_files (user_id,share_id,tl_balance,total_charged) VALUES (?,?,0,0)'
+      ).bind(userId,canonicalShareId).run();
       row={tl_balance:0,total_charged:0};
     }
-    return c.json({ok:true,tl_balance:Number(row.tl_balance||0),total_charged:Number(row.total_charged||0),file_tl:Number(share?.file_tl||0)});
+    return c.json({
+      ok:true,
+      tl_balance:Number(row.tl_balance||0),
+      total_charged:Number(row.total_charged||0),
+      file_tl:Number(share?.file_tl||0),
+      share_id:canonicalShareId
+    });
   }catch(e:any){
-    return c.json({error:e?.message||'TL 잔액 조회 실패'},500);
+    console.error('[SHARE_MY_TL_ERROR]',{requested_id:requestedId,user_id:userId,error:String(e?.message||e)});
+    return c.json({error:'TL 잔액 조회에 실패했습니다.',code:'SHARE_TL_LOOKUP_FAILED'},500);
   }
 });
 
