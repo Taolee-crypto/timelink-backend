@@ -112,6 +112,83 @@ export async function readD1Range(db:D1Database,key:string,start:number,length:n
 
 // 2026-10-19: readD1Range 최적화 버전. getD1ObjectMeta 조회를 생략한다.
 // segment 라우트에서 이미 meta.size를 알고 있으므로 중복 조회를 제거한다.
+// Sealed Spine v4 objects are immutable. Cache their physical D1 chunks at the
+// Worker edge so adjacent audio segments do not repeatedly read the same 1.5 MB
+// BLOB row from D1. The cache is best-effort; D1 remains the source of truth.
+const tl3D1ChunkInflight = new Map<string, Promise<Uint8Array>>();
+
+async function readSealedD1Chunk(
+  db: D1Database, key: string, partNumber: number
+): Promise<Uint8Array> {
+  const cacheRequest = new Request(
+    `https://api.timelink.digital/__tl3_d1_cache/${encodeURIComponent(key)}/${partNumber}`
+  );
+  try {
+    const cached = await caches.default.match(cacheRequest);
+    if (cached) return new Uint8Array(await cached.arrayBuffer());
+  } catch (_) {
+    // Cache API can be unavailable in local/test runtimes; fall back to D1.
+  }
+
+  const inflightKey = key + ':' + partNumber;
+  const pending = tl3D1ChunkInflight.get(inflightKey);
+  if (pending) return (await pending).slice();
+
+  const task = (async () => {
+    const row = await db.prepare(
+      'SELECT data FROM tl_d1_object_parts WHERE object_key=? AND part_number=?'
+    ).bind(key, partNumber).first<any>();
+    if (!row?.data) throw new Error('파일 데이터 청크를 찾을 수 없습니다.');
+    const data = row.data instanceof Uint8Array
+      ? row.data.slice()
+      : new Uint8Array(row.data as ArrayBuffer);
+    try {
+      await caches.default.put(
+        cacheRequest,
+        new Response(data.slice().buffer, {
+          headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'public, max-age=3600' }
+        })
+      );
+    } catch (_) {
+      // A cache write failure must not interrupt playback.
+    }
+    return data;
+  })();
+  tl3D1ChunkInflight.set(inflightKey, task);
+  try {
+    return (await task).slice();
+  } finally {
+    if (tl3D1ChunkInflight.get(inflightKey) === task) {
+      tl3D1ChunkInflight.delete(inflightKey);
+    }
+  }
+}
+
+// Use only for sealed, immutable Spine v4 containers.
+export async function readD1RangeCached(
+  db: D1Database, key: string, start: number, end: number
+): Promise<Uint8Array> {
+  const s = Math.max(0, Math.floor(start));
+  const e = Math.max(0, Math.floor(end));
+  if (e <= s) return new Uint8Array();
+  const first = Math.floor(s / D1_OBJECT_CHUNK_SIZE) + 1;
+  const last = Math.floor((e - 1) / D1_OBJECT_CHUNK_SIZE) + 1;
+  const out = new Uint8Array(e - s);
+  let written = 0;
+  for (let part = first; part <= last; part++) {
+    const data = await readSealedD1Chunk(db, key, part);
+    const partStart = (part - 1) * D1_OBJECT_CHUNK_SIZE;
+    const from = Math.max(s, partStart);
+    const to = Math.min(e, partStart + data.byteLength);
+    if (to > from) {
+      out.set(data.subarray(from - partStart, to - partStart), from - s);
+      written += to - from;
+    }
+  }
+  if (written !== out.byteLength) throw new Error('파일 데이터가 불완전합니다.');
+  return out;
+}
+
 export async function readD1RangeFast(
   db: D1Database, key: string, start: number, end: number
 ): Promise<Uint8Array> {
