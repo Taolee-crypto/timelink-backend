@@ -1901,8 +1901,6 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
         await c.env.DB.batch([
           c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,tl,tl_balance,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,pendingCost+preCost,u.id),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-          c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(pendingCost+preCost,fileId),
-          c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
           c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=pending_segment+1,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,updated_at=datetime('now') WHERE id=? AND pending_segment=?").bind(sessionId,Number(ss.pending_segment)),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
           c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
@@ -1928,7 +1926,6 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       const preWallet=tlWalletParts(u),preTotal=preWallet.p+preWallet.a+preWallet.b;
       const preAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
       const preAssetRemaining=Number(preAsset?.remaining_tl||0);
-      if(preAssetRemaining+1e-9<preCost) return c.json({ok:false,error:'이 음원의 자산 TL이 소진되었습니다.',required:preCost,asset_remaining_tl:preAssetRemaining},402);
       if(preTotal+1e-9<preCost) return c.json({ok:false,error:'사용자 지갑 TL이 부족합니다.',required:preCost,wallet_tl:preTotal},402);
       let preLeft=preCost;
       const preA=Math.min(preLeft,preWallet.a); preLeft=Number((preLeft-preA).toFixed(6));
@@ -1937,8 +1934,6 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
       try{
         await c.env.DB.batch([
           c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(preP,preA,preB,preCost,preCost,preCost,u.id,preP,preA,preB),
-          c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-          c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl-?,updated_at=datetime('now') WHERE file_id=? AND remaining_tl>=?").bind(preCost,fileId,preCost),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
           c.env.DB.prepare("UPDATE tl3_stream_sessions SET prefetch_segment=?,prefetch_cost=?,prefetch_tl_p=?,prefetch_tl_a=?,prefetch_tl_b=?,prefetch_duration_ms=?,prefetch_delivered_at=?,updated_at=datetime('now') WHERE id=? AND pending_segment=? AND prefetch_segment IS NULL").bind(segmentIndex,preCost,preP,preA,preB,Number(seg.duration_ms),now,sessionId,Number(ss.pending_segment)),
           c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
@@ -1966,7 +1961,6 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     const wallet=tlWalletParts(u),walletTotal=wallet.p+wallet.a+wallet.b;
     const assetFresh=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
     const assetRemaining=Number(assetFresh?.remaining_tl||0);
-    if(assetRemaining+1e-9<cost) return c.json({ok:false,error:'이 음원의 자산 TL이 소진되었습니다.',required:cost,asset_remaining_tl:assetRemaining},402);
     if(walletTotal+1e-9<cost) return c.json({ok:false,error:'사용자 지갑 TL이 부족합니다.',required:cost,wallet_tl:walletTotal},402);
     let left=cost;
     const takeA=Math.min(left,wallet.a); left=Number((left-takeA).toFixed(6));
@@ -1975,8 +1969,6 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
     try{
       await c.env.DB.batch([
         c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(takeP,takeA,takeB,cost,cost,cost,u.id,takeP,takeA,takeB),
-        c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-        c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl-?,updated_at=datetime('now') WHERE file_id=? AND remaining_tl>=?").bind(cost,fileId,cost),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
         c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_tl_p=?,pending_tl_a=?,pending_tl_b=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime('now') WHERE id=? AND pending_segment IS NULL").bind(Math.max(Number(ss.next_segment||0),segmentIndex+1),segmentIndex,cost,takeP,takeA,takeB,Number(seg.duration_ms),now,now,sessionId),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
@@ -2056,8 +2048,6 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
     await c.env.DB.batch([
       c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(refundP,refundA,refundB,refundP,refundA,refundB,refund,u.id),
       c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-      c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,consumed_tl=consumed_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(refund,played,fileId),
-      c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
       c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=CASE WHEN next_segment > pending_segment+1 THEN next_segment ELSE pending_segment+1 END,pending_segment=NULL,pending_cost=0,pending_tl_p=0,pending_tl_a=0,pending_tl_b=0,pending_duration_ms=0,pending_delivered_at=0,updated_at=datetime('now') WHERE id=? AND pending_segment=?").bind(sessionId,Number(ss.pending_segment)),
       c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
       c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
@@ -2069,8 +2059,6 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
       const preP=Number(ss.prefetch_tl_p||0),preA=Number(ss.prefetch_tl_a||0),preB=Number(ss.prefetch_tl_b||0);
       await c.env.DB.batch([
         c.env.DB.prepare('UPDATE users SET tl_p=COALESCE(tl_p,tl,tl_balance,0)+?,tl_a=COALESCE(tl_a,0)+?,tl_b=COALESCE(tl_b,0)+?,tl=COALESCE(tl_p,0)+?+COALESCE(tl_a,0)+?+COALESCE(tl_b,0)+?,total_tl_spent=MAX(0,COALESCE(total_tl_spent,0)-?) WHERE id=?').bind(preP,preA,preB,preP,preA,preB,preCost,u.id),
-        c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-        c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl+?,updated_at=datetime('now') WHERE file_id=?").bind(preCost,fileId),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
         c.env.DB.prepare("UPDATE tl3_stream_sessions SET prefetch_segment=NULL,prefetch_cost=0,prefetch_tl_p=0,prefetch_tl_a=0,prefetch_tl_b=0,prefetch_duration_ms=0,prefetch_delivered_at=0,updated_at=datetime('now') WHERE id=? AND prefetch_segment=?").bind(sessionId,Number(ss.prefetch_segment)),
         c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
@@ -2127,7 +2115,6 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
           const nextParts=tlWalletParts(nextWallet), nextTotal=nextParts.p+nextParts.a+nextParts.b;
           const nextAsset=await c.env.DB.prepare('SELECT remaining_tl FROM tl3_asset_tl WHERE file_id=?').bind(fileId).first<any>();
           if(nextTotal+1e-9<nextCost) nextError=`사용자 지갑 TL이 부족합니다. (확인 잔액 ${nextTotal.toFixed(3)} TL / 다음 구간 필요 ${nextCost.toFixed(3)} TL; P:${nextParts.p.toFixed(3)} A:${nextParts.a.toFixed(3)} B:${nextParts.b.toFixed(3)}; 구형 tl_balance:${Number(nextWallet?.tl_balance||0).toFixed(3)} tl:${Number(nextWallet?.tl||0).toFixed(3)})`;
-          else if(Number(nextAsset?.remaining_tl||0)+1e-9<nextCost) nextError='음원의 자산 TL이 소진되었습니다.';
           else {
             let left=nextCost;
             const takeA=Math.min(left,nextParts.a); left=Number((left-takeA).toFixed(6));
@@ -2136,8 +2123,6 @@ app.post('/api/v1/tl3/segment/confirm/:id', async (c) => {
             try {
               await c.env.DB.batch([
                 c.env.DB.prepare('UPDATE users SET tl_p=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)-?,tl_a=COALESCE(tl_a,0)-?,tl_b=COALESCE(tl_b,0)-?,tl_balance=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,tl=(CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END)-?,total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=? AND (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END)>=? AND COALESCE(tl_a,0)>=? AND COALESCE(tl_b,0)>=?').bind(takeP,takeA,takeB,nextCost,nextCost,nextCost,u.id,takeP,takeA,takeB),
-                c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-                c.env.DB.prepare("UPDATE tl3_asset_tl SET remaining_tl=remaining_tl-?,updated_at=datetime('now') WHERE file_id=? AND remaining_tl>=?").bind(nextCost,fileId,nextCost),
                 c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
                 c.env.DB.prepare("UPDATE tl3_stream_sessions SET next_segment=?,pending_segment=?,pending_cost=?,pending_tl_p=?,pending_tl_a=?,pending_tl_b=?,pending_duration_ms=?,pending_delivered_at=?,last_segment_at=?,updated_at=datetime('now') WHERE id=? AND pending_segment IS NULL AND next_segment<=?").bind(nextSegment+1,nextSegment,nextCost,takeP,takeA,takeB,Number(nextRow.duration_ms),Math.floor(Date.now()/1000),Math.floor(Date.now()/1000),sessionId,nextSegment),
                 c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
