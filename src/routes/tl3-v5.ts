@@ -94,6 +94,13 @@ async function ensureV5Tables(db: D1Database): Promise<void> {
   for (const sql of statements) {
     await db.prepare(sql).run();
   }
+  // Backward-compatible migration: old releases remain wrapped by the legacy
+  // TL3_MASTER_SECRET until an operator explicitly rewraps them.
+  const columns = await db.prepare('PRAGMA table_info(tl3_v5_releases)').all<any>();
+  const hasKeyId = (columns.results || []).some((column:any) => String(column.name) === 'key_id');
+  if (!hasKeyId) {
+    await db.prepare("ALTER TABLE tl3_v5_releases ADD COLUMN key_id TEXT NOT NULL DEFAULT 'legacy'").run();
+  }
 }
 
 /** Approximate MPEG Layer III duration from frame headers; browser duration is cross-checked separately. */
@@ -125,8 +132,31 @@ function mp3FrameDurationMs(data: Uint8Array): number {
   return Math.round(duration);
 }
 
+type V5MasterKey = { id:string; secret:string };
+function masterKeyRing(env: Env): { active:V5MasterKey; keys:Map<string,string> } {
+  const keys = new Map<string,string>();
+  const raw = String(env.TL3_MASTER_KEYRING || '').trim();
+  if (raw) {
+    let parsed:any;
+    try { parsed = JSON.parse(raw); } catch { throw new Error('TL3_MASTER_KEYRING must be valid JSON.'); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('TL3_MASTER_KEYRING must be a JSON object of key IDs to secrets.');
+    for (const [id,secret] of Object.entries(parsed)) {
+      if (!/^[A-Za-z0-9_-]{1,32}$/.test(id) || typeof secret !== 'string' || secret.length < 24) {
+        throw new Error('각 V5 마스터 키 ID는 안전한 형식이어야 하며 비밀값은 24자 이상이어야 합니다.');
+      }
+      keys.set(id,secret);
+    }
+  }
+  // Legacy fallback keeps already-manufactured V5 assets readable.
+  const legacy = String(env.TL3_MASTER_SECRET || '');
+  if (legacy && !keys.has('legacy')) keys.set('legacy',legacy);
+  const activeId = String(env.TL3_MASTER_KEY_ACTIVE_ID || (keys.has('legacy') ? 'legacy' : ''));
+  const activeSecret = keys.get(activeId);
+  if (!activeId || !activeSecret) throw new Error('활성 V5 마스터 키 ID와 키링 설정이 일치하지 않습니다.');
+  return {active:{id:activeId,secret:activeSecret},keys};
+}
 async function masterWrapKey(secret: string): Promise<CryptoKey> {
-  if (!secret || secret.length < 24) throw new Error('TL3_MASTER_SECRET은 24자 이상이어야 합니다.');
+  if (!secret || secret.length < 24) throw new Error('V5 마스터 키는 24자 이상이어야 합니다.');
   const digest = await sha256(te.encode(secret));
   return crypto.subtle.importKey('raw', bytes(digest), { name: 'AES-GCM' }, false, ['encrypt','decrypt']);
 }
@@ -176,8 +206,9 @@ router.post('/manufacture', async (c) => {
       return c.json({ ok:false, error:'브라우저 재생시간과 MP3 프레임 분석 결과가 일치하지 않습니다.', code:'MP3_DURATION_MISMATCH', browser_duration_ms:clientDuration, frame_duration_ms:frameDuration }, 422);
     }
     const durationMs = Math.round(clientDuration);
-    const masterSecret = String(c.env.TL3_MASTER_SECRET || '');
-    if (!masterSecret) return c.json({ ok:false, error:'TL3_MASTER_SECRET is not configured' }, 503);
+    const masterRing = masterKeyRing(c.env);
+    const masterSecret = masterRing.active.secret;
+    const masterKeyId = masterRing.active.id;
     await ensureV5Tables(c.env.DB);
     await ensureD1Storage(c.env.DB);
 
@@ -214,13 +245,13 @@ router.post('/manufacture', async (c) => {
     await putD1Object(c.env.DB, objectKey, container, 'application/octet-stream', String(file.title || 'asset') + '.tl3');
     await c.env.DB.prepare(`
       INSERT INTO tl3_v5_releases
-        (file_id,user_id,share_id,object_key,duration_ms,source_sha256,container_sha256,wrapped_content_key,container_bytes,status,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,'sealed',datetime('now'),datetime('now'))
+        (file_id,user_id,share_id,object_key,duration_ms,source_sha256,container_sha256,wrapped_content_key,container_bytes,status,created_at,updated_at,key_id)
+      VALUES(?,?,?,?,?,?,?,?,?,'sealed',datetime('now'),datetime('now)',?)
       ON CONFLICT(file_id) DO UPDATE SET user_id=excluded.user_id,share_id=excluded.share_id,
         object_key=excluded.object_key,duration_ms=excluded.duration_ms,source_sha256=excluded.source_sha256,
         container_sha256=excluded.container_sha256,wrapped_content_key=excluded.wrapped_content_key,
-        container_bytes=excluded.container_bytes,status='sealed',updated_at=datetime('now')
-    `).bind(fileId,userId,shareId,objectKey,durationMs,sourceHash,containerHash,wrappedKey,container.byteLength).run();
+        container_bytes=excluded.container_bytes,status='sealed',updated_at=datetime('now'),key_id=excluded.key_id
+    `).bind(fileId,userId,shareId,objectKey,durationMs,sourceHash,containerHash,wrappedKey,container.byteLength,masterKeyId).run();
     await c.env.DB.prepare(
       "UPDATE tl_files SET file_type='audio/tl3',stream_url=?,shared=1,shared_to_shareplace=1,updated_at=datetime('now') WHERE id=? AND user_id=?"
     ).bind('https://api.timelink.digital/api/v1/tl3/v5/resolve/' + fileId,fileId,userId).run();
@@ -340,7 +371,7 @@ router.post('/session-license/:id', async (c) => {
     if (!validPlayerId(playerId) || !/^[A-Za-z0-9_-]{12,128}$/.test(sessionId)) return c.json({ok:false,error:'Player 또는 재생 세션 정보가 올바르지 않습니다.'},400);
     const [player, release] = await Promise.all([
       c.env.DB.prepare('SELECT public_jwk,key_thumbprint FROM tl3_player_keys WHERE user_id=? AND player_id=? AND revoked_at IS NULL').bind(userId,playerId).first<any>(),
-      c.env.DB.prepare("SELECT share_id,wrapped_content_key FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>()
+      c.env.DB.prepare("SELECT share_id,wrapped_content_key,key_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>()
     ]);
     if (!player) return c.json({ok:false,code:'PLAYER_KEY_REQUIRED',error:'이 기기에 등록된 TimeLink Player 키가 없습니다.'},403);
     if (!release) return c.json({ok:false,error:'봉인된 TL3 V5 자산을 찾을 수 없습니다.'},404);
@@ -360,8 +391,10 @@ router.post('/session-license/:id', async (c) => {
       'SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?'
     ).bind(userId,String(release.share_id)).first<any>();
     if (Number(trackBalance?.tl_balance || 0) <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:Number(trackBalance?.tl_balance||0)},402);
-    const masterSecret = String(c.env.TL3_MASTER_SECRET || '');
-    if (!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET is not configured'},503);
+    const masterRing = masterKeyRing(c.env);
+    const keyId = String(release.key_id || 'legacy');
+    const masterSecret = masterRing.keys.get(keyId);
+    if (!masterSecret) return c.json({ok:false,code:'V5_MASTER_KEY_MISSING',error:'이 자산을 보호하는 마스터 키가 키링에 없습니다: '+keyId},503);
     const contentKey = await unwrapAssetKey(masterSecret,fileId,String(release.share_id),String(release.wrapped_content_key));
     const publicJwk = JSON.parse(String(player.public_jwk));
     const memberPublic = await crypto.subtle.importKey('jwk',publicJwk,{name:'ECDH',namedCurve:'P-256'},false,[]);
