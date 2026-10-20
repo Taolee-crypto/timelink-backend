@@ -449,6 +449,42 @@ router.get('/container/:id', async (c) => {
   } catch(e:any) { return c.json({ok:false,error:e?.message||'TL3 V5 컨테이너 조회 실패'},500); }
 });
 
+router.post('/key-rotate/:id', async (c) => {
+  try {
+    const userId = await userFromRequest(c);
+    if (!userId) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    await ensureV5Tables(c.env.DB);
+    const fileId = Number(c.req.param('id'));
+    if (!Number.isSafeInteger(fileId) || fileId <= 0) return c.json({ok:false,error:'file_id가 올바르지 않습니다.'},400);
+    const release = await c.env.DB.prepare(`
+      SELECT user_id,share_id,wrapped_content_key,key_id,status
+      FROM tl3_v5_releases WHERE file_id=?
+    `).bind(fileId).first<any>();
+    if (!release) return c.json({ok:false,error:'TL3 V5 자산을 찾을 수 없습니다.'},404);
+    if (Number(release.user_id) !== userId) return c.json({ok:false,error:'본인 자산의 키만 교체할 수 있습니다.'},403);
+    if (String(release.status) !== 'sealed') return c.json({ok:false,error:'봉인된 자산만 키를 교체할 수 있습니다.'},409);
+    const ring = masterKeyRing(c.env);
+    const oldKeyId = String(release.key_id || 'legacy');
+    if (oldKeyId === ring.active.id) return c.json({ok:true,rotated:false,key_id:oldKeyId,message:'이미 활성 마스터 키로 보호되고 있습니다.'});
+    const oldSecret = ring.keys.get(oldKeyId);
+    if (!oldSecret) return c.json({ok:false,code:'V5_MASTER_KEY_MISSING',error:'기존 자산 키를 해제할 마스터 키가 키링에 없습니다: '+oldKeyId},503);
+    const contentKey = await unwrapAssetKey(oldSecret,fileId,String(release.share_id),String(release.wrapped_content_key));
+    const replacement = await wrapAssetKey(ring.active.secret,fileId,String(release.share_id),contentKey);
+    contentKey.fill(0);
+    const result = await c.env.DB.prepare(`
+      UPDATE tl3_v5_releases SET wrapped_content_key=?,key_id=?,updated_at=datetime('now')
+      WHERE file_id=? AND user_id=? AND key_id=? AND status='sealed'
+    `).bind(replacement,ring.active.id,fileId,userId,oldKeyId).run();
+    if (Number(result.meta?.changes || 0) !== 1) {
+      return c.json({ok:false,code:'V5_KEY_ROTATION_CONFLICT',error:'키 교체 중 자산 정보가 변경되었습니다. 다시 시도하십시오.'},409);
+    }
+    return c.json({ok:true,rotated:true,file_id:fileId,previous_key_id:oldKeyId,key_id:ring.active.id,
+      message:'컨테이너 본문을 변경하지 않고 자산 콘텐츠 키의 마스터 키 봉투를 교체했습니다.'});
+  } catch(e:any) {
+    return c.json({ok:false,error:e?.message||'V5 마스터 키 교체 실패'},500);
+  }
+});
+
 router.get('/verify/:id', async (c) => {
   try {
     const userId = await userFromRequest(c);
