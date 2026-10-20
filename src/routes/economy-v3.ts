@@ -19,14 +19,43 @@ router.use('*', async (c, next) => {
   await next();
 });
 
-// V3 ledger reads are intentionally separate from legacy wallet reads during cutover.
+// Canonical V3 wallet response. Track pools are deliberately excluded from wallet total.
 router.get('/wallet', async (c) => {
   const user = c.get('user');
-  const accounts = await getLedgerWallet(c.env.DB, user.id);
+  const accounts:any[] = await getLedgerWallet(c.env.DB, user.id) as any[];
+  const amount = (bucket:string) => accounts
+    .filter((a:any) => a.asset_code === 'TL' && a.bucket === bucket)
+    .reduce((sum:number,a:any) => sum + Number(a.available_atoms || 0), 0);
+  const tlP = amount('wallet_paid');
+  const tlA = amount('wallet_ad');
+  const tlB = amount('wallet_bonus');
+  const trackPools = accounts
+    .filter((a:any) => a.asset_code === 'TL' && String(a.bucket || '').startsWith('track_pool:'))
+    .map((a:any) => ({
+      share_id: String(a.bucket).slice('track_pool:'.length),
+      available_tl: Number(a.available_atoms || 0),
+      held_tl: Number(a.held_atoms || 0),
+      version: Number(a.version || 0)
+    }));
+  const walletInitialized = accounts.some((a:any) =>
+    a.asset_code === 'TL' && ['wallet_paid','wallet_ad','wallet_bonus'].includes(String(a.bucket))
+  );
   return c.json({
     ok: true,
     ledger_version: 3,
-    migration_state: accounts.length ? 'accounts_initialized' : 'not_yet_migrated',
+    migration_state: walletInitialized ? 'wallet_initialized' : 'not_yet_migrated',
+    wallet: {
+      tl_p: tlP,
+      tl_a: tlA,
+      tl_b: tlB,
+      tl_total: tlP + tlA + tlB
+    },
+    track_pools: trackPools,
+    other_accounts: accounts.filter((a:any) =>
+      !(a.asset_code === 'TL' &&
+        (['wallet_paid','wallet_ad','wallet_bonus'].includes(String(a.bucket)) ||
+         String(a.bucket || '').startsWith('track_pool:')))
+    ),
     accounts
   });
 });
