@@ -69,6 +69,123 @@ router.get('/wallet', async (c) => {
   });
 });
 
+
+router.post('/tracks/:shareId/charge', async (c) => {
+  const user = c.get('user');
+  const shareId = String(c.req.param('shareId') || '').trim();
+  const body = await c.req.json<any>().catch(() => ({}));
+  const amount = Number(body.amount_atoms);
+  const idempotencyKey = String(c.req.header('Idempotency-Key') || '').trim();
+  if (!/^[A-Za-z0-9_-]{1,120}$/.test(shareId) ||
+      !Number.isSafeInteger(amount) || amount <= 0 ||
+      !idempotencyKey || idempotencyKey.length > 200) {
+    return c.json({ok:false,error:'곡 식별자, 정수 충전량, Idempotency-Key가 필요합니다.'},400);
+  }
+
+  const release = await c.env.DB.prepare(`
+    SELECT v.file_id FROM tl3_v5_releases v
+    JOIN tl_files f ON f.id=v.file_id
+    WHERE v.share_id=? AND v.status='sealed' AND f.shared=1
+      AND COALESCE(f.revenue_held,0)=0 LIMIT 1
+  `).bind(shareId).first().catch(() => null)
+    || await c.env.DB.prepare(`
+      SELECT v.file_id FROM tl3_spine_v4_releases v
+      JOIN tl_files f ON f.id=v.file_id
+      WHERE v.share_id=? AND v.status='sealed' AND f.shared=1
+        AND COALESCE(f.revenue_held,0)=0 LIMIT 1
+    `).bind(shareId).first().catch(() => null)
+    || await c.env.DB.prepare(`
+      SELECT r.file_id FROM tl3_releases r
+      JOIN tl_files f ON f.id=r.file_id
+      WHERE r.share_id=? AND r.status='released' AND f.shared=1
+        AND COALESCE(f.revenue_held,0)=0 LIMIT 1
+    `).bind(shareId).first().catch(() => null);
+  if (!release) return c.json({ok:false,error:'공개된 TL3 자산을 찾지 못했습니다.'},404);
+
+  const prior = await c.env.DB.prepare(`
+    SELECT id,transaction_type,source,reference_type,reference_id
+    FROM v3_economy_transactions WHERE idempotency_key=? LIMIT 1
+  `).bind(idempotencyKey).first<any>();
+  if (prior) {
+    if (prior.transaction_type !== 'track_charge' || prior.source !== 'wallet_to_track' ||
+        prior.reference_type !== 'track' || String(prior.reference_id) !== shareId) {
+      return c.json({ok:false,error:'Idempotency-Key가 다른 거래에 이미 사용되었습니다.'},409);
+    }
+    const credited = await c.env.DB.prepare(`
+      SELECT COALESCE(SUM(e.amount_atoms),0) AS amount
+      FROM v3_economy_entries e
+      JOIN v3_economy_accounts a ON a.id=e.account_id
+      WHERE e.transaction_id=? AND a.owner_type='user' AND a.owner_id=?
+        AND a.bucket LIKE ?
+        AND e.amount_atoms>0
+    `).bind(prior.id,String(user.id),'track_pool:'+shareId+':%').first<any>();
+    if (Number(credited?.amount || 0) !== amount) {
+      return c.json({ok:false,error:'Idempotency-Key의 충전량이 기존 거래와 다릅니다.'},409);
+    }
+    const accounts:any[] = await getLedgerWallet(c.env.DB,user.id) as any[];
+    const wallet = {
+      tl_p: accounts.filter(a=>a.bucket==='wallet_paid').reduce((n,a)=>n+Number(a.available_atoms||0),0),
+      tl_a: accounts.filter(a=>a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0),
+      tl_b: accounts.filter(a=>a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0)
+    };
+    const pool = accounts.filter(a=>String(a.bucket||'').startsWith('track_pool:'+shareId+':'))
+      .reduce((n,a)=>n+Number(a.available_atoms||0),0);
+    return c.json({ok:true,replayed:true,amount_atoms:amount,wallet:{...wallet,tl_total:wallet.tl_p+wallet.tl_a+wallet.tl_b},track_pool_tl:pool});
+  }
+
+  try {
+    const paidAccount = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','wallet_paid');
+    const adAccount = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','wallet_ad');
+    const bonusAccount = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','wallet_bonus');
+    const readBalance = async (id:string) => {
+      const row = await c.env.DB.prepare('SELECT available_atoms FROM v3_economy_balances WHERE account_id=?').bind(id).first<any>();
+      return Number(row?.available_atoms || 0);
+    };
+    let ad = await readBalance(adAccount);
+    let bonus = await readBalance(bonusAccount);
+    let paid = await readBalance(paidAccount);
+    if (ad + bonus + paid < amount) {
+      return c.json({ok:false,code:'INSUFFICIENT_TL',required_tl:amount,available_tl:ad+bonus+paid},402);
+    }
+
+    let remaining = amount;
+    const takeAd = Math.min(ad,remaining); remaining -= takeAd;
+    const takeBonus = Math.min(bonus,remaining); remaining -= takeBonus;
+    const takePaid = remaining;
+    const lines:any[] = [];
+    if (takeAd) {
+      const pool = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','track_pool:'+shareId+':ad');
+      lines.push({accountId:adAccount,assetCode:'TL',amountAtoms:-takeAd},{accountId:pool,assetCode:'TL',amountAtoms:takeAd});
+    }
+    if (takeBonus) {
+      const pool = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','track_pool:'+shareId+':bonus');
+      lines.push({accountId:bonusAccount,assetCode:'TL',amountAtoms:-takeBonus},{accountId:pool,assetCode:'TL',amountAtoms:takeBonus});
+    }
+    if (takePaid) {
+      const pool = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','track_pool:'+shareId+':paid');
+      lines.push({accountId:paidAccount,assetCode:'TL',amountAtoms:-takePaid},{accountId:pool,assetCode:'TL',amountAtoms:takePaid});
+    }
+    const posted = await postLedgerTransaction(c.env.DB,{
+      idempotencyKey,transactionType:'track_charge',source:'wallet_to_track',
+      referenceType:'track',referenceId:shareId,actorUserId:String(user.id),
+      description:'공통 지갑에서 곡 전용 TL 풀로 내부 이체',
+      metadata:{share_id:shareId,amount_atoms:amount,allocation:{ad:takeAd,bonus:takeBonus,paid:takePaid}},
+      lines
+    });
+    const accounts:any[] = await getLedgerWallet(c.env.DB,user.id) as any[];
+    const wallet = {
+      tl_p: accounts.filter(a=>a.bucket==='wallet_paid').reduce((n,a)=>n+Number(a.available_atoms||0),0),
+      tl_a: accounts.filter(a=>a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0),
+      tl_b: accounts.filter(a=>a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0)
+    };
+    const pool = accounts.filter(a=>String(a.bucket||'').startsWith('track_pool:'+shareId+':'))
+      .reduce((n,a)=>n+Number(a.available_atoms||0),0);
+    return c.json({ok:true,replayed:posted.replayed,amount_atoms:amount,wallet:{...wallet,tl_total:wallet.tl_p+wallet.tl_a+wallet.tl_b},track_pool_tl:pool});
+  } catch (e:any) {
+    return c.json({ok:false,error:e?.message || '곡 전용 TL 충전에 실패했습니다.'},409);
+  }
+});
+
 router.get('/history', async (c) => {
   const user = c.get('user');
   const limit = Number(c.req.query('limit') || 50);
