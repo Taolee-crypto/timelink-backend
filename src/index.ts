@@ -3762,9 +3762,19 @@ app.get('/api/shares/:id/my-tl', async (c) => {
     const share=await c.env.DB.prepare(
       'SELECT id,file_tl FROM tl_shares WHERE id=? LIMIT 1'
     ).bind(requestedId).first<any>();
+    // V5 Creator releases may have no legacy tl_shares row. Resolve by share_id first.
+    let v5Release=await c.env.DB.prepare(
+      "SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1"
+    ).bind(requestedId).first<any>().catch(()=>null);
 
-    if(!share && /^\d+$/.test(requestedId)){
+    if(!share && !v5Release && /^\d+$/.test(requestedId)){
       const fileId=Number(requestedId);
+      v5Release=await c.env.DB.prepare(
+        "SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1"
+      ).bind(fileId).first<any>().catch(()=>null);
+      if(v5Release){
+        canonicalShareId=String(v5Release.share_id);
+      }
       // A sealed Spine v4 release is authoritative for current Track assets.
       // Resolve its share_id first so the wallet lookup does not depend on the
       // retired v3 release/segment schema.
@@ -3788,9 +3798,10 @@ app.get('/api/shares/:id/my-tl', async (c) => {
         }catch(_){}
         canonicalShareId=String(releaseWithShare?.share_id||fileId);
       }
-    }else if(!share){
+    }else if(!share && !v5Release){
       return c.json({error:'파일 없음'},404);
     }
+    if(v5Release) canonicalShareId=String(v5Release.share_id);
 
     let row=await c.env.DB.prepare(
       'SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?'
@@ -3805,7 +3816,7 @@ app.get('/api/shares/:id/my-tl', async (c) => {
       ok:true,
       tl_balance:Number(row.tl_balance||0),
       total_charged:Number(row.total_charged||0),
-      file_tl:Number(share?.file_tl||0),
+      file_tl:Number(share?.file_tl||((Number(v5Release?.duration_ms||0)>0)?Math.ceil(Number(v5Release.duration_ms)/1000):0)),
       share_id:canonicalShareId
     });
   }catch(e:any){
@@ -3826,20 +3837,28 @@ app.post('/api/shares/:id/charge', async (c) => {
     await ensureShareTLBalances(c.env.DB);
     let share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
     let tl3Release=await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? AND status='released'").bind(shareId).first<any>();
+    // V5 sealed release is authoritative even when no legacy tl_shares row exists.
+    let v5Release=await c.env.DB.prepare(
+      "SELECT v.* FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.share_id=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1"
+    ).bind(shareId).first<any>().catch(()=>null);
 
-    // ★ 핵심: shareId가 숫자(file_id)로 들어온 경우 -> share_id로 변환
-    if (!share && !tl3Release && /^\d+$/.test(shareId)) {
+    // Numeric Track identifiers may be file_id values; resolve V5 before legacy V4/V3.
+    if (!share && !tl3Release && !v5Release && /^\d+$/.test(shareId)) {
       const numericId = Number(shareId);
-      // 1. tl3_releases에서 file_id로 진짜 share_id 찾기
-      const releaseByFileId = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE file_id=? AND status='released'").bind(numericId).first<any>();
-      if (releaseByFileId) {
-        tl3Release = releaseByFileId;
-        shareId = releaseByFileId.share_id; // 변수 업데이트
+      v5Release=await c.env.DB.prepare(
+        "SELECT v.* FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.file_id=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1"
+      ).bind(numericId).first<any>().catch(()=>null);
+      if(v5Release) shareId=String(v5Release.share_id);
+      if(!v5Release){
+        const releaseByFileId = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE file_id=? AND status='released'").bind(numericId).first<any>();
+        if (releaseByFileId) {
+          tl3Release = releaseByFileId;
+          shareId = String(releaseByFileId.share_id||shareId);
+        }
       }
-
     }
 
-    if(!share && !tl3Release) return c.json({error:'파일 없음'},404);
+    if(!share && !tl3Release && !v5Release) return c.json({error:'파일 없음'},404);
     if(share){
       const isMp3=shareKind(share)==='mp3';
       if(isMp3) return c.json({error:'MP3는 무료 재생이며 TL 충전 대상이 아닙니다.'},400);
