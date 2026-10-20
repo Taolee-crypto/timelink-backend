@@ -306,6 +306,28 @@ router.post('/player/register', async (c) => {
   } catch(e:any) { return c.json({ok:false,error:e?.message||'Player 키 등록 실패'},500); }
 });
 
+router.post('/player/revoke', async (c) => {
+  try {
+    const userId = await userFromRequest(c);
+    if (!userId) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const body = await c.req.json<any>();
+    const playerId = body?.player_id;
+    if (!validPlayerId(playerId)) return c.json({ok:false,error:'Player ID 형식이 올바르지 않습니다.'},400);
+    await ensureV5Tables(c.env.DB);
+    const result = await c.env.DB.prepare(`
+      UPDATE tl3_player_keys SET revoked_at=datetime('now'),last_used_at=datetime('now')
+      WHERE user_id=? AND player_id=? AND revoked_at IS NULL
+    `).bind(userId,playerId).run();
+    await c.env.DB.prepare(
+      'DELETE FROM tl3_v5_sessions WHERE user_id=? AND player_id=?'
+    ).bind(userId,playerId).run();
+    return c.json({ok:true,player_id:playerId,revoked:Number(result.meta?.changes||0)>0,
+      message:'Player 키가 폐기되었으며 해당 Player의 기존 세션도 무효화되었습니다.'});
+  } catch(e:any) {
+    return c.json({ok:false,error:e?.message||'Player 키 폐기 실패'},500);
+  }
+});
+
 router.post('/session-license/:id', async (c) => {
   try {
     const userId = await userFromRequest(c);
