@@ -10,6 +10,7 @@ Static source audit only. No production database writes, browser tests, or deplo
 - Wallet fields coexist: users.tl, tl_balance, tl_p, tl_a, tl_b. Track balances live in tl_user_files.
 - TLC and POC remain separate assets/contribution records.
 - V5 playback meter currently charges tl_user_files by cumulative played-time delta and does not debit the common wallet again. Preserve this behavior and the V5 encrypted container format.
+- Creator distribution policies conflict in current code: economics.ts defines plan A/B rates by TL_P/TL_A and a TL_B-to-TL_A rule, while the V5 meter currently credits a flat 70% into creator TL_P. This must be reconciled before changing creator settlement.
 
 ## Confirmed risks
 - Legacy POST /api/shares/:id/consume contains both wallet-to-track auto-funding and a subsequent wallet debit alongside track-pool debit. This conflicts with the agreed rule that playback consumes only the track pool.
@@ -23,7 +24,7 @@ Static source audit only. No production database writes, browser tests, or deplo
 wallet.html, wallet-v2.html, dashboard.html, sidebar.js, _shared/topbar.js, _shared/topbar-v2.js, index.html, track.html, shareplace.html, renewal/shareplace.html, creator.html, radio.html, incar.html, cafe-radio.html, cafe-channel.html, incar-channel.html, ads.html, advertiser.html, chart.html, admin.html, payment-success.html.
 
 ## Important ledger design blocker
-The current V3 balances table has nonnegative CHECK constraints for every account, including system accounts. A balanced opening-balance transaction requires a negative counter-entry in a designated system issuance/equity account. Therefore the existing table cannot safely represent explicit admin-entered genesis balances from zero without a schema change or a separately audited genesis mechanism. Do not work around this by silently seeding balances or writing unbalanced entries. Design a versioned schema migration that permits negative balances only for explicitly designated control/equity accounts, while user, escrow, and track-pool accounts remain nonnegative.
+The current V3 balances table originally constrained every account to nonnegative values. A balanced opening-balance transaction requires a negative counter-entry in a designated system issuance/equity account. Migration 0011 therefore rebuilds the balances table and permits negative available balance only for the dedicated system/genesis_equity account; user, escrow, partner, and ordinary platform accounts remain nonnegative. This schema change still requires CI validation before any database application.
 
 ## Implementation order
 1. Finish route-to-screen caller matrix and define immutable bucket taxonomy for TL_P/A/B, track pools, creator provenance, ad escrow and system equity.
