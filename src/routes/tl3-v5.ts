@@ -282,12 +282,26 @@ router.post('/player/register', async (c) => {
     await crypto.subtle.importKey('jwk',{kty:'EC',crv:'P-256',x:jwk.x,y:jwk.y,ext:true,key_ops:[]},{name:'ECDH',namedCurve:'P-256'},false,[]);
     const canonical = JSON.stringify({crv:'P-256',kty:'EC',x:jwk.x,y:jwk.y});
     const thumb = hex(await sha256(te.encode(canonical)));
-    await c.env.DB.prepare(`
-      INSERT INTO tl3_player_keys(user_id,player_id,public_jwk,key_thumbprint,created_at,last_used_at,revoked_at)
-      VALUES(?,?,?,?,datetime('now'),datetime('now'),NULL)
-      ON CONFLICT(user_id,player_id) DO UPDATE SET public_jwk=excluded.public_jwk,
-        key_thumbprint=excluded.key_thumbprint,last_used_at=datetime('now'),revoked_at=NULL
-    `).bind(userId,playerId,JSON.stringify({kty:'EC',crv:'P-256',x:jwk.x,y:jwk.y}),thumb).run();
+    const existingKey = await c.env.DB.prepare(
+      'SELECT key_thumbprint,revoked_at FROM tl3_player_keys WHERE user_id=? AND player_id=?'
+    ).bind(userId,playerId).first<any>();
+    // A live player identity is immutable. Re-registering the same public key is
+    // idempotent; replacing it requires revoking the old identity first.
+    if (existingKey && !existingKey.revoked_at && String(existingKey.key_thumbprint) !== thumb) {
+      return c.json({ok:false,code:'PLAYER_KEY_CONFLICT',error:'이미 등록된 Player ID의 공개키가 다릅니다. 기존 Player를 먼저 폐기한 뒤 새 기기로 등록하십시오.'},409);
+    }
+    if (existingKey && !existingKey.revoked_at) {
+      await c.env.DB.prepare(
+        "UPDATE tl3_player_keys SET last_used_at=datetime('now') WHERE user_id=? AND player_id=? AND key_thumbprint=? AND revoked_at IS NULL"
+      ).bind(userId,playerId,thumb).run();
+    } else {
+      await c.env.DB.prepare(`
+        INSERT INTO tl3_player_keys(user_id,player_id,public_jwk,key_thumbprint,created_at,last_used_at,revoked_at)
+        VALUES(?,?,?,?,datetime('now'),datetime('now'),NULL)
+        ON CONFLICT(user_id,player_id) DO UPDATE SET public_jwk=excluded.public_jwk,
+          key_thumbprint=excluded.key_thumbprint,last_used_at=datetime('now'),revoked_at=NULL
+      `).bind(userId,playerId,JSON.stringify({kty:'EC',crv:'P-256',x:jwk.x,y:jwk.y}),thumb).run();
+    }
     return c.json({ok:true,player_id:playerId,key_thumbprint:thumb,algorithm:'ECDH-P256/HKDF-SHA256/AES-256-GCM'});
   } catch(e:any) { return c.json({ok:false,error:e?.message||'Player 키 등록 실패'},500); }
 });
@@ -362,8 +376,11 @@ router.get('/container/:id', async (c) => {
     const fileId = Number(c.req.param('id'));
     const sessionId = String(c.req.query('session_id') || '');
     if (!Number.isSafeInteger(fileId) || fileId <= 0 || !/^[A-Za-z0-9_-]{12,128}$/.test(sessionId)) return c.json({ok:false,error:'자산 또는 세션 정보가 올바르지 않습니다.'},400);
-    const session = await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=? AND expires_at>?')
-      .bind(sessionId,userId,fileId,Math.floor(Date.now()/1000)).first();
+    const session = await c.env.DB.prepare(`
+      SELECT s.session_id FROM tl3_v5_sessions s
+      JOIN tl3_player_keys p ON p.user_id=s.user_id AND p.player_id=s.player_id AND p.revoked_at IS NULL
+      WHERE s.session_id=? AND s.user_id=? AND s.file_id=? AND s.expires_at>?
+    `).bind(sessionId,userId,fileId,Math.floor(Date.now()/1000)).first();
     if (!session) return c.json({ok:false,error:'유효한 V5 Player 세션이 없습니다.'},403);
     const release = await c.env.DB.prepare("SELECT object_key,container_bytes FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>();
     if (!release) return c.json({ok:false,error:'TL3 V5 컨테이너를 찾을 수 없습니다.'},404);
