@@ -2033,7 +2033,7 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
     const trackRow=await c.env.DB.prepare('SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?').bind(user.id,String(file.share_id)).first<any>();
     const assetBalance=Number(trackRow?.tl_balance||0);
     const w=tlWalletParts(user),walletBalance=Number((w.p+w.a+w.b).toFixed(6));
-    return c.json({ok:true,file_id:fileId,required_tl:requiredTL,duration_ms:totalMs,wallet_tl:walletBalance,asset_tl:assetBalance,can_play:assetBalance>1e-9});
+    return c.json({ok:true,file_id:fileId,required_tl:requiredTL,duration_ms:totalMs,wallet_tl:walletBalance,asset_tl:assetBalance,can_play:assetBalance+1e-9>=requiredTL,insufficient_tl:assetBalance+1e-9<requiredTL,message:assetBalance+1e-9<requiredTL?'필요한 재생 TL이 부족합니다. 먼저 충전해주십시오.':null});
   }catch(e:any){return c.json({ok:false,error:e?.message||'재생 사전 확인 실패'},500);}
 });
 
