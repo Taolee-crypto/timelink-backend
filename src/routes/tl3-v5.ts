@@ -157,11 +157,21 @@ function resolveMasterKeyring(env: Env): MasterKeyring {
   const keys: Record<string, string> = {};
   const legacy = String(env.TL3_MASTER_SECRET || '');
   if (legacy) keys.legacy = legacy;
-  const configured = String(env.TL3_MASTER_KEYRING || '').trim();
-  if (configured) {
-    let parsed: unknown;
-    try { parsed = JSON.parse(configured); }
-    catch { throw new Error('TL3_MASTER_KEYRING은 JSON 객체여야 합니다.'); }
+  // Cloudflare accepts both Secret Text (JSON serialized string) and a JSON
+  // variable (already-decoded object). Handle both without coercing objects
+  // through String(), which would produce "[object Object]".
+  const rawConfigured = env.TL3_MASTER_KEYRING;
+  let parsed: unknown = undefined;
+  if (typeof rawConfigured === 'string') {
+    const configured = rawConfigured.trim();
+    if (configured) {
+      try { parsed = JSON.parse(configured); }
+      catch { throw new Error('TL3_MASTER_KEYRING은 JSON 객체여야 합니다.'); }
+    }
+  } else if (rawConfigured !== undefined && rawConfigured !== null) {
+    parsed = rawConfigured;
+  }
+  if (parsed !== undefined) {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error('TL3_MASTER_KEYRING은 key ID별 문자열을 가진 JSON 객체여야 합니다.');
     }
