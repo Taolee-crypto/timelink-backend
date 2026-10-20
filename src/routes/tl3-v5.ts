@@ -302,14 +302,28 @@ router.post('/session-license/:id', async (c) => {
     const body = await c.req.json<any>();
     const playerId = body?.player_id, sessionId = String(body?.session_id || '');
     if (!validPlayerId(playerId) || !/^[A-Za-z0-9_-]{12,128}$/.test(sessionId)) return c.json({ok:false,error:'Player 또는 재생 세션 정보가 올바르지 않습니다.'},400);
-    const [player, release, wallet] = await Promise.all([
+    const [player, release] = await Promise.all([
       c.env.DB.prepare('SELECT public_jwk,key_thumbprint FROM tl3_player_keys WHERE user_id=? AND player_id=? AND revoked_at IS NULL').bind(userId,playerId).first<any>(),
-      c.env.DB.prepare("SELECT share_id,wrapped_content_key FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>(),
-      c.env.DB.prepare('SELECT (CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0) END) AS total FROM users WHERE id=? AND is_active=1').bind(userId).first<any>()
+      c.env.DB.prepare("SELECT share_id,wrapped_content_key FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>()
     ]);
     if (!player) return c.json({ok:false,code:'PLAYER_KEY_REQUIRED',error:'이 기기에 등록된 TimeLink Player 키가 없습니다.'},403);
     if (!release) return c.json({ok:false,error:'봉인된 TL3 V5 자산을 찾을 수 없습니다.'},404);
-    if (Number(wallet?.total || 0) < 1) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'TL이 없어 재생 권한을 발급할 수 없습니다.'},402);
+    await c.env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS tl_user_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        share_id TEXT NOT NULL,
+        tl_balance REAL DEFAULT 0,
+        total_charged REAL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(user_id, share_id)
+      )
+    `).run();
+    const trackBalance = await c.env.DB.prepare(
+      'SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?'
+    ).bind(userId,String(release.share_id)).first<any>();
+    if (Number(trackBalance?.tl_balance || 0) <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:Number(trackBalance?.tl_balance||0)},402);
     const masterSecret = String(c.env.TL3_MASTER_SECRET || '');
     if (!masterSecret) return c.json({ok:false,error:'TL3_MASTER_SECRET is not configured'},503);
     const contentKey = await unwrapAssetKey(masterSecret,fileId,String(release.share_id),String(release.wrapped_content_key));
