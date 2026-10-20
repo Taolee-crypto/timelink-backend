@@ -4030,6 +4030,8 @@ app.get('/api/shares/:id', async (c) => {
     return c.json({
       id:String(row.id),user_id:Number(row.user_id||0),username:String(row.username||'User'),
       title:String(row.title||''),artist:String(row.artist||''),album:String(row.album||''),
+      composer:String(row.composer||''),lyricist:String(row.lyricist||''),producer:String(row.producer||''),arranger:String(row.arranger||''),
+      lyrics:String(row.lyrics||''),lyrics_timed:String(row.lyrics_timed||''),
       duration:durationSec,duration_sec:durationSec,file_tl:requiredTL,price_tl:requiredTL,category:String(row.category||'Music'),
       file_type:v5Release?'audio/tl3':String(row.file_type||''),category_type:String(row.category_type||'audio'),description:String(row.description||''),
       plan:String(row.plan||'FREE'),spotify_id:row.spotify_id||null,spotify_url:row.spotify_url||null,
@@ -4111,6 +4113,9 @@ app.patch('/api/shares/:id', async (c) => {
     "ALTER TABLE tl_shares ADD COLUMN gallery_images TEXT DEFAULT '[]'",
     "ALTER TABLE tl_shares ADD COLUMN production_note TEXT DEFAULT ''",
     "ALTER TABLE tl_shares ADD COLUMN origin_hash TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN producer TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN arranger TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN lyrics_timed TEXT DEFAULT ''",
   ];
   for (const sql of newCols) {
     await c.env.DB.prepare(sql).run().catch(() => {});
@@ -4120,7 +4125,8 @@ app.patch('/api/shares/:id', async (c) => {
   const allowed: Record<string, string> = {
     artist:'artist', album:'album', category:'category',
     description:'description', composer:'composer', lyricist:'lyricist',
-    lyrics:'lyrics', cover_url:'cover_url', creation_story:'creation_story',
+    producer:'producer', arranger:'arranger', lyrics:'lyrics', lyrics_timed:'lyrics_timed',
+    cover_url:'cover_url', creation_story:'creation_story',
     production_note:'production_note', musical_key:'musical_key',
     credits:'credits', mood_tags:'mood_tags', social_links:'social_links',
     gallery_images:'gallery_images',
