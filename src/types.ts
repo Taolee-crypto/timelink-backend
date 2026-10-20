@@ -12,6 +12,8 @@ export interface Env {
   ONEDRIVE_REDIRECT_URI?: string;
   STORAGE_ENCRYPTION_KEY?: string;
   TL3_MASTER_SECRET?: string;
+  TL3_MASTER_KEYRING?: string; // JSON map: immutable key ID -> secret (24+ chars)
+  TL3_MASTER_KEY_ACTIVE_ID?: string; // key ID used for newly manufactured V5 containers
   TL_SECRET?: string;
   UNSPLASH_ACCESS_KEY?: string;
   KAKAO_REST_API_KEY?: string;
