@@ -4045,17 +4045,18 @@ app.get('/api/shares/:id', async (c) => {
     ?durationSec
     :Number(release?.price_tl||0)>0?Number(release.price_tl):durationSec>0?durationSec:Math.max(0,Number(file.file_tl||0));
   const resolvedShareId=String(v5Release?.share_id||release?.share_id||'');
-  return c.json({
+  const response={
     id:String(v5Release?.share_id||file.id),file_id:Number(file.id),share_id:resolvedShareId||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
     title:String(file.title||''),artist:String(file.artist||''),album:'',duration:durationSec,duration_sec:durationSec,
     file_tl:requiredTL,price_tl:requiredTL,category:String(file.genre||'Music'),file_type:v5Release?'audio/tl3':String(file.file_type||''),
     category_type:'audio',description:'',plan:'A',cover_url:file.cover_image||null,pulse:Number(file.pulse||0),
     play_count:Number(file.play_count||0),created_at:file.created_at,
-    content_kind:(v5Release||release)?'tl3':'mp3',player_version:v5Release?5:undefined,
-    stream_url:v5Release
-      ?origin+'/api/stream/'+encodeURIComponent(resolvedShareId)
-      :origin+'/api/legacy-stream/'+encodeURIComponent(String(file.id))
-  });
+    content_kind:(v5Release||release)?'tl3':'mp3',player_version:v5Release?5:undefined
+  };
+  if(v5Release){
+    return c.json({...response,stream_url:origin+'/api/stream/'+encodeURIComponent(resolvedShareId)});
+  }
+  return c.json({...response,stream_url:origin+'/api/legacy-stream/'+encodeURIComponent(String(file.id))});
 });
 
 
