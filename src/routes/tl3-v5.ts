@@ -246,7 +246,7 @@ router.post('/manufacture', async (c) => {
     await c.env.DB.prepare(`
       INSERT INTO tl3_v5_releases
         (file_id,user_id,share_id,object_key,duration_ms,source_sha256,container_sha256,wrapped_content_key,container_bytes,status,created_at,updated_at,key_id)
-      VALUES(?,?,?,?,?,?,?,?,?,'sealed',datetime('now'),datetime('now)',?)
+      VALUES(?,?,?,?,?,?,?,?,?,'sealed',datetime('now'),datetime('now'),?)
       ON CONFLICT(file_id) DO UPDATE SET user_id=excluded.user_id,share_id=excluded.share_id,
         object_key=excluded.object_key,duration_ms=excluded.duration_ms,source_sha256=excluded.source_sha256,
         container_sha256=excluded.container_sha256,wrapped_content_key=excluded.wrapped_content_key,
