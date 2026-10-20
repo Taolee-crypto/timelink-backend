@@ -169,6 +169,9 @@ function resolveMasterKeyring(env: Env): MasterKeyring {
       if (!/^[A-Za-z0-9._-]{1,64}$/.test(id) || typeof secret !== 'string' || secret.length < 24) {
         throw new Error('TL3_MASTER_KEYRING의 키 ID 또는 키 값 형식이 올바르지 않습니다.');
       }
+      if (id === 'legacy' && legacy && secret !== legacy) {
+        throw new Error('legacy 키는 기존 TL3_MASTER_SECRET과 반드시 같아야 합니다.');
+      }
       keys[id] = secret;
     }
   }
