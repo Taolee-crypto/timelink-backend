@@ -4061,13 +4061,19 @@ app.get('/api/shares/:id', async (c) => {
     ?durationSec
     :Number(release?.price_tl||0)>0?Number(release.price_tl):durationSec>0?durationSec:Math.max(0,Number(file.file_tl||0));
   const resolvedShareId=String(v5Release?.share_id||release?.share_id||'');
+  let v5Lyrics='';
+  if(v5Release){
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_v5_track_metadata (share_id TEXT PRIMARY KEY, file_id INTEGER NOT NULL, user_id INTEGER NOT NULL, lyrics TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL)`).run();
+    const lyricRow=await c.env.DB.prepare('SELECT lyrics FROM tl3_v5_track_metadata WHERE share_id=?').bind(resolvedShareId).first<any>().catch(()=>null);
+    v5Lyrics=String(lyricRow?.lyrics||'');
+  }
   const response={
     id:String(v5Release?.share_id||file.id),file_id:Number(file.id),share_id:resolvedShareId||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
     title:String(file.title||''),artist:String(file.artist||''),album:'',duration:durationSec,duration_sec:durationSec,
     file_tl:requiredTL,price_tl:requiredTL,category:String(file.genre||'Music'),file_type:v5Release?'audio/tl3':String(file.file_type||''),
     category_type:'audio',description:'',plan:'A',cover_url:file.cover_image||null,pulse:Number(file.pulse||0),
     play_count:Number(file.play_count||0),created_at:file.created_at,
-    content_kind:(v5Release||release)?'tl3':'mp3',player_version:v5Release?5:undefined
+    content_kind:(v5Release||release)?'tl3':'mp3',player_version:v5Release?5:undefined,lyrics:v5Lyrics
   };
   if(v5Release){
     return c.json({...response,stream_url:origin+'/api/stream/'+encodeURIComponent(resolvedShareId)});
@@ -4093,13 +4099,22 @@ app.patch('/api/shares/:id', async (c) => {
 
   const shareId = c.req.param('id');
 
+  const body = await c.req.json<any>().catch(() => ({}));
   const existing = await c.env.DB.prepare(
     'SELECT id, user_id, title FROM tl_shares WHERE id=?'
-  ).bind(shareId).first() as any;
-  if (!existing) return c.json({ error: '파일 없음' }, 404);
+  ).bind(shareId).first<any>();
+  if (!existing) {
+    const v5 = await c.env.DB.prepare(`SELECT v.share_id,v.file_id,v.user_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.share_id=? AND v.status='sealed' AND LOWER(f.file_type)='audio/tl3' LIMIT 1`).bind(shareId).first<any>().catch(()=>null);
+    if (!v5) return c.json({ error: 'V5 곡을 찾을 수 없습니다.' }, 404);
+    if (String(v5.user_id) !== String(userId)) return c.json({ error: '권한 없음' }, 403);
+    if (body.lyrics === undefined) return c.json({ error: 'V5 곡은 현재 가사 텍스트만 수정할 수 있습니다.' }, 400);
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_v5_track_metadata (share_id TEXT PRIMARY KEY, file_id INTEGER NOT NULL, user_id INTEGER NOT NULL, lyrics TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL)`).run();
+    await c.env.DB.prepare(`INSERT INTO tl3_v5_track_metadata (share_id,file_id,user_id,lyrics,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(share_id) DO UPDATE SET lyrics=excluded.lyrics,updated_at=excluded.updated_at WHERE tl3_v5_track_metadata.user_id=excluded.user_id`).bind(String(v5.share_id),Number(v5.file_id),userId,String(body.lyrics).slice(0,20000),Date.now()).run();
+    const saved=await c.env.DB.prepare('SELECT lyrics FROM tl3_v5_track_metadata WHERE share_id=? AND user_id=?').bind(String(v5.share_id),userId).first<any>();
+    if (!saved) return c.json({error:'가사 저장 권한 또는 저장 결과를 확인할 수 없습니다.'},403);
+    return c.json({ok:true,share:{id:String(v5.share_id),lyrics:String(saved.lyrics||'')}});
+  }
   if (String(existing.user_id) !== String(userId)) return c.json({ error: '권한 없음' }, 403);
-
-  const body = await c.req.json<any>().catch(() => ({}));
 
   // 새 컬럼 자동 생성
   const newCols = [
