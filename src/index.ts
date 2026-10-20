@@ -3774,29 +3774,30 @@ app.get('/api/shares/:id/my-tl', async (c) => {
       ).bind(fileId).first<any>().catch(()=>null);
       if(v5Release){
         canonicalShareId=String(v5Release.share_id);
-      }
-      // A sealed Spine v4 release is authoritative for current Track assets.
-      // Resolve its share_id first so the wallet lookup does not depend on the
-      // retired v3 release/segment schema.
-      const spineRelease=await c.env.DB.prepare(
-        "SELECT file_id,share_id FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
-      ).bind(fileId).first<any>().catch(()=>null);
-      if(spineRelease){
-        canonicalShareId=String(spineRelease.share_id||fileId);
       }else{
-        const release=await c.env.DB.prepare(
-          "SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1"
-        ).bind(fileId).first<any>();
-        if(!release) return c.json({error:'파일 없음'},404);
+        // A sealed Spine v4 release is authoritative for current Track assets.
+        // Resolve its share_id first so the wallet lookup does not depend on the
+        // retired v3 release/segment schema.
+        const spineRelease=await c.env.DB.prepare(
+          "SELECT file_id,share_id FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
+        ).bind(fileId).first<any>().catch(()=>null);
+        if(spineRelease){
+          canonicalShareId=String(spineRelease.share_id||fileId);
+        }else{
+          const release=await c.env.DB.prepare(
+            "SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1"
+          ).bind(fileId).first<any>();
+          if(!release) return c.json({error:'파일 없음'},404);
 
-        // share_id is optional across deployed legacy schema generations.
-        let releaseWithShare:any=release;
-        try{
-          releaseWithShare=await c.env.DB.prepare(
-            "SELECT file_id,share_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1"
-          ).bind(fileId).first<any>() || release;
-        }catch(_){}
-        canonicalShareId=String(releaseWithShare?.share_id||fileId);
+          // share_id is optional across deployed legacy schema generations.
+          let releaseWithShare:any=release;
+          try{
+            releaseWithShare=await c.env.DB.prepare(
+              "SELECT file_id,share_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1"
+            ).bind(fileId).first<any>() || release;
+          }catch(_){}
+          canonicalShareId=String(releaseWithShare?.share_id||fileId);
+        }
       }
     }else if(!share && !v5Release){
       return c.json({error:'파일 없음'},404);
