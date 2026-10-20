@@ -29,14 +29,23 @@ router.get('/wallet', async (c) => {
   const tlP = amount('wallet_paid');
   const tlA = amount('wallet_ad');
   const tlB = amount('wallet_bonus');
-  const trackPools = accounts
-    .filter((a:any) => a.asset_code === 'TL' && String(a.bucket || '').startsWith('track_pool:'))
-    .map((a:any) => ({
-      share_id: String(a.bucket).slice('track_pool:'.length),
-      available_tl: Number(a.available_atoms || 0),
-      held_tl: Number(a.held_atoms || 0),
-      version: Number(a.version || 0)
-    }));
+  const trackPoolMap = new Map<string, any>();
+  for (const account of accounts) {
+    if (account.asset_code !== 'TL') continue;
+    const match = String(account.bucket || '').match(/^track_pool:([^:]+):(paid|ad|bonus|legacy)$/);
+    if (!match) continue;
+    const shareId = match[1], source = match[2];
+    const pool = trackPoolMap.get(shareId) || {
+      share_id: shareId, available_tl: 0, held_tl: 0,
+      by_source: { paid: 0, ad: 0, bonus: 0, legacy: 0 }
+    };
+    const available = Number(account.available_atoms || 0);
+    pool.available_tl += available;
+    pool.held_tl += Number(account.held_atoms || 0);
+    pool.by_source[source] += available;
+    trackPoolMap.set(shareId, pool);
+  }
+  const trackPools = [...trackPoolMap.values()];
   const walletInitialized = accounts.some((a:any) =>
     a.asset_code === 'TL' && ['wallet_paid','wallet_ad','wallet_bonus'].includes(String(a.bucket))
   );
@@ -54,7 +63,7 @@ router.get('/wallet', async (c) => {
     other_accounts: accounts.filter((a:any) =>
       !(a.asset_code === 'TL' &&
         (['wallet_paid','wallet_ad','wallet_bonus'].includes(String(a.bucket)) ||
-         String(a.bucket || '').startsWith('track_pool:')))
+         /^track_pool:[^:]+:(paid|ad|bonus|legacy)$/.test(String(a.bucket || ''))))
     ),
     accounts
   });
@@ -266,7 +275,7 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-const OPENING_BUCKET = /^(wallet_paid|wallet_ad|wallet_bonus|track_pool:[A-Za-z0-9_-]{1,120})$/;
+const OPENING_BUCKET = /^(wallet_paid|wallet_ad|wallet_bonus|track_pool:[A-Za-z0-9_-]{1,120}:(paid|ad|bonus|legacy))$/;
 
 // Admin-only, read-only legacy balance inventory. Values are never combined.
 router.get('/admin/reconciliation/users', async (c) => {
