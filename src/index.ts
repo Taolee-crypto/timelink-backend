@@ -3996,48 +3996,70 @@ app.get('/api/shares/:id', async (c) => {
     const isOwner=viewerId>0&&Number(row.user_id)===viewerId;
     const isPublic=await isPublicPlaybackShare(c.env.DB,row);
     if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
-      // TL3의 실제 재생시간은 tl3_releases.duration_ms를 기준으로 한다.
-      const releaseDuration=await c.env.DB.prepare("SELECT duration_ms,price_tl FROM tl3_releases WHERE share_id=? AND status='released' ORDER BY updated_at DESC LIMIT 1").bind(String(row.id)).first<any>().catch(()=>null);
-      const releasedDurationSec=Math.ceil(Number(releaseDuration?.duration_ms||0)/1000);
-      const durationSec=releasedDurationSec>0?releasedDurationSec:Math.max(0,Number(row.duration||0));
-      const requiredTL=Number(releaseDuration?.price_tl||0)>0?Number(releaseDuration.price_tl):durationSec>0?durationSec:Math.max(0,Number(row.file_tl||0));
-      // 2026-10-16: D1 content_kind/release_mode 우선 (v3 호환)
-      const _ck = String(row.content_kind||'').toLowerCase();
-      const _rm = String(row.release_mode||'').toLowerCase();
-      const _ft = String(row.file_type||'').toLowerCase();
-      const _kind = (_ck==='tl3' || _rm==='tl3' || _ft==='audio/tl3') ? 'tl3' : shareKind(row);
+    // V5 sealed release is authoritative for duration and required TL.
+    const v5Release=await c.env.DB.prepare(
+      "SELECT duration_ms,share_id,file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1"
+    ).bind(String(row.id)).first<any>().catch(()=>null);
+    const releaseDuration=await c.env.DB.prepare(
+      "SELECT duration_ms,price_tl FROM tl3_releases WHERE share_id=? AND status='released' ORDER BY updated_at DESC LIMIT 1"
+    ).bind(String(row.id)).first<any>().catch(()=>null);
+    const durationMs=Number(v5Release?.duration_ms||releaseDuration?.duration_ms||0);
+    const releasedDurationSec=Math.ceil(durationMs/1000);
+    const durationSec=releasedDurationSec>0?releasedDurationSec:Math.max(0,Number(row.duration||0));
+    const requiredTL=v5Release?durationSec:Number(releaseDuration?.price_tl||0)>0?Number(releaseDuration.price_tl):durationSec>0?durationSec:Math.max(0,Number(row.file_tl||0));
+    const _ck=String(row.content_kind||'').toLowerCase();
+    const _rm=String(row.release_mode||'').toLowerCase();
+    const _ft=String(row.file_type||'').toLowerCase();
+    const _kind=(v5Release||_ck==='tl3'||_rm==='tl3'||_ft==='audio/tl3')?'tl3':shareKind(row);
     return c.json({
       id:String(row.id),user_id:Number(row.user_id||0),username:String(row.username||'User'),
       title:String(row.title||''),artist:String(row.artist||''),album:String(row.album||''),
       duration:durationSec,duration_sec:durationSec,file_tl:requiredTL,price_tl:requiredTL,category:String(row.category||'Music'),
-      file_type:String(row.file_type||''),category_type:String(row.category_type||''),description:String(row.description||''),
+      file_type:v5Release?'audio/tl3':String(row.file_type||''),category_type:String(row.category_type||'audio'),description:String(row.description||''),
       plan:String(row.plan||'FREE'),spotify_id:row.spotify_id||null,spotify_url:row.spotify_url||null,
       cover_url:row.cover_url||null,country:String(row.country||'KR'),content_lang:String(row.content_lang||'ko'),
-      content_kind:_kind,
-      release_mode:String(row.release_mode||''),
+      content_kind:_kind,release_mode:String(row.release_mode||''),player_version:v5Release?5:undefined,
       stream_url:origin+'/api/stream/'+encodeURIComponent(String(row.id))
     });
   }
-  const file=await c.env.DB.prepare('SELECT * FROM tl_files WHERE CAST(id AS TEXT)=?').bind(id).first<any>();
+  // V5 catalogue cards use share_id; resolve it to the underlying tl_files row.
+  const v5ByShare=await c.env.DB.prepare(
+    "SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1"
+  ).bind(id).first<any>().catch(()=>null);
+  const fileLookupId=v5ByShare?String(v5ByShare.file_id):id;
+  const file=await c.env.DB.prepare('SELECT * FROM tl_files WHERE CAST(id AS TEXT)=?').bind(fileLookupId).first<any>();
   if(!file)return c.json({error:'not found'},404);
   const isOwner=viewerId>0&&Number(file.user_id)===viewerId;
-  const release=await c.env.DB.prepare("SELECT price_tl,share_id FROM tl3_releases WHERE file_id=? AND status='released'").bind(file.id).first<any>().catch(()=>null);
-  // 2026-10-16: 승인 게이트 제거 (공유=공개)
-  const isPublic = Number(file.shared) === 1;
+  const v5Release=v5ByShare||await c.env.DB.prepare(
+    "SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1"
+  ).bind(file.id).first<any>().catch(()=>null);
+  const release=await c.env.DB.prepare(
+    "SELECT price_tl,share_id,duration_ms FROM tl3_releases WHERE file_id=? AND status='released'"
+  ).bind(file.id).first<any>().catch(()=>null);
+  const isPublic=Number(file.shared)===1;
   if(!isOwner&&!isPublic)return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
-  return c.json({
-    id:String(file.id),file_id:Number(file.id),share_id:release?.share_id||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
-    title:String(file.title||''),artist:String(file.artist||''),album:'',duration:Number(file.duration_seconds||0),
-    file_tl:Number(file.file_tl||0),price_tl:Number(release?.price_tl||0),category:String(file.genre||'Music'),file_type:String(file.file_type||''),
+  const durationSec=v5Release
+    ?Math.ceil(Number(v5Release.duration_ms||0)/1000)
+    :Math.ceil(Number(release?.duration_ms||0)/1000)||Math.max(0,Number(file.duration_seconds||0));
+  const requiredTL=v5Release
+    ?durationSec
+    :Number(release?.price_tl||0)>0?Number(release.price_tl):durationSec>0?durationSec:Math.max(0,Number(file.file_tl||0));
+  const resolvedShareId=String(v5Release?.share_id||release?.share_id||'');
+  const response={
+    id:String(v5Release?.share_id||file.id),file_id:Number(file.id),share_id:resolvedShareId||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
+    title:String(file.title||''),artist:String(file.artist||''),album:'',duration:durationSec,duration_sec:durationSec,
+    file_tl:requiredTL,price_tl:requiredTL,category:String(file.genre||'Music'),file_type:v5Release?'audio/tl3':String(file.file_type||''),
     category_type:'audio',description:'',plan:'A',cover_url:file.cover_image||null,pulse:Number(file.pulse||0),
     play_count:Number(file.play_count||0),created_at:file.created_at,
-    content_kind:release?'tl3':'mp3',
-    stream_url:origin+'/api/legacy-stream/'+encodeURIComponent(String(file.id))
-  });
+    content_kind:(v5Release||release)?'tl3':'mp3',player_version:v5Release?5:undefined
+  };
+  if(v5Release){
+    return c.json({...response,stream_url:origin+'/api/stream/'+encodeURIComponent(resolvedShareId)});
+  }
+  return c.json({...response,stream_url:origin+'/api/legacy-stream/'+encodeURIComponent(String(file.id))});
 });
 
 
-// ══════════════════════════════════════════════════════════
 // PATCH /api/shares/:id — 창작자 정보 편집 (곡명 불변)
 // ══════════════════════════════════════════════════════════
 app.patch('/api/shares/:id', async (c) => {
