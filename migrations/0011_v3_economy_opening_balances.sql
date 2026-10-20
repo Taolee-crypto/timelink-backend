@@ -89,3 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_v3_opening_items_batch
   ON v3_economy_opening_items(batch_id, status);
 CREATE INDEX IF NOT EXISTS idx_v3_opening_items_user
   ON v3_economy_opening_items(user_id, bucket);
+
+-- A source field can be imported only once across all opening batches.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_v3_opening_source_once
+  ON v3_economy_opening_items(user_id, bucket, source_table, source_row_id, source_field);
