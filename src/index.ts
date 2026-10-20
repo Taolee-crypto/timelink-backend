@@ -2075,9 +2075,14 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
     const boundedPlayedMs=Math.min(playedMs,totalMs);
-    // Bill every audible millisecond proportionally: 1 second = 1 TL.
-    // Do not round partial playback down or the final track fraction up.
-    const targetSeconds=Number((boundedPlayedMs/1000).toFixed(3));
+    // Bill partial playback by audible time: 1 second = 1 TL.
+    // A completed track settles exactly its required whole-second TL amount,
+    // matching preflight's ceil(duration_ms / 1000) calculation.
+    const requiredTL=Math.ceil(totalMs/1000-1e-9);
+    const completedTrack=boundedPlayedMs>=totalMs;
+    const targetSeconds=completedTrack
+      ? requiredTL
+      : Number((boundedPlayedMs/1000).toFixed(3));
     // tl3_play_meter_sessions is provisioned by migration 0007, not at playback time.
     await c.env.DB.prepare('INSERT OR IGNORE INTO tl3_play_meter_sessions(session_id,user_id,file_id) VALUES(?,?,?)').bind(sessionId,user.id,fileId).run();
     const prior=await c.env.DB.prepare('SELECT user_id,file_id,billed_seconds,played_ms FROM tl3_play_meter_sessions WHERE session_id=?').bind(sessionId).first<any>();
@@ -2099,7 +2104,11 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     }
     const chargedSeconds=Number((already+delta).toFixed(3));
     const creator=await c.env.DB.prepare('SELECT id,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
-    const revenue=Number((delta*0.7).toFixed(6));
+    // Creator rewards are paid only when listener and creator are different
+    // accounts. Self-play must not increase the listener's own wallet.
+    const revenue=creator&&Number(creator.id)!==Number(user.id)
+      ? Number((delta*0.7).toFixed(6))
+      : 0;
     const creatorBefore=creator?Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0):0;
     const creatorAfter=creatorBefore+revenue;
     const statements=[
