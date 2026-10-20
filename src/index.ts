@@ -4104,7 +4104,7 @@ app.patch('/api/shares/:id', async (c) => {
     'SELECT id, user_id, title FROM tl_shares WHERE id=?'
   ).bind(shareId).first<any>();
   if (!existing) {
-    const v5 = await c.env.DB.prepare(`SELECT v.share_id,v.file_id,v.user_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.share_id=? AND v.status='sealed' AND LOWER(f.file_type)='audio/tl3' LIMIT 1`).bind(shareId).first<any>().catch(()=>null);
+    const v5 = await c.env.DB.prepare(`SELECT v.share_id,v.file_id,v.user_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE (v.share_id=? OR CAST(v.file_id AS TEXT)=? OR ('tl3_'||CAST(v.file_id AS TEXT))=?) AND v.status='sealed' AND LOWER(f.file_type)='audio/tl3' LIMIT 1`).bind(shareId,shareId,shareId).first<any>().catch(()=>null);
     if (!v5) return c.json({ error: 'V5 곡을 찾을 수 없습니다.' }, 404);
     if (String(v5.user_id) !== String(userId)) return c.json({ error: '권한 없음' }, 403);
     if (body.lyrics === undefined) return c.json({ error: 'V5 곡은 현재 가사 텍스트만 수정할 수 있습니다.' }, 400);
