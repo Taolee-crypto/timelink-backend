@@ -2001,7 +2001,7 @@ app.get('/api/v1/tl3/code/:id', async (c) => {
   }catch(e:any){return c.json({ok:false,error:e?.message||'license error'},500);}
 });
 
-// 재생 전 자산 길이와 지갑 잔액을 조회한다. 재생 시작 조건은 최소 1 TL이며 예약·차감은 하지 않는다.
+// 재생 전 자산 길이와 곡별 충전 잔액을 조회한다. 예약·차감은 하지 않는다.
 app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
   try {
     const auth=c.req.header('Authorization')?.replace(/^Bearer /,'').trim()||'';
@@ -2096,12 +2096,11 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
       const freshWallet=tlWalletParts(await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(user.id).first<any>());
       return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 부족하여 재생을 중지합니다.',billed_seconds:already,charged_tl:already,wallet_tl:Number((freshWallet.p+freshWallet.a+freshWallet.b).toFixed(6)),asset_tl:assetBalance,stop:true},402);
     }
-    const takeP=0,takeA=0,takeB=0;
     const chargedSeconds=Number((already+delta).toFixed(3));
     const creator=await c.env.DB.prepare('SELECT id,CASE WHEN COALESCE(tl_p,0)+COALESCE(tl_a,0)+COALESCE(tl_b,0)=0 THEN COALESCE(NULLIF(tl_balance,0),tl,0) ELSE COALESCE(tl_p,0) END p,COALESCE(tl_a,0) a,COALESCE(tl_b,0) b FROM users WHERE id=?').bind(file.user_id).first<any>();
     const revenue=Number((delta*0.7).toFixed(6));
     const creatorBefore=creator?Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0):0;
-    const creatorAfter=creatorBefore-(Number(creator?.id)===Number(user.id)?delta:0)+revenue;
+    const creatorAfter=creatorBefore+revenue;
     const statements=[
       c.env.DB.prepare("UPDATE tl3_play_meter_sessions SET billed_seconds=?,played_ms=?,updated_at=datetime('now') WHERE session_id=? AND user_id=? AND file_id=? AND billed_seconds=?").bind(chargedSeconds,Math.min(playedMs,totalMs),sessionId,user.id,fileId,already),
       c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
