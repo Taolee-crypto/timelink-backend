@@ -191,8 +191,58 @@ must_fail("DELETE FROM v3_tlc_mining_records WHERE id='mine-1'")
 
 assert legacy_snapshot() == before, "V3 test operations unexpectedly changed legacy data"
 
+# Migration 0011 adds a controlled negative balance only for system genesis equity.
+OPENING_MIGRATION = ROOT / "migrations" / "0011_v3_economy_opening_balances.sql"
+db.executescript(OPENING_MIGRATION.read_text(encoding="utf-8"))
+
+db.execute("""
+    INSERT INTO v3_economy_accounts (id,owner_type,owner_id,asset_code,bucket)
+    VALUES ('genesis-equity','system','timelink','TL','genesis_equity'),
+           ('opening-user','user','1','TL','wallet_paid'),
+           ('opening-platform','platform','timelink','TL','treasury')
+""")
+for account_id in ("genesis-equity", "opening-user", "opening-platform"):
+    db.execute("INSERT INTO v3_economy_balances (account_id) VALUES (?)", (account_id,))
+
+db.execute("""
+    INSERT INTO v3_economy_transactions
+      (id,idempotency_key,transaction_type,source)
+    VALUES ('opening-tx','opening-key','opening_balance','admin_manual_opening')
+""")
+db.execute("""
+    INSERT INTO v3_economy_entries (transaction_id,account_id,asset_code,amount_atoms)
+    VALUES ('opening-tx','opening-user','TL',2500),
+           ('opening-tx','genesis-equity','TL',-2500)
+""")
+db.execute(
+    "UPDATE v3_economy_balances SET available_atoms=2500 WHERE account_id='opening-user'"
+)
+db.execute(
+    "UPDATE v3_economy_balances SET available_atoms=-2500 WHERE account_id='genesis-equity'"
+)
+assert db.execute(
+    "SELECT SUM(amount_atoms) FROM v3_economy_entries WHERE transaction_id='opening-tx'"
+).fetchone()[0] == 0
+assert db.execute(
+    "SELECT available_atoms FROM v3_economy_balances WHERE account_id='opening-user'"
+).fetchone()[0] == 2500
+assert db.execute(
+    "SELECT available_atoms FROM v3_economy_balances WHERE account_id='genesis-equity'"
+).fetchone()[0] == -2500
+must_fail("UPDATE v3_economy_balances SET available_atoms=-1 WHERE account_id='opening-user'")
+must_fail("UPDATE v3_economy_balances SET available_atoms=-1 WHERE account_id='opening-platform'")
+
+opening_tables = {
+    row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'v3_%'"
+    )
+}
+assert "v3_economy_opening_batches" in opening_tables
+assert "v3_economy_opening_items" in opening_tables
+assert legacy_snapshot() == before, "Opening-balance migration changed legacy data"
+
 print(
-    f"V3 ledger validation passed: {len(tables)} tables, {triggers} triggers, "
-    "idempotent migration, unchanged legacy fixtures, balanced entries, "
-    "separate TL buckets, and immutable-record/integrity guards."
+    f"V3 ledger validation passed: {len(tables)} base tables, {triggers} base triggers, "
+    "opening-balance migration, negative genesis-equity control only, "
+    "non-negative user/platform accounts, balanced entries, and unchanged legacy fixtures."
 )
