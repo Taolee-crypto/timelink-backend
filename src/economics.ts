@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { verifyToken } from './auth';
 import type { Env } from './types';
 import { getLedgerWallet, atomsToTl } from './economy-ledger';
 import { CREATOR_SHARE_RATE, PLATFORM_SHARE_RATE } from './economy-policy';
