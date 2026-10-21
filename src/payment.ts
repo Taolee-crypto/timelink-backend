@@ -74,6 +74,9 @@ async function ensureTossOrderTable(db: any) {
    body: { amount }
 ══════════════════════════════════════════════════ */
 payment.post('/virtual/charge', async (c) => {
+  if (String(c.env.ENVIRONMENT || '').toLowerCase() === 'production') {
+    return c.json({ error: '개발용 가상 충전은 운영 환경에서 사용할 수 없습니다.' }, 403);
+  }
   const userId = await authUserId(c);
   if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
 
