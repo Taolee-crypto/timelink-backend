@@ -10,7 +10,7 @@ async function adminId(c: any): Promise<number | null> {
   const claims = await verifyToken(token, c.env.JWT_SECRET).catch(() => null);
   const id = Number(claims?.sub || 0);
   if (!Number.isSafeInteger(id) || id <= 0) return null;
-  const row = await c.env.DB.prepare('SELECT role FROM users WHERE id=?').bind(id).first<{role:string}>();
+  const row = await c.env.DB.prepare('SELECT role FROM users WHERE id=?').bind(id).first() as { role?: string } | null;
   return row?.role === 'admin' ? id : null;
 }
 
