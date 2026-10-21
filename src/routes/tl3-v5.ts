@@ -386,7 +386,7 @@ router.post('/session-license/:id', async (c) => {
     if (!validPlayerId(playerId) || !/^[A-Za-z0-9_-]{12,128}$/.test(sessionId)) return c.json({ok:false,error:'Player 또는 재생 세션 정보가 올바르지 않습니다.'},400);
     const [player, release] = await Promise.all([
       c.env.DB.prepare('SELECT public_jwk,key_thumbprint FROM tl3_player_keys WHERE user_id=? AND player_id=? AND revoked_at IS NULL').bind(userId,playerId).first<any>(),
-      c.env.DB.prepare("SELECT share_id,wrapped_content_key,COALESCE(key_id,'legacy') AS key_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>()
+      c.env.DB.prepare("SELECT v.share_id,v.wrapped_content_key,COALESCE(v.key_id,'legacy') AS key_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.file_id=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0").bind(fileId).first<any>()
     ]);
     if (!player) return c.json({ok:false,code:'PLAYER_KEY_REQUIRED',error:'이 기기에 등록된 TimeLink Player 키가 없습니다.'},403);
     if (!release) return c.json({ok:false,error:'봉인된 TL3 V5 자산을 찾을 수 없습니다.'},404);
