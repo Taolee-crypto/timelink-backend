@@ -292,6 +292,40 @@ for amount_atoms in (10, 12340, 10_000_000):
     assert creator_atoms * 10 == amount_atoms * 7
     assert platform_atoms * 10 == amount_atoms * 3
 
+# Source-level regression guards for the 70:30 V3 playback path.
+POLICY_SOURCE = (ROOT / "src" / "economy-policy.ts").read_text(encoding="utf-8")
+LEDGER_SOURCE = (ROOT / "src" / "economy-ledger.ts").read_text(encoding="utf-8")
+V5_SOURCE = (ROOT / "src" / "routes" / "tl3-v5.ts").read_text(encoding="utf-8")
+INDEX_SOURCE = (ROOT / "src" / "index.ts").read_text(encoding="utf-8")
+ECONOMICS_SOURCE = (ROOT / "src" / "economics.ts").read_text(encoding="utf-8")
+
+assert "CREATOR_SHARE_RATE = 0.70" in POLICY_SOURCE
+assert "PLATFORM_SHARE_RATE = 0.30" in POLICY_SOURCE
+assert "const creatorPart=Math.round(consumed*CREATOR_SHARE_RATE)" in LEDGER_SOURCE
+assert "const platformPart=consumed-creatorPart" in LEDGER_SOURCE
+
+license_start = V5_SOURCE.index("router.post('/session-license/:id'")
+license_end = V5_SOURCE.index("router.post('/key-rotate/:id'", license_start)
+license_route = V5_SOURCE[license_start:license_end]
+assert "getTrackPoolBalances" in license_route
+assert "f.shared=1" in license_route and "COALESCE(f.revenue_held,0)=0" in license_route
+assert "SELECT tl_balance FROM tl_user_files" not in license_route
+
+meter_start = INDEX_SOURCE.index("app.post('/api/v1/tl3/play/meter/:id'")
+meter_end = INDEX_SOURCE.index("app.post('/api/v1/tl3/play/charge/:id'", meter_start)
+meter_route = INDEX_SOURCE[meter_start:meter_end]
+assert "getTrackPoolBalances" in meter_route and "settleTrackPlayback" in meter_route
+assert "tl3-meter:" in meter_route and "tl3_assertion_guard" in meter_route
+
+legacy_share_start = INDEX_SOURCE.index("app.post('/api/shares/:id/consume'")
+legacy_share_end = INDEX_SOURCE.index("\n});", legacy_share_start)
+legacy_share_route = INDEX_SOURCE[legacy_share_start:legacy_share_end]
+assert "v5MeterAsset||v4MeterAsset||v3MeterAsset" in legacy_share_route
+assert "TL3_METER_ONLY" in legacy_share_route
+assert "TL3_METER_ONLY" in ECONOMICS_SOURCE
+assert "TL_P 62% 수취" not in ECONOMICS_SOURCE
+assert "TL_P 45% 수취" not in ECONOMICS_SOURCE
+
 print(
     f"V3 ledger validation passed: {len(tables)} base tables, {triggers} base triggers, "
     "opening-balance controls, TL precision migration, exact 70:30 settlement arithmetic, "
