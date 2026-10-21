@@ -315,4 +315,39 @@ router.get('/creators/payouts',async c=>{
     error:'크리에이터 정산 원장과 지급 상태 검증 후 조회를 제공합니다.'},503);
 });
 
+
+/**
+ * Read-only finance source inventory. Never exposes customer rows or payment secrets.
+ * Explicitly does not compute financial totals until source semantics are verified.
+ */
+router.get('/finance/source-audit',async c=>{
+  if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
+  try{
+    const db=c.env.DB;
+    const candidates=[
+      'v3_economy_assets','v3_economy_accounts','v3_economy_balances',
+      'v3_economy_transactions','v3_economy_entries',
+      'v3_economy_legacy_imports','v3_tlc_mining_records',
+      'payments','payment_orders','payment_transactions',
+      'tl_payments','tl_charge_orders','creator_payouts','payout_requests',
+      'tl_shares','users'
+    ];
+    const rows=await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ("+
+      candidates.map(() => '?').join(',')+")").bind(...candidates).all<{name:string}>();
+    const present=new Set((rows.results||[]).map(r=>r.name));
+    const sources=await Promise.all(candidates.map(async name=>{
+      if(!present.has(name))return {name,exists:false,columns:[] as string[]};
+      const columns=await adminTableColumns(db,name);
+      return {name,exists:true,columns};
+    }));
+    const assetRows=present.has('v3_economy_assets')
+      ? await db.prepare('SELECT asset_code,decimals FROM v3_economy_assets').all<{asset_code:string,decimals:number}>()
+      : null;
+    return c.json({ok:true,as_of:new Date().toISOString(),read_only:true,
+      verified_financial_totals:false,
+      sources,assets:assetRows?.results||[],
+      next_step:'결제 상태·환불·정산 거래유형·TL 소수점 정밀도 검증 후 실제 집계 API 연결'});
+  }catch(e:any){return c.json({ok:false,error:'재무 원천 테이블 검사 실패',detail:String(e?.message||'')},503);}
+});
+
 export default router;
