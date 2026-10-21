@@ -4170,7 +4170,7 @@ app.patch('/api/shares/:id', async (c) => {
 
 app.delete('/api/shares/:id', async (c) => {
   try {
-    const auth=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+    const auth=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
     const payload=auth?await verifyToken(auth,c.env.JWT_SECRET):null;
     if(!payload)return c.json({error:'인증 필요'},401);
     const requestedId=String(c.req.param('id')||'').trim();
@@ -4182,7 +4182,7 @@ app.delete('/api/shares/:id', async (c) => {
     let release:any=null;
     let file:any=null;
     if(kind==='legacy'){
-      if(!/^\\d+$/.test(requestedId))return c.json({error:'잘못된 파일 ID'},400);
+      if(!/^\d+$/.test(requestedId))return c.json({error:'잘못된 파일 ID'},400);
       file=await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?').bind(Number(requestedId),userId).first<any>();
       if(!file)return c.json({error:'파일 없음 또는 삭제 권한 없음'},404);
     }else{
@@ -4202,7 +4202,7 @@ app.delete('/api/shares/:id', async (c) => {
         file=await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE stream_url=? AND user_id=? ORDER BY id DESC LIMIT 1')
           .bind(String(share.stream_url),userId).first<any>().catch(()=>null);
       }
-      if(!share&&!release&&!file&&/^\\d+$/.test(requestedId)){
+      if(!share&&!release&&!file&&/^\d+$/.test(requestedId)){
         file=await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?')
           .bind(Number(requestedId),userId).first<any>().catch(()=>null);
       }
