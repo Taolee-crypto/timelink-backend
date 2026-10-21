@@ -32,21 +32,20 @@ const eco = new Hono<{ Bindings: Env }>();
    플랜 B 배율 2.0x (하드캡은 동일 적용)
 ══════════════════════════════════════════════════════ */
 
-function parseUserId(token: string | null): string | null {
+async function authId(c: any): Promise<string | null> {
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\\s+/, '').trim();
   if (!token) return null;
-  const m = token.match(/^(?:token|fallback)_([^_]+)_/);
-  if (m) return m[1];
-  if (token.split('.').length === 3) {
-    try {
-      const p = JSON.parse(atob(token.split('.')[1]));
-      return String(p.userId || p.id || p.sub || '');
-    } catch { return null; }
+  try {
+    const payload = await verifyToken(token, c.env.JWT_SECRET);
+    const userId = Number(payload?.sub || 0);
+    if (!Number.isSafeInteger(userId) || userId <= 0) return null;
+    const user = await c.env.DB.prepare(
+      'SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0'
+    ).bind(userId).first();
+    return user ? String(userId) : null;
+  } catch {
+    return null;
   }
-  return null;
-}
-
-function authId(c: any): string | null {
-  return parseUserId((c.req.header('Authorization') || '').replace('Bearer ', '').trim());
 }
 
 /* ── DB 마이그레이션: TL 3분류 컬럼 추가 ── */
@@ -111,7 +110,7 @@ eco.post('/migrate', async (c) => {
    유저 지갑 조회 (TL_P / TL_A / TL_B / TLC 분리)
 ══════════════════════════════════════════════════════ */
 eco.get('/wallet', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
   try {
     await migrateDB(c.env.DB);
@@ -171,7 +170,7 @@ eco.get('/wallet', async (c) => {
    body: { share_id, seconds, tl_spent, tl_type? }
 ══════════════════════════════════════════════════════ */
 eco.post('/consume', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const body = await c.req.json() as any;
@@ -326,7 +325,7 @@ eco.post('/consume', async (c) => {
    body: { ad_id, tl_amount }
 ══════════════════════════════════════════════════════ */
 eco.post('/ad-reward', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { tl_amount, ad_id } = await c.req.json() as any;
@@ -371,7 +370,7 @@ eco.post('/ad-reward', async (c) => {
    body: { tl_amount }
 ══════════════════════════════════════════════════════ */
 eco.post('/exchange', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { tl_amount } = await c.req.json() as any;
@@ -428,7 +427,7 @@ eco.post('/exchange', async (c) => {
            mode, share_id, new_uploads, listen_minutes }
 ══════════════════════════════════════════════════════ */
 eco.post('/activity', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const body = await c.req.json() as any;
@@ -573,7 +572,7 @@ eco.post('/activity', async (c) => {
    로그인 사용자의 TLC 채굴 이력 (대시보드 읽기 전용)
 ══════════════════════════════════════════════════════ */
 eco.get('/mining-history', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
   try {
     await migrateDB(c.env.DB);
@@ -595,7 +594,7 @@ eco.get('/mining-history', async (c) => {
    TLC 채굴 확정 (하루 1회, 하드캡 적용)
 ══════════════════════════════════════════════════════ */
 eco.post('/mine-tlc', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { tlc_amount } = await c.req.json() as any;
@@ -684,7 +683,7 @@ eco.post('/mine-tlc', async (c) => {
    크리에이터 플랜 변경 (A ↔ B)
 ══════════════════════════════════════════════════════ */
 eco.post('/set-plan', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { plan } = await c.req.json() as any;
@@ -709,7 +708,7 @@ eco.post('/set-plan', async (c) => {
    결제 완료 → TL_P 지급 (구매 TL, 교환 가능)
 ══════════════════════════════════════════════════════ */
 eco.post('/purchase', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { amount_krw } = await c.req.json() as any;
