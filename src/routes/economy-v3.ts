@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../middleware';
 import type { Env, User } from '../types';
-import { ensureLedgerAccount, getLedgerHistory, getLedgerWallet, postLedgerTransaction } from '../economy-ledger';
+import { ensureLedgerAccount, getLedgerHistory, getLedgerWallet, postLedgerTransaction, chargeTrackPool, tlToAtoms, atomsToTl, TL_ATOMS_PER_TL } from '../economy-ledger';
 
 const router = new Hono<{ Bindings: Env; Variables: { user: User } }>();
 router.use('*', authMiddleware);
@@ -23,9 +23,9 @@ router.use('*', async (c, next) => {
 router.get('/wallet', async (c) => {
   const user = c.get('user');
   const accounts:any[] = await getLedgerWallet(c.env.DB, user.id) as any[];
-  const amount = (bucket:string) => accounts
+  const amount = (bucket:string) => atomsToTl(accounts
     .filter((a:any) => a.asset_code === 'TL' && a.bucket === bucket)
-    .reduce((sum:number,a:any) => sum + Number(a.available_atoms || 0), 0);
+    .reduce((sum:number,a:any) => sum + Number(a.available_atoms || 0), 0));
   const tlP = amount('wallet_paid');
   const tlA = amount('wallet_ad');
   const tlB = amount('wallet_bonus');
@@ -40,9 +40,9 @@ router.get('/wallet', async (c) => {
       by_source: { paid: 0, ad: 0, bonus: 0, legacy: 0 }
     };
     const available = Number(account.available_atoms || 0);
-    pool.available_tl += available;
-    pool.held_tl += Number(account.held_atoms || 0);
-    pool.by_source[source] += available;
+    pool.available_tl += atomsToTl(available);
+    pool.held_tl += atomsToTl(Number(account.held_atoms || 0));
+    pool.by_source[source] += atomsToTl(available);
     trackPoolMap.set(shareId, pool);
   }
   const trackPools = [...trackPoolMap.values()];
@@ -65,6 +65,7 @@ router.get('/wallet', async (c) => {
         (['wallet_paid','wallet_ad','wallet_bonus'].includes(String(a.bucket)) ||
          /^track_pool:[^:]+:(paid|ad|bonus|legacy)$/.test(String(a.bucket || ''))))
     ),
+    tl_atom_scale: TL_ATOMS_PER_TL,
     accounts
   });
 });
@@ -74,14 +75,13 @@ router.post('/tracks/:shareId/charge', async (c) => {
   const user = c.get('user');
   const shareId = String(c.req.param('shareId') || '').trim();
   const body = await c.req.json<any>().catch(() => ({}));
-  const amount = Number(body.amount_atoms);
+  const amountTl = Number(body.amount_tl ?? body.amount_atoms);
   const idempotencyKey = String(c.req.header('Idempotency-Key') || '').trim();
   if (!/^[A-Za-z0-9_-]{1,120}$/.test(shareId) ||
-      !Number.isSafeInteger(amount) || amount <= 0 ||
+      !Number.isSafeInteger(amountTl) || amountTl <= 0 ||
       !idempotencyKey || idempotencyKey.length > 200) {
-    return c.json({ok:false,error:'곡 식별자, 정수 충전량, Idempotency-Key가 필요합니다.'},400);
+    return c.json({ok:false,error:'곡 식별자, 정수 충전 TL, Idempotency-Key가 필요합니다.'},400);
   }
-
   const release = await c.env.DB.prepare(`
     SELECT v.file_id FROM tl3_v5_releases v
     JOIN tl_files f ON f.id=v.file_id
@@ -101,87 +101,29 @@ router.post('/tracks/:shareId/charge', async (c) => {
         AND COALESCE(f.revenue_held,0)=0 LIMIT 1
     `).bind(shareId).first().catch(() => null);
   if (!release) return c.json({ok:false,error:'공개된 TL3 자산을 찾지 못했습니다.'},404);
-
-  const prior = await c.env.DB.prepare(`
-    SELECT id,transaction_type,source,reference_type,reference_id
-    FROM v3_economy_transactions WHERE idempotency_key=? LIMIT 1
-  `).bind(idempotencyKey).first<any>();
-  if (prior) {
-    if (prior.transaction_type !== 'track_charge' || prior.source !== 'wallet_to_track' ||
-        prior.reference_type !== 'track' || String(prior.reference_id) !== shareId) {
-      return c.json({ok:false,error:'Idempotency-Key가 다른 거래에 이미 사용되었습니다.'},409);
-    }
-    const credited = await c.env.DB.prepare(`
-      SELECT COALESCE(SUM(e.amount_atoms),0) AS amount
-      FROM v3_economy_entries e
-      JOIN v3_economy_accounts a ON a.id=e.account_id
-      WHERE e.transaction_id=? AND a.owner_type='user' AND a.owner_id=?
-        AND a.bucket LIKE ?
-        AND e.amount_atoms>0
-    `).bind(prior.id,String(user.id),'track_pool:'+shareId+':%').first<any>();
-    if (Number(credited?.amount || 0) !== amount) {
-      return c.json({ok:false,error:'Idempotency-Key의 충전량이 기존 거래와 다릅니다.'},409);
-    }
-    const accounts:any[] = await getLedgerWallet(c.env.DB,user.id) as any[];
-    const wallet = {
-      tl_p: accounts.filter(a=>a.bucket==='wallet_paid').reduce((n,a)=>n+Number(a.available_atoms||0),0),
-      tl_a: accounts.filter(a=>a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0),
-      tl_b: accounts.filter(a=>a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0)
-    };
-    const pool = accounts.filter(a=>String(a.bucket||'').startsWith('track_pool:'+shareId+':'))
-      .reduce((n,a)=>n+Number(a.available_atoms||0),0);
-    return c.json({ok:true,replayed:true,amount_atoms:amount,wallet:{...wallet,tl_total:wallet.tl_p+wallet.tl_a+wallet.tl_b},track_pool_tl:pool});
-  }
-
   try {
-    const paidAccount = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','wallet_paid');
-    const adAccount = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','wallet_ad');
-    const bonusAccount = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','wallet_bonus');
-    const readBalance = async (id:string) => {
-      const row = await c.env.DB.prepare('SELECT available_atoms FROM v3_economy_balances WHERE account_id=?').bind(id).first<any>();
-      return Number(row?.available_atoms || 0);
+    const amountAtoms=tlToAtoms(amountTl);
+    const posted=await chargeTrackPool(c.env.DB,user.id,shareId,amountAtoms,idempotencyKey);
+    const accounts:any[]=await getLedgerWallet(c.env.DB,user.id) as any[];
+    const wallet={
+      tl_p:atomsToTl(accounts.filter(a=>a.bucket==='wallet_paid').reduce((n,a)=>n+Number(a.available_atoms||0),0)),
+      tl_a:atomsToTl(accounts.filter(a=>a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0)),
+      tl_b:atomsToTl(accounts.filter(a=>a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0))
     };
-    let ad = await readBalance(adAccount);
-    let bonus = await readBalance(bonusAccount);
-    let paid = await readBalance(paidAccount);
-    if (ad + bonus + paid < amount) {
-      return c.json({ok:false,code:'INSUFFICIENT_TL',required_tl:amount,available_tl:ad+bonus+paid},402);
-    }
-
-    let remaining = amount;
-    const takeAd = Math.min(ad,remaining); remaining -= takeAd;
-    const takeBonus = Math.min(bonus,remaining); remaining -= takeBonus;
-    const takePaid = remaining;
-    const lines:any[] = [];
-    if (takeAd) {
-      const pool = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','track_pool:'+shareId+':ad');
-      lines.push({accountId:adAccount,assetCode:'TL',amountAtoms:-takeAd},{accountId:pool,assetCode:'TL',amountAtoms:takeAd});
-    }
-    if (takeBonus) {
-      const pool = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','track_pool:'+shareId+':bonus');
-      lines.push({accountId:bonusAccount,assetCode:'TL',amountAtoms:-takeBonus},{accountId:pool,assetCode:'TL',amountAtoms:takeBonus});
-    }
-    if (takePaid) {
-      const pool = await ensureLedgerAccount(c.env.DB,'user',user.id,'TL','track_pool:'+shareId+':paid');
-      lines.push({accountId:paidAccount,assetCode:'TL',amountAtoms:-takePaid},{accountId:pool,assetCode:'TL',amountAtoms:takePaid});
-    }
-    const posted = await postLedgerTransaction(c.env.DB,{
-      idempotencyKey,transactionType:'track_charge',source:'wallet_to_track',
-      referenceType:'track',referenceId:shareId,actorUserId:String(user.id),
-      description:'공통 지갑에서 곡 전용 TL 풀로 내부 이체',
-      metadata:{share_id:shareId,amount_atoms:amount,allocation:{ad:takeAd,bonus:takeBonus,paid:takePaid}},
-      lines
-    });
-    const accounts:any[] = await getLedgerWallet(c.env.DB,user.id) as any[];
-    const wallet = {
-      tl_p: accounts.filter(a=>a.bucket==='wallet_paid').reduce((n,a)=>n+Number(a.available_atoms||0),0),
-      tl_a: accounts.filter(a=>a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0),
-      tl_b: accounts.filter(a=>a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0)
-    };
-    const pool = accounts.filter(a=>String(a.bucket||'').startsWith('track_pool:'+shareId+':'))
+    const poolAtoms=accounts.filter(a=>String(a.bucket||'').startsWith('track_pool:'+shareId+':'))
       .reduce((n,a)=>n+Number(a.available_atoms||0),0);
-    return c.json({ok:true,replayed:posted.replayed,amount_atoms:amount,wallet:{...wallet,tl_total:wallet.tl_p+wallet.tl_a+wallet.tl_b},track_pool_tl:pool});
+    return c.json({
+      ok:true,replayed:posted.replayed,amount_tl:atomsToTl(amountAtoms),amount_atoms:amountAtoms,
+      wallet:{...wallet,tl_total:wallet.tl_p+wallet.tl_a+wallet.tl_b},
+      track_pool_tl:atomsToTl(poolAtoms),tl_atom_scale:TL_ATOMS_PER_TL
+    });
   } catch (e:any) {
+    if(String(e?.message||'').includes('INSUFFICIENT_TL')) {
+      const accounts:any[]=await getLedgerWallet(c.env.DB,user.id) as any[];
+      const availableAtoms=accounts.filter(a=>['wallet_paid','wallet_ad','wallet_bonus'].includes(String(a.bucket)))
+        .reduce((n,a)=>n+Number(a.available_atoms||0),0);
+      return c.json({ok:false,code:'INSUFFICIENT_TL',required_tl:amountTl,available_tl:atomsToTl(availableAtoms)},402);
+    }
     return c.json({ok:false,error:e?.message || '곡 전용 TL 충전에 실패했습니다.'},409);
   }
 });
@@ -441,7 +383,7 @@ router.post('/admin/opening-batches', async (c) => {
     }
     const exists = await c.env.DB.prepare('SELECT id FROM users WHERE id=?').bind(userId).first();
     if (!exists) return c.json({ok:false,error:'존재하지 않는 사용자 ID가 포함되어 있습니다.'},404);
-    normalized.push({user_id:String(userId),bucket,amount_atoms:amount,source_table:sourceTable,source_row_id:sourceRowId,source_field:sourceField,source_checksum:sourceChecksum,evidence_note:evidenceNote});
+    normalized.push({user_id:String(userId),bucket,amount_atoms:tlToAtoms(amount),source_table:sourceTable,source_row_id:sourceRowId,source_field:sourceField,source_checksum:sourceChecksum,evidence_note:evidenceNote});
   }
   const canonical = JSON.stringify(normalized.slice().sort((a,b) =>
     (a.user_id+a.bucket+a.source_table+a.source_row_id+a.source_field).localeCompare(b.user_id+b.bucket+b.source_table+b.source_row_id+b.source_field)
