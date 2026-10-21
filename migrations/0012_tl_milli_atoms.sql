@@ -19,12 +19,6 @@ WHERE account_id IN (
 
 UPDATE v3_economy_assets SET decimals=4 WHERE asset_code='TL';
 
-UPDATE v3_economy_opening_items
-SET amount_atoms = amount_atoms * 10000
-WHERE bucket IN (
-  'wallet_paid','wallet_ad','wallet_bonus'
-) OR bucket LIKE 'track_pool:%';
-
 UPDATE v3_economy_legacy_imports
 SET imported_atoms = imported_atoms * 10000
 WHERE target_account_id IN (
