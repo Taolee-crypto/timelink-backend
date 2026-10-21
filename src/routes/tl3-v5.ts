@@ -217,10 +217,11 @@ router.post('/manufacture', async (c) => {
     const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_files WHERE id=?').bind(fileId).first<any>();
     if (!file || Number(file.user_id) !== userId) return c.json({ ok:false, error:'본인의 음원만 TL3로 자산화할 수 있습니다.' }, 403);
     const rightsDeclaration = await c.env.DB.prepare(
-      "SELECT rights_role,rights_declared,declaration_status FROM tl_creator_metadata WHERE file_id=? AND user_id=?"
+      "SELECT rights_role,rights_scope,rights_declared,declaration_status FROM tl_creator_metadata WHERE file_id=? AND user_id=?"
     ).bind(fileId,userId).first<any>().catch(()=>null);
     if (!rightsDeclaration || Number(rightsDeclaration.rights_declared)!==1 ||
-        !['owner','authorized_agent','licensee'].includes(String(rightsDeclaration.rights_role||''))) {
+        !['owner','authorized_agent','licensee'].includes(String(rightsDeclaration.rights_role||'')) ||
+        !['master_recording','distribution_license','delegated_scope'].includes(String(rightsDeclaration.rights_scope||''))) {
       return c.json({ok:false,error:'Creator에서 권리 관계를 선택하고 확인 선언을 먼저 제출해야 합니다.',code:'CREATOR_RIGHTS_DECLARATION_REQUIRED'},400);
     }
     const raw = new Uint8Array(await sourceFile.arrayBuffer());
@@ -241,7 +242,7 @@ router.post('/manufacture', async (c) => {
       artist:String(metadata.artist || file.artist || '').slice(0,200),
       duration_ms:durationMs, tl_required:Math.ceil(durationMs / 1000),
       source_sha256:sourceHash, rights_confirmed:true,
-      rights:{ confirmed:true, confirmation_type:'creator_declaration', declared_role:String(rightsDeclaration.rights_role), declaration_status:'declared', owner_user_id:userId },
+      rights:{ confirmed:true, confirmation_type:'creator_declaration', declared_role:String(rightsDeclaration.rights_role), declared_scope:String(rightsDeclaration.rights_scope), declaration_status:'declared', owner_user_id:userId },
       lp_meta:metadata.lp_license || null,
       created_at:new Date().toISOString()
     };
