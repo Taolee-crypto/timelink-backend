@@ -3163,6 +3163,7 @@ app.post('/api/creator/metadata', async (c) => {
       declaration_status TEXT NOT NULL DEFAULT 'declared', created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     )`).run();
+    await c.env.DB.prepare("ALTER TABLE tl_creator_metadata ADD COLUMN rights_scope TEXT NOT NULL DEFAULT ''").run().catch(()=>{});
     await c.env.DB.prepare(`INSERT INTO tl_creator_metadata
       (file_id,user_id,spotify_track_id,spotify_url,spotify_title,spotify_artist,spotify_album,spotify_release_date,rights_role,rights_scope,rights_declared,declaration_status)
       VALUES(?,?,?,?,?,?,?,?,?,?,1,'declared')
