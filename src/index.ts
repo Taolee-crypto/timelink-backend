@@ -2041,7 +2041,12 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
     const walletB=atomsToTl(walletAccounts.filter(a=>a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0));
     const walletBalance=Number((walletP+walletA+walletB).toFixed(4));
     const insufficientTL=assetBalance+1e-9<requiredTL;
-    return c.json({ok:true,file_id:fileId,required_tl:requiredTL,duration_ms:totalMs,wallet_tl:walletBalance,asset_tl:assetBalance,tl_atom_scale:TL_ATOMS_PER_TL,can_play:!insufficientTL,insufficient_tl:insufficientTL,message:insufficientTL?'필요한 재생 TL이 부족합니다. 먼저 충전해주십시오.':null});
+    // Distinguish an uninitialized V3 wallet from a genuinely uncharged track.
+    // Never treat legacy users.tl_balance as spendable V3 ledger funds.
+    const hasWalletLedger=walletAccounts.some(a=>a.asset_code==='TL' && ['wallet_paid','wallet_ad','wallet_bonus'].includes(String(a.bucket)));
+    const reason=insufficientTL?(hasWalletLedger?'TRACK_TL_INSUFFICIENT':'V3_WALLET_UNINITIALIZED'):null;
+    const message=!insufficientTL?null:hasWalletLedger?'곡에 충전된 TL이 부족합니다. 곡별 TL 충전 상태를 확인하십시오.':'V3 TL 지갑 원장이 초기화되지 않았습니다. 관리자 최초 지급 및 곡별 충전이 필요합니다.';
+    return c.json({ok:true,file_id:fileId,required_tl:requiredTL,duration_ms:totalMs,wallet_tl:walletBalance,asset_tl:assetBalance,tl_atom_scale:TL_ATOMS_PER_TL,can_play:!insufficientTL,insufficient_tl:insufficientTL,code:reason,message});
   }catch(e:any){
     const message=String(e?.message||'재생 사전 확인 실패');
     if(message.includes('V3_TL_ATOM_SCALE_NOT_READY')) return c.json({ok:false,code:'V3_TL_PRECISION_NOT_READY',error:'TL 원장 정밀도가 4자리로 설정되지 않았습니다. 기존 정밀도 마이그레이션 적용 상태를 확인해야 합니다.'},503);
