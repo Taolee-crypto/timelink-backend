@@ -25,6 +25,23 @@ router.get('/session', async (c) => {
   return c.json({ ok: true, user_id: userId, role: 'admin' });
 });
 
+// Read-only preflight for the one-time development TL issuance.
+router.get('/tl/initial-issuance/status', async (c) => {
+  const adminId=await requireAdmin(c);
+  if(!adminId) return c.json({ok:false,error:'관리자 권한 필요'},403);
+  try {
+    const db=c.env.DB;
+    const [scale,tx,tlAccounts,legacy]=await Promise.all([
+      db.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>(),
+      db.prepare("SELECT COUNT(*) AS n FROM v3_economy_transactions").first<any>(),
+      db.prepare("SELECT COUNT(*) AS n FROM v3_economy_accounts WHERE asset_code='TL'").first<any>(),
+      db.prepare("SELECT COUNT(*) AS n FROM users WHERE COALESCE(tl,0)<>0 OR COALESCE(tl_p,0)<>0 OR COALESCE(tl_a,0)<>0 OR COALESCE(tl_b,0)<>0 OR COALESCE(tl_balance,0)<>0").first<any>()
+    ]);
+    const ready=Number(scale?.decimals)===4 && Number(tx?.n)===0 && Number(tlAccounts?.n)===0;
+    return c.json({ok:true,admin_user_id:adminId,tl_decimals:Number(scale?.decimals??-1),v3_transactions:Number(tx?.n||0),v3_tl_accounts:Number(tlAccounts?.n||0),legacy_users_with_tl:Number(legacy?.n||0),initial_issuance_ready:ready,legacy_tl_not_reset:Number(legacy?.n||0)>0});
+  }catch(e:any){return c.json({ok:false,error:e?.message||'원장 상태 확인 실패'},500);}
+});
+
 // One-time development bootstrap: only on a completely empty V3 TL ledger.
 // Does not touch legacy balances, TLC, POC, or TON state.
 router.post('/tl/initial-issuance', async (c) => {
