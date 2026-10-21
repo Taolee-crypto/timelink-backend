@@ -2114,7 +2114,6 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     }
     const chargedSeconds=Number((already+delta).toFixed(3));
     const creatorId=Number(file.user_id||0);
-    await c.env.DB.prepare('CREATE TABLE IF NOT EXISTS tl3_assertion_guard (ok INTEGER NOT NULL CHECK(ok=1))').run();
     const atomicStatements=[
       c.env.DB.prepare("UPDATE tl3_play_meter_sessions SET billed_seconds=?,played_ms=?,updated_at=datetime('now') WHERE session_id=? AND user_id=? AND file_id=? AND billed_seconds=?")
         .bind(chargedSeconds,Math.min(playedMs,totalMs),sessionId,user.id,fileId,already),
