@@ -1048,7 +1048,8 @@ router.post('/charge', async (c) => {
     multiplier,
     dj_revenue: djAmount,
     platform_revenue: platformAmount,
-    new_tl: tlA + tlB + tlP
+    new_tl: tlA + tlB + tlP,
+    wallet: { tl_a: tlA, tl_b: tlB, tl_p: tlP, total: tlA + tlB + tlP }
   });
 });
 
