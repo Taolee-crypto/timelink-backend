@@ -407,7 +407,7 @@ ads.get('/stream/:adId', async (c) => {
 ads.post('/stream/:adId/tick', async (c) => {
   const adId  = c.req.param('adId');
   const token = (c.req.header('Authorization')||'').replace('Bearer ','');
-  const userId = parseUserId(token);
+  const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
   if (!userId) return c.json({error:'로그인 필요'},401);
 
   try {
