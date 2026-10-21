@@ -480,7 +480,7 @@ ads.get('/:id/stats', async (c) => {
     await ensureTables(c.env.DB);
     const adId = c.req.param('id');
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
 
     const ad = await c.env.DB.prepare('SELECT * FROM tl_ads WHERE id=? AND advertiser_id=?')
       .bind(adId, userId).first<any>();
