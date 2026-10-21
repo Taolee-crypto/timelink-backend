@@ -545,7 +545,7 @@ ads.delete('/:id', async (c) => {
     await ensureTables(c.env.DB);
     const adId   = c.req.param('id');
     const token  = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     if (!userId) return c.json({ error: '인증 필요' }, 401);
     const ad = await c.env.DB.prepare('SELECT id FROM tl_ads WHERE id=? AND advertiser_id=?')
       .bind(adId, userId).first<any>();
