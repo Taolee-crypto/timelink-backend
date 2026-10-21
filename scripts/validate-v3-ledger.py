@@ -298,6 +298,9 @@ LEDGER_SOURCE = (ROOT / "src" / "economy-ledger.ts").read_text(encoding="utf-8")
 V5_SOURCE = (ROOT / "src" / "routes" / "tl3-v5.ts").read_text(encoding="utf-8")
 INDEX_SOURCE = (ROOT / "src" / "index.ts").read_text(encoding="utf-8")
 ECONOMICS_SOURCE = (ROOT / "src" / "economics.ts").read_text(encoding="utf-8")
+assert "import { verifyToken } from './auth';" in ECONOMICS_SOURCE
+assert "await verifyToken(token, c.env.JWT_SECRET)" in ECONOMICS_SOURCE
+assert "function parseUserId(" not in ECONOMICS_SOURCE
 
 assert "CREATOR_SHARE_RATE = 0.70" in POLICY_SOURCE
 assert "PLATFORM_SHARE_RATE = 0.30" in POLICY_SOURCE
