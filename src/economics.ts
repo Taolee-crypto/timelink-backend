@@ -34,7 +34,7 @@ const eco = new Hono<{ Bindings: Env }>();
 ══════════════════════════════════════════════════════ */
 
 async function authId(c: any): Promise<string | null> {
-  const token = (c.req.header('Authorization') || '').replace(/^Bearer\\s+/, '').trim();
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/, '').trim();
   if (!token) return null;
   try {
     const payload = await verifyToken(token, c.env.JWT_SECRET);
