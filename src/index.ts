@@ -3473,7 +3473,7 @@ app.get('/api/shares/:id/my-tl', async (c) => {
     let release=await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedId).first<any>().catch(()=>null);
     if(!release) release=await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedId).first<any>().catch(()=>null);
     if(!release) release=await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 1").bind(requestedId).first<any>().catch(()=>null);
-    if(!release && /^\\d+$/.test(requestedId)){
+    if(!release && /^\d+$/.test(requestedId)){
       const fileId=Number(requestedId);
       release=await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>().catch(()=>null)
         || await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>().catch(()=>null)
@@ -3567,7 +3567,7 @@ app.post('/api/shares/:id/consume', async (c) => {
     const v5MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
     const v4MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
     let v3MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
-    if(/^\\d+$/.test(String(shareId))){
+    if(/^\d+$/.test(String(shareId))){
       const fileId=Number(shareId);
       v3MeterAsset=v3MeterAsset||await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1").bind(fileId).first<any>().catch(()=>null);
     }
