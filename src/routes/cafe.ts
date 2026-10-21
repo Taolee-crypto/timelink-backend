@@ -394,6 +394,151 @@ router.delete('/channels/:id', async (c) => {
   }
 });
 
+
+// ── 카페 직원 초대·승인 ──
+async function ensureCafeStaffTables(db: any) {
+  await db.prepare(\`CREATE TABLE IF NOT EXISTS cafe_staff_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    invited_by INTEGER NOT NULL,
+    approved_by INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(channel_id,user_id)
+  )\`).run();
+  await db.prepare(\`CREATE TABLE IF NOT EXISTS cafe_staff_invites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    created_by INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    max_uses INTEGER NOT NULL DEFAULT 10,
+    uses INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL
+  )\`).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_cafe_staff_channel_status ON cafe_staff_members(channel_id,status)').run().catch(()=>{});
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_cafe_staff_invite_hash ON cafe_staff_invites(code_hash,status)').run().catch(()=>{});
+}
+async function cafeCodeHash(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map(x=>x.toString(16).padStart(2,'0')).join('');
+}
+async function cafeMemberRole(db: any, channelId: string, userId: number): Promise<'owner'|'staff'|'pending'|'none'> {
+  const cafe = await db.prepare('SELECT owner_id FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
+  if (!cafe) return 'none';
+  if (Number(cafe.owner_id) === userId) return 'owner';
+  const member = await db.prepare('SELECT status FROM cafe_staff_members WHERE channel_id=? AND user_id=?').bind(channelId,userId).first<any>();
+  return member?.status === 'active' ? 'staff' : member?.status === 'pending' ? 'pending' : 'none';
+}
+
+// 대표자: 직원 초대 코드 발급 (7일 유효, 최대 10회 사용)
+router.post('/channels/:id/staff/invites', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+  await ensureCafeTables(c.env.DB);
+  await ensureCafeStaffTables(c.env.DB);
+  const channelId = c.req.param('id');
+  const cafe = await c.env.DB.prepare('SELECT owner_id FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
+  if (!cafe) return c.json({ok:false,error:'카페 채널을 찾을 수 없습니다.'},404);
+  if (Number(cafe.owner_id)!==auth.id) return c.json({ok:false,error:'대표자만 직원을 초대할 수 있습니다.'},403);
+  const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const random=new Uint8Array(8); crypto.getRandomValues(random);
+  const code=Array.from(random).map(n=>alphabet[n%alphabet.length]).join('');
+  const now=Date.now(), expiresAt=now+7*24*60*60*1000;
+  await c.env.DB.prepare('INSERT INTO cafe_staff_invites (channel_id,code_hash,created_by,expires_at,max_uses,uses,status,created_at) VALUES (?,?,?,?,10,0,?,?)')
+    .bind(channelId,await cafeCodeHash(code),auth.id,expiresAt,'active',now).run();
+  return c.json({ok:true,channel_id:channelId,invite_code:code,expires_at:expiresAt,max_uses:10});
+});
+
+// 직원: 대표자가 전달한 초대 코드로 승인 요청
+router.post('/staff/join', async (c) => {
+  const auth=await authUser(c);
+  if(!auth) return c.json({ok:false,error:'먼저 TimeLink에 로그인해주세요.'},401);
+  await ensureCafeTables(c.env.DB);
+  await ensureCafeStaffTables(c.env.DB);
+  const body=await c.req.json<any>().catch(()=>({}));
+  const channelId=String(body.channel_id||'').trim().toLowerCase();
+  const code=String(body.invite_code||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!channelId||!/^[A-Z0-9]{8}$/.test(code)) return c.json({ok:false,error:'카페 채널 ID와 8자리 초대 코드를 확인해주세요.'},400);
+  const cafe=await c.env.DB.prepare('SELECT channel_id,owner_id,name FROM cafe_channels WHERE channel_id=? AND status=?').bind(channelId,'active').first<any>();
+  if(!cafe) return c.json({ok:false,error:'카페 채널을 찾을 수 없습니다.'},404);
+  if(Number(cafe.owner_id)===auth.id) return c.json({ok:false,error:'대표자 계정은 직원으로 등록할 수 없습니다.'},400);
+  const hash=await cafeCodeHash(code), now=Date.now();
+  const invite=await c.env.DB.prepare("SELECT id,created_by,expires_at,max_uses,uses FROM cafe_staff_invites WHERE channel_id=? AND code_hash=? AND status='active' ORDER BY id DESC LIMIT 1")
+    .bind(channelId,hash).first<any>();
+  if(!invite||Number(invite.expires_at)<now||Number(invite.uses)>=Number(invite.max_uses)) return c.json({ok:false,error:'초대 코드가 올바르지 않거나 만료되었습니다.'},400);
+  await c.env.DB.prepare("INSERT OR IGNORE INTO cafe_staff_members (channel_id,user_id,status,invited_by,created_at,updated_at) VALUES (?,?,'pending',?,?,?)")
+    .bind(channelId,auth.id,Number(invite.created_by),now,now).run();
+  const member=await c.env.DB.prepare('SELECT id,status FROM cafe_staff_members WHERE channel_id=? AND user_id=?').bind(channelId,auth.id).first<any>();
+  if(member?.status==='revoked') {
+    await c.env.DB.prepare("UPDATE cafe_staff_members SET status='pending',invited_by=?,approved_by=NULL,updated_at=? WHERE id=?")
+      .bind(Number(invite.created_by),now,member.id).run();
+  }
+  await c.env.DB.prepare('UPDATE cafe_staff_invites SET uses=uses+1 WHERE id=?').bind(invite.id).run();
+  const refreshed=await c.env.DB.prepare('SELECT id,status FROM cafe_staff_members WHERE channel_id=? AND user_id=?').bind(channelId,auth.id).first<any>();
+  return c.json({ok:true,channel_id:channelId,cafe_name:cafe.name,staff_status:refreshed?.status||'pending',message:refreshed?.status==='active'?'이미 승인된 직원 계정입니다.':'대표자의 승인을 기다리고 있습니다.'});
+});
+
+// 대표자: 직원 목록과 승인 대기 현황
+router.get('/channels/:id/staff', async (c) => {
+  const auth=await authUser(c);
+  if(!auth) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+  await ensureCafeTables(c.env.DB); await ensureCafeStaffTables(c.env.DB);
+  const channelId=c.req.param('id');
+  const cafe=await c.env.DB.prepare('SELECT owner_id FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
+  if(!cafe) return c.json({ok:false,error:'카페 채널을 찾을 수 없습니다.'},404);
+  if(Number(cafe.owner_id)!==auth.id) return c.json({ok:false,error:'대표자만 직원 목록을 볼 수 있습니다.'},403);
+  const rows=await c.env.DB.prepare("SELECT m.id,m.user_id,m.status,m.created_at,m.updated_at,u.username,u.email FROM cafe_staff_members m LEFT JOIN users u ON u.id=m.user_id WHERE m.channel_id=? ORDER BY CASE m.status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,m.created_at DESC")
+    .bind(channelId).all<any>();
+  return c.json({ok:true,staff:rows.results||[]});
+});
+
+// 대표자: 직원 승인
+router.post('/channels/:id/staff/:memberId/approve', async (c) => {
+  const auth=await authUser(c);
+  if(!auth) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+  await ensureCafeTables(c.env.DB); await ensureCafeStaffTables(c.env.DB);
+  const channelId=c.req.param('id'), memberId=Number(c.req.param('memberId'));
+  const cafe=await c.env.DB.prepare('SELECT owner_id FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
+  if(!cafe) return c.json({ok:false,error:'카페 채널을 찾을 수 없습니다.'},404);
+  if(Number(cafe.owner_id)!==auth.id) return c.json({ok:false,error:'대표자만 승인할 수 있습니다.'},403);
+  const member=await c.env.DB.prepare("SELECT id FROM cafe_staff_members WHERE id=? AND channel_id=? AND status='pending'").bind(memberId,channelId).first<any>();
+  if(!member) return c.json({ok:false,error:'승인 대기 중인 직원을 찾을 수 없습니다.'},404);
+  await c.env.DB.prepare("UPDATE cafe_staff_members SET status='active',approved_by=?,updated_at=? WHERE id=? AND channel_id=?")
+    .bind(auth.id,Date.now(),memberId,channelId).run();
+  return c.json({ok:true,member_id:memberId,status:'active'});
+});
+
+// 대표자: 직원 권한 회수
+router.delete('/channels/:id/staff/:memberId', async (c) => {
+  const auth=await authUser(c);
+  if(!auth) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+  await ensureCafeTables(c.env.DB); await ensureCafeStaffTables(c.env.DB);
+  const channelId=c.req.param('id'), memberId=Number(c.req.param('memberId'));
+  const cafe=await c.env.DB.prepare('SELECT owner_id FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
+  if(!cafe) return c.json({ok:false,error:'카페 채널을 찾을 수 없습니다.'},404);
+  if(Number(cafe.owner_id)!==auth.id) return c.json({ok:false,error:'대표자만 권한을 회수할 수 있습니다.'},403);
+  await c.env.DB.prepare("UPDATE cafe_staff_members SET status='revoked',updated_at=? WHERE id=? AND channel_id=?")
+    .bind(Date.now(),memberId,channelId).run();
+  return c.json({ok:true,member_id:memberId,status:'revoked'});
+});
+
+// 대표자 또는 승인 직원: 카페 방송 운영 권한 확인
+router.get('/staff/access/:channelId', async (c) => {
+  const auth=await authUser(c);
+  if(!auth) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+  await ensureCafeTables(c.env.DB); await ensureCafeStaffTables(c.env.DB);
+  const channelId=c.req.param('channelId');
+  const cafe=await c.env.DB.prepare('SELECT channel_id,name,owner_id,status,expires_at FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
+  if(!cafe) return c.json({ok:false,error:'카페 채널을 찾을 수 없습니다.'},404);
+  const role=await cafeMemberRole(c.env.DB,channelId,auth.id);
+  return c.json({ok:true,channel:{channel_id:cafe.channel_id,name:cafe.name,status:cafe.status,expires_at:cafe.expires_at},role,can_operate:role==='owner'||role==='staff'});
+});
+
 // ── GET /api/cafe/channels/:channelId/broadcast — 카페 방송 정보 ──
 router.get('/channels/:channelId/broadcast', async (c) => {
   try {
