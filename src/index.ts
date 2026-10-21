@@ -3131,6 +3131,56 @@ app.get('/api/spotify/search', async (c) => {
   }
 });
 
+
+ 
+// Creator作品情報と権利宣言を、本人所有の資産にひも付けて保存する。
+// Spotifyの一致情報は作品識別用であり、権利所有の証明として扱わない。
+app.post('/api/creator/metadata', async (c) => {
+  const session = await storageUser(c);
+  const userId = Number(session?.sub || 0);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+  try {
+    const body = await c.req.json<any>();
+    const fileId = Number(body.file_id || 0);
+    const role = String(body.rights_role || '');
+    if (!Number.isSafeInteger(fileId) || fileId <= 0) return c.json({ok:false,error:'자산 식별자가 올바르지 않습니다.'},400);
+    if (!['owner','authorized_agent','licensee'].includes(role) || body.rights_declared !== true) {
+      return c.json({ok:false,error:'권리 관계 선택과 확인 선언이 필요합니다.'},400);
+    }
+    const file = await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE id=?').bind(fileId).first<any>();
+    if (!file || Number(file.user_id) !== userId) return c.json({ok:false,error:'본인 소유 자산만 권리 정보를 등록할 수 있습니다.'},403);
+    const spotify = body.spotify && typeof body.spotify === 'object' ? body.spotify : null;
+    const spotifyId = spotify ? String(spotify.id || '').trim().slice(0,64) : '';
+    const spotifyUrl = spotify ? String(spotify.url || '').trim().slice(0,500) : '';
+    if (spotifyId && !/^[A-Za-z0-9]{10,64}$/.test(spotifyId)) return c.json({ok:false,error:'Spotify Track ID 형식이 올바르지 않습니다.'},400);
+    if (spotifyUrl && !/^https:\/\/open\.spotify\.com\/track\/[A-Za-z0-9]+/i.test(spotifyUrl)) return c.json({ok:false,error:'Spotify 작품 주소가 올바르지 않습니다.'},400);
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_creator_metadata (
+      file_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, spotify_track_id TEXT, spotify_url TEXT,
+      spotify_title TEXT, spotify_artist TEXT, spotify_album TEXT, spotify_release_date TEXT,
+      rights_role TEXT NOT NULL, rights_declared INTEGER NOT NULL DEFAULT 0,
+      declaration_status TEXT NOT NULL DEFAULT 'declared', created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`).run();
+    await c.env.DB.prepare(`INSERT INTO tl_creator_metadata
+      (file_id,user_id,spotify_track_id,spotify_url,spotify_title,spotify_artist,spotify_album,spotify_release_date,rights_role,rights_declared,declaration_status)
+      VALUES(?,?,?,?,?,?,?,?,?,1,'declared')
+      ON CONFLICT(file_id) DO UPDATE SET
+      spotify_track_id=excluded.spotify_track_id,spotify_url=excluded.spotify_url,
+      spotify_title=excluded.spotify_title,spotify_artist=excluded.spotify_artist,
+      spotify_album=excluded.spotify_album,spotify_release_date=excluded.spotify_release_date,
+      rights_role=excluded.rights_role,rights_declared=1,declaration_status='declared',updated_at=datetime('now')
+      WHERE tl_creator_metadata.user_id=excluded.user_id`
+    ).bind(fileId,userId,spotifyId||null,spotifyUrl||null,
+      spotify?String(spotify.title||'').slice(0,300):null,
+      spotify?String(spotify.artist||'').slice(0,300):null,
+      spotify?String(spotify.album||'').slice(0,300):null,
+      spotify?String(spotify.release_date||'').slice(0,32):null,role).run();
+    return c.json({ok:true,file_id:fileId,declaration_status:'declared',spotify_linked:!!spotifyId});
+  } catch (e:any) {
+    return c.json({ok:false,error:e?.message||'권리 정보 저장에 실패했습니다.'},500);
+  }
+});
+
 // ── JWT / 토큰 파싱 ──
 function parseJWT(token: string): { userId: number; username: string; id?: number; sub?: number } {
   if (token.split('.').length === 3) {
