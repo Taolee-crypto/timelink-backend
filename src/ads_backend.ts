@@ -205,7 +205,7 @@ ads.get('/my', async (c) => {
   try {
     await ensureTables(c.env.DB);
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     if (!userId) return c.json({ error: '로그인 필요' }, 401);
 
     const result = await c.env.DB.prepare(
