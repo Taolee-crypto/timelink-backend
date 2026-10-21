@@ -1,5 +1,8 @@
 import { Hono } from 'hono';
+import { verifyToken } from './auth';
 import type { Env } from './types';
+import { getLedgerWallet, atomsToTl } from './economy-ledger';
+import { CREATOR_SHARE_RATE, PLATFORM_SHARE_RATE } from './economy-policy';
 
 const eco = new Hono<{ Bindings: Env }>();
 
@@ -10,13 +13,11 @@ const eco = new Hono<{ Bindings: Env }>();
    TL_A (광고): 광고 시청 보상, 플랫폼 내 소비만 가능, 교환 불가
    TL_B (보너스): 가입·이벤트 지급, 플랫폼 내 소비만 가능, 교환 불가
 
-   크리에이터 플랜
+   분배 원칙
    ─────────────────────────────────────────────────────
-   플랜 A (기본): TL_P 소비 → 크리에이터 62% / 플랫폼 38%
-                  TL_A 소비 → 크리에이터 50% TL_A / 플랫폼 50% TL_A (비교환)
-   플랜 B (성장): TL_P 소비 → 크리에이터 45% / 플랫폼 55%
-                  TL_A 소비 → 크리에이터 35% TL_A / 플랫폼 65% TL_A (비교환)
-                  TLC 채굴 배율 2.0x 보너스
+   모든 유효 소비의 기본 분배: 크리에이터 70% / 플랫폼 30%
+   TL_P / TL_A / TL_B의 출처별 성격과 지급 버킷은 별도로 유지
+   플랜 B의 TLC 채굴 배율 2.0x는 분배 비율과 무관
 
    POC 기여지수 (최소 0.1, 최대 5.0)
    ─────────────────────────────────────────────────────
@@ -32,21 +33,20 @@ const eco = new Hono<{ Bindings: Env }>();
    플랜 B 배율 2.0x (하드캡은 동일 적용)
 ══════════════════════════════════════════════════════ */
 
-function parseUserId(token: string | null): string | null {
+async function authId(c: any): Promise<string | null> {
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/, '').trim();
   if (!token) return null;
-  const m = token.match(/^(?:token|fallback)_([^_]+)_/);
-  if (m) return m[1];
-  if (token.split('.').length === 3) {
-    try {
-      const p = JSON.parse(atob(token.split('.')[1]));
-      return String(p.userId || p.id || p.sub || '');
-    } catch { return null; }
+  try {
+    const payload = await verifyToken(token, c.env.JWT_SECRET);
+    const userId = Number(payload?.sub || 0);
+    if (!Number.isSafeInteger(userId) || userId <= 0) return null;
+    const user = await c.env.DB.prepare(
+      'SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0'
+    ).bind(userId).first();
+    return user ? String(userId) : null;
+  } catch {
+    return null;
   }
-  return null;
-}
-
-function authId(c: any): string | null {
-  return parseUserId((c.req.header('Authorization') || '').replace('Bearer ', '').trim());
 }
 
 /* ── DB 마이그레이션: TL 3분류 컬럼 추가 ── */
@@ -111,7 +111,7 @@ eco.post('/migrate', async (c) => {
    유저 지갑 조회 (TL_P / TL_A / TL_B / TLC 분리)
 ══════════════════════════════════════════════════════ */
 eco.get('/wallet', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
   try {
     await migrateDB(c.env.DB);
@@ -125,17 +125,23 @@ eco.get('/wallet', async (c) => {
     `).bind(userId).first() as any;
     if (!user) return c.json({ error: '유저 없음' }, 404);
 
-    // TL3 settlement uses split buckets first and falls back to legacy
-    // balances only when every split bucket is empty. The wallet API must
-    // report the same authoritative total; tl_balance can be stale after
-    // older split-wallet operations and must not override live P/A/B funds.
-    const tlP = Number(user.tl_p ?? user.tl ?? 0) || 0;
-    const tlA = Number(user.tl_a ?? 0) || 0;
-    const tlB = Number(user.tl_b ?? 0) || 0;
-    const splitTotal = tlP + tlA + tlB;
-    const legacyCandidates = [user.tl_balance, user.tl].map((value: any) => Number(value));
-    const legacyTotal = legacyCandidates.find((value: number) => Number.isFinite(value) && value > 0) ?? 0;
-    const authoritativeTotal = splitTotal > 0 ? splitTotal : legacyTotal;
+    const tlAsset=await c.env.DB.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>().catch(()=>null);
+    const ledgerReady=Number(tlAsset?.decimals)===4;
+    let tlP=0,tlA=0,tlB=0;
+    if(ledgerReady){
+      const accounts:any[]=await getLedgerWallet(c.env.DB,Number(userId)) as any[];
+      tlP=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_paid').reduce((n,a)=>n+Number(a.available_atoms||0),0));
+      tlA=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0));
+      tlB=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0));
+    }else{
+      tlP=Number(user.tl_p ?? user.tl ?? 0)||0;
+      tlA=Number(user.tl_a ?? 0)||0;
+      tlB=Number(user.tl_b ?? 0)||0;
+    }
+    const splitTotal=tlP+tlA+tlB;
+    const legacyCandidates=[user.tl_balance,user.tl].map((value:any)=>Number(value));
+    const legacyTotal=legacyCandidates.find((value:number)=>Number.isFinite(value)&&value>0)??0;
+    const authoritativeTotal=ledgerReady?splitTotal:(splitTotal>0?splitTotal:legacyTotal);
 
     return c.json({
       wallet: {
@@ -165,7 +171,7 @@ eco.get('/wallet', async (c) => {
    body: { share_id, seconds, tl_spent, tl_type? }
 ══════════════════════════════════════════════════════ */
 eco.post('/consume', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const body = await c.req.json() as any;
@@ -174,13 +180,25 @@ eco.post('/consume', async (c) => {
 
   try {
     await migrateDB(c.env.DB);
+    const requestedShare=String(share_id||'').trim();
+    if(requestedShare){
+      let v5=await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
+      let v4=await c.env.DB.prepare("SELECT file_id FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
+      let v3=await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
+      if(/^\d+$/.test(requestedShare)){
+        const fileId=Number(requestedShare);
+        v5=v5||await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>().catch(()=>null);
+        v4=v4||await c.env.DB.prepare("SELECT file_id FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>().catch(()=>null);
+        v3=v3||await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1").bind(fileId).first<any>().catch(()=>null);
+      }
+      if(v5||v4||v3) return c.json({ok:false,code:'TL3_METER_ONLY',error:'TL3 자산은 실제 재생 시간 정산 경로만 사용할 수 있습니다.'},409);
+    }
 
     const user = await c.env.DB.prepare(
       'SELECT tl, tl_p, tl_a, tl_b, plan FROM users WHERE id=?'
     ).bind(userId).first() as any;
     if (!user) return c.json({ error: '유저 없음' }, 404);
 
-    const userPlan = user.plan || 'A';
     const tlP = user.tl_p ?? user.tl ?? 0;
     const tlA = user.tl_a ?? 0;
     const tlB = user.tl_b ?? 0;
@@ -217,29 +235,27 @@ eco.post('/consume', async (c) => {
     `).bind(consumedP, consumedA, consumedB, consumedP, consumedP, userId).run();
 
     // 크리에이터 수익 배분
-    let creatorEarnP = 0, creatorEarnA = 0;
-    let platformEarnP = 0, platformEarnA = 0;
+    let creatorEarnP = 0, creatorEarnA = 0, creatorEarnB = 0;
+    let platformEarnP = 0, platformEarnA = 0, platformEarnB = 0;
 
     const share = await c.env.DB.prepare(
-      'SELECT user_id as creator_id, plan FROM tl_shares WHERE id=?'
+      'SELECT user_id as creator_id FROM tl_shares WHERE id=?'
     ).bind(share_id).first() as any;
 
     if (share) {
       // TL_P 소비 → 크리에이터에게 TL_P (교환 가능)
-      const rateP = userPlan === 'B' ? 0.45 : 0.62;
-      creatorEarnP = Math.floor(consumedP * rateP);
-      platformEarnP = consumedP - creatorEarnP;
+      creatorEarnP = Number((consumedP * CREATOR_SHARE_RATE).toFixed(6));
+      platformEarnP = Number((consumedP * PLATFORM_SHARE_RATE).toFixed(6));
 
       // TL_A 소비 → 크리에이터에게 TL_A (비교환)
-      const rateA = userPlan === 'B' ? 0.35 : 0.50;
-      creatorEarnA = Math.floor(consumedA * rateA);
-      platformEarnA = consumedA - creatorEarnA;
+      creatorEarnA = Number((consumedA * CREATOR_SHARE_RATE).toFixed(6));
+      platformEarnA = Number((consumedA * PLATFORM_SHARE_RATE).toFixed(6));
 
-      // TL_B 소비 → 플랫폼 수익 (크리에이터 분배 없음, 보너스는 원가 없음)
-      // → 크리에이터에게 TL_B의 30%만 TL_A로 지급
-      const creatorEarnFromB = Math.floor(consumedB * 0.30);
+      // TL_B 소비도 공통 7:3 정책 적용: 창작자 70%는 출처 제한을 보존해 TL_A로 지급
+      creatorEarnB = Number((consumedB * CREATOR_SHARE_RATE).toFixed(6));
+      platformEarnB = Number((consumedB * PLATFORM_SHARE_RATE).toFixed(6));
 
-      if (creatorEarnP > 0 || creatorEarnA > 0 || creatorEarnFromB > 0) {
+      if (creatorEarnP > 0 || creatorEarnA > 0 || creatorEarnB > 0) {
         await c.env.DB.prepare(`
           UPDATE users SET
             tl_p = tl_p + ?,
@@ -249,8 +265,8 @@ eco.post('/consume', async (c) => {
           WHERE id=?
         `).bind(
           creatorEarnP, creatorEarnP,
-          creatorEarnA + creatorEarnFromB,
-          creatorEarnP,
+          creatorEarnA + creatorEarnB,
+          creatorEarnP + creatorEarnA + creatorEarnB,
           share.creator_id
         ).run();
       }
@@ -291,7 +307,8 @@ eco.post('/consume', async (c) => {
     return c.json({
       ok: true,
       consumed: { tl_p: consumedP, tl_a: consumedA, tl_b: consumedB, total: actualConsumed },
-      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA },
+      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA + creatorEarnB },
+      platform: { tl_p: platformEarnP, tl_a: platformEarnA, tl_b: platformEarnB },
       wallet: {
         tl_p: updated?.tl_p ?? updated?.tl ?? 0,
         tl_a: updated?.tl_a ?? 0,
@@ -309,7 +326,7 @@ eco.post('/consume', async (c) => {
    body: { ad_id, tl_amount }
 ══════════════════════════════════════════════════════ */
 eco.post('/ad-reward', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { tl_amount, ad_id } = await c.req.json() as any;
@@ -354,7 +371,7 @@ eco.post('/ad-reward', async (c) => {
    body: { tl_amount }
 ══════════════════════════════════════════════════════ */
 eco.post('/exchange', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { tl_amount } = await c.req.json() as any;
@@ -411,7 +428,7 @@ eco.post('/exchange', async (c) => {
            mode, share_id, new_uploads, listen_minutes }
 ══════════════════════════════════════════════════════ */
 eco.post('/activity', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const body = await c.req.json() as any;
@@ -556,7 +573,7 @@ eco.post('/activity', async (c) => {
    로그인 사용자의 TLC 채굴 이력 (대시보드 읽기 전용)
 ══════════════════════════════════════════════════════ */
 eco.get('/mining-history', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
   try {
     await migrateDB(c.env.DB);
@@ -578,7 +595,7 @@ eco.get('/mining-history', async (c) => {
    TLC 채굴 확정 (하루 1회, 하드캡 적용)
 ══════════════════════════════════════════════════════ */
 eco.post('/mine-tlc', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { tlc_amount } = await c.req.json() as any;
@@ -667,7 +684,7 @@ eco.post('/mine-tlc', async (c) => {
    크리에이터 플랜 변경 (A ↔ B)
 ══════════════════════════════════════════════════════ */
 eco.post('/set-plan', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { plan } = await c.req.json() as any;
@@ -679,8 +696,8 @@ eco.post('/set-plan', async (c) => {
     return c.json({
       ok: true, plan,
       note: plan === 'A'
-        ? '플랜A: TL_P 62% 수취, 교환수수료 5%'
-        : '플랜B: TL_P 45% 수취, TLC 2배 채굴, 교환수수료 3%'
+        ? '플랜A: 창작자 배분 70%, 교환수수료 5%'
+        : '플랜B: 창작자 배분 70%, TLC 2배 채굴, 교환수수료 3%'
     });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -692,7 +709,7 @@ eco.post('/set-plan', async (c) => {
    결제 완료 → TL_P 지급 (구매 TL, 교환 가능)
 ══════════════════════════════════════════════════════ */
 eco.post('/purchase', async (c) => {
-  const userId = authId(c);
+  const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
   const { amount_krw } = await c.req.json() as any;

@@ -6,19 +6,18 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Env } from './types';
+import { verifyToken } from './auth';
 
 const ads = new Hono<{ Bindings: Env }>();
 
-function parseUserId(token: string): number {
-  const m = token.match(/(?:token|fallback)_(\d+)/);
-  if (m) return Number(m[1]);
-  if (token.split('.').length === 3) {
-    try {
-      const p = JSON.parse(atob(token.split('.')[1]));
-      return Number(p.userId || p.id || p.sub || 0);
-    } catch { return 0; }
-  }
-  return 0;
+async function parseUserId(token: string, db: D1Database, secret: string): Promise<number> {
+  const payload = await verifyToken(String(token || ''), secret).catch(() => null);
+  const userId = Number(payload?.sub || 0);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return 0;
+  const user = await db.prepare(
+    'SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0'
+  ).bind(userId).first<any>();
+  return user ? userId : 0;
 }
 
 // ── DB 테이블 생성 헬퍼 ──
@@ -115,7 +114,7 @@ ads.get('/available', async (c) => {
   try {
     await ensureTables(c.env.DB);
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
 
     const result = await c.env.DB.prepare(`
       SELECT a.*,
@@ -142,7 +141,7 @@ ads.post('/:id/complete', async (c) => {
     await ensureTables(c.env.DB);
     const adId = c.req.param('id');
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     if (!userId) return c.json({ error: '로그인 필요' }, 401);
 
     const body = await c.req.json<any>().catch(() => ({}));
@@ -186,7 +185,7 @@ ads.post('/:id/click', async (c) => {
     await ensureTables(c.env.DB);
     const adId = c.req.param('id');
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     await c.env.DB.prepare('UPDATE tl_ads SET clicks=clicks+1 WHERE id=?').bind(adId).run();
     if (userId) {
       await c.env.DB.prepare(
@@ -206,7 +205,7 @@ ads.get('/my', async (c) => {
   try {
     await ensureTables(c.env.DB);
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     if (!userId) return c.json({ error: '로그인 필요' }, 401);
 
     const result = await c.env.DB.prepare(
@@ -227,7 +226,7 @@ ads.use('/upload-tl', bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ads.post('/upload-tl', async (c) => {
   if (!c.env.R2) return c.json({ ok:false, error:'R2 없음' }, 500);
   const token = (c.req.header('Authorization')||'').replace('Bearer ','');
-  const userId = parseUserId(token);
+  const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
   if (!userId) return c.json({ error:'로그인 필요' }, 401);
 
   try {
@@ -280,7 +279,7 @@ ads.post('/create', async (c) => {
   try {
     await ensureTables(c.env.DB);
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     if (!userId) return c.json({ error: '로그인 필요' }, 401);
 
     // 사업자 확인
@@ -337,7 +336,7 @@ ads.get('/stream/:adId', async (c) => {
   const adId   = c.req.param('adId');
   const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
   const tkQuery = c.req.query('tk') || '';
-  const userId = parseUserId(token || tkQuery);
+  const userId = await parseUserId(token || tkQuery,c.env.DB,c.env.JWT_SECRET);
 
   const cors = {
     'Access-Control-Allow-Origin': '*',
@@ -408,7 +407,7 @@ ads.get('/stream/:adId', async (c) => {
 ads.post('/stream/:adId/tick', async (c) => {
   const adId  = c.req.param('adId');
   const token = (c.req.header('Authorization')||'').replace('Bearer ','');
-  const userId = parseUserId(token);
+  const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
   if (!userId) return c.json({error:'로그인 필요'},401);
 
   try {
@@ -481,7 +480,7 @@ ads.get('/:id/stats', async (c) => {
     await ensureTables(c.env.DB);
     const adId = c.req.param('id');
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
 
     const ad = await c.env.DB.prepare('SELECT * FROM tl_ads WHERE id=? AND advertiser_id=?')
       .bind(adId, userId).first<any>();
@@ -527,7 +526,7 @@ ads.post('/:id/toggle', async (c) => {
     await ensureTables(c.env.DB);
     const adId = c.req.param('id');
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     const ad = await c.env.DB.prepare('SELECT status FROM tl_ads WHERE id=? AND advertiser_id=?')
       .bind(adId, userId).first<any>();
     if (!ad) return c.json({ error: '권한 없음' }, 403);
@@ -546,7 +545,7 @@ ads.delete('/:id', async (c) => {
     await ensureTables(c.env.DB);
     const adId   = c.req.param('id');
     const token  = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     if (!userId) return c.json({ error: '인증 필요' }, 401);
     const ad = await c.env.DB.prepare('SELECT id FROM tl_ads WHERE id=? AND advertiser_id=?')
       .bind(adId, userId).first<any>();

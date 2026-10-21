@@ -191,8 +191,146 @@ must_fail("DELETE FROM v3_tlc_mining_records WHERE id='mine-1'")
 
 assert legacy_snapshot() == before, "V3 test operations unexpectedly changed legacy data"
 
+# Migration 0011 adds a controlled negative balance only for system genesis equity.
+OPENING_MIGRATION = ROOT / "migrations" / "0011_v3_economy_opening_balances.sql"
+db.executescript(OPENING_MIGRATION.read_text(encoding="utf-8"))
+
+db.execute("""
+    INSERT INTO v3_economy_accounts (id,owner_type,owner_id,asset_code,bucket)
+    VALUES ('genesis-equity','system','timelink','TL','genesis_equity'),
+           ('opening-user','user','1','TL','wallet_paid'),
+           ('opening-platform','platform','timelink','TL','treasury')
+""")
+for account_id in ("genesis-equity", "opening-user", "opening-platform"):
+    db.execute("INSERT INTO v3_economy_balances (account_id) VALUES (?)", (account_id,))
+
+db.execute("""
+    INSERT INTO v3_economy_transactions
+      (id,idempotency_key,transaction_type,source)
+    VALUES ('opening-tx','opening-key','opening_balance','admin_manual_opening')
+""")
+db.execute("""
+    INSERT INTO v3_economy_entries (transaction_id,account_id,asset_code,amount_atoms)
+    VALUES ('opening-tx','opening-user','TL',2500),
+           ('opening-tx','genesis-equity','TL',-2500)
+""")
+db.execute(
+    "UPDATE v3_economy_balances SET available_atoms=2500 WHERE account_id='opening-user'"
+)
+db.execute(
+    "UPDATE v3_economy_balances SET available_atoms=-2500 WHERE account_id='genesis-equity'"
+)
+assert db.execute(
+    "SELECT SUM(amount_atoms) FROM v3_economy_entries WHERE transaction_id='opening-tx'"
+).fetchone()[0] == 0
+assert db.execute(
+    "SELECT available_atoms FROM v3_economy_balances WHERE account_id='opening-user'"
+).fetchone()[0] == 2500
+assert db.execute(
+    "SELECT available_atoms FROM v3_economy_balances WHERE account_id='genesis-equity'"
+).fetchone()[0] == -2500
+must_fail("UPDATE v3_economy_balances SET available_atoms=-1 WHERE account_id='opening-user'")
+must_fail("UPDATE v3_economy_balances SET available_atoms=-1 WHERE account_id='opening-platform'")
+
+opening_tables = {
+    row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'v3_%'"
+    )
+}
+assert "v3_economy_opening_batches" in opening_tables
+assert "v3_economy_opening_items" in opening_tables
+assert legacy_snapshot() == before, "Opening-balance migration changed legacy data"
+
+db.execute("""
+    INSERT INTO v3_economy_opening_batches
+      (id,status,created_by,reason,evidence_ref,item_count,checksum)
+    VALUES ('batch-a','draft','9','opening test','evidence-a',1,'checksum-a'),
+           ('batch-b','draft','9','duplicate test','evidence-b',1,'checksum-b')
+""")
+db.execute("""
+    INSERT INTO v3_economy_opening_items
+      (id,batch_id,user_id,bucket,amount_atoms,source_table,source_row_id,source_field,source_checksum,evidence_note)
+    VALUES ('opening-item-a','batch-a','1','wallet_paid',100,'tl_payments','77','tl_granted','sha-a','approved evidence')
+""")
+must_fail("""
+    INSERT INTO v3_economy_opening_items
+      (id,batch_id,user_id,bucket,amount_atoms,source_table,source_row_id,source_field,source_checksum,evidence_note)
+    VALUES ('opening-item-b','batch-b','1','wallet_ad',100,'tl_payments','77','tl_granted','sha-a','duplicate evidence')
+""")
+
+
+# Migration 0012 changes only V3 TL atom precision. Legacy source values and
+# opening-batch evidence stay in whole TL; posting code scales them at posting time.
+PRECISION_MIGRATION = ROOT / "migrations" / "0012_tl_milli_atoms.sql"
+db.executescript(PRECISION_MIGRATION.read_text(encoding="utf-8"))
+assert db.execute(
+    "SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'"
+).fetchone()[0] == 4
+assert db.execute(
+    "SELECT available_atoms FROM v3_economy_balances WHERE account_id='opening-user'"
+).fetchone()[0] == 25_000_000
+assert db.execute(
+    "SELECT available_atoms FROM v3_economy_balances WHERE account_id='genesis-equity'"
+).fetchone()[0] == -25_000_000
+assert db.execute(
+    "SELECT amount_atoms FROM v3_economy_entries WHERE transaction_id='opening-tx' AND account_id='opening-user'"
+).fetchone()[0] == 25_000_000
+assert db.execute(
+    "SELECT amount_atoms FROM v3_economy_opening_items WHERE id='opening-item-a'"
+).fetchone()[0] == 100, "Opening evidence must remain denominated in whole TL"
+assert db.execute(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='tl3_assertion_guard'"
+).fetchone(), "Atomic meter assertion guard was not provisioned"
+assert legacy_snapshot() == before, "TL precision migration changed legacy data"
+
+# The 0.001 TL meter quantum is 10 atoms, so each settlement can split
+# exactly 7 creator atoms / 3 platform atoms without rounding drift.
+for amount_atoms in (10, 12340, 10_000_000):
+    creator_atoms = round(amount_atoms * 0.70)
+    platform_atoms = amount_atoms - creator_atoms
+    assert creator_atoms + platform_atoms == amount_atoms
+    assert creator_atoms * 10 == amount_atoms * 7
+    assert platform_atoms * 10 == amount_atoms * 3
+
+# Source-level regression guards for the 70:30 V3 playback path.
+POLICY_SOURCE = (ROOT / "src" / "economy-policy.ts").read_text(encoding="utf-8")
+LEDGER_SOURCE = (ROOT / "src" / "economy-ledger.ts").read_text(encoding="utf-8")
+V5_SOURCE = (ROOT / "src" / "routes" / "tl3-v5.ts").read_text(encoding="utf-8")
+INDEX_SOURCE = (ROOT / "src" / "index.ts").read_text(encoding="utf-8")
+ECONOMICS_SOURCE = (ROOT / "src" / "economics.ts").read_text(encoding="utf-8")
+assert "import { verifyToken } from './auth';" in ECONOMICS_SOURCE
+assert "await verifyToken(token, c.env.JWT_SECRET)" in ECONOMICS_SOURCE
+assert "function parseUserId(" not in ECONOMICS_SOURCE
+
+assert "CREATOR_SHARE_RATE = 0.70" in POLICY_SOURCE
+assert "PLATFORM_SHARE_RATE = 0.30" in POLICY_SOURCE
+assert "const creatorPart=Math.round(consumed*CREATOR_SHARE_RATE)" in LEDGER_SOURCE
+assert "const platformPart=consumed-creatorPart" in LEDGER_SOURCE
+
+license_start = V5_SOURCE.index("router.post('/session-license/:id'")
+license_end = V5_SOURCE.index("router.post('/key-rotate/:id'", license_start)
+license_route = V5_SOURCE[license_start:license_end]
+assert "getTrackPoolBalances" in license_route
+assert "f.shared=1" in license_route and "COALESCE(f.revenue_held,0)=0" in license_route
+assert "SELECT tl_balance FROM tl_user_files" not in license_route
+
+meter_start = INDEX_SOURCE.index("app.post('/api/v1/tl3/play/meter/:id'")
+meter_end = INDEX_SOURCE.index("app.post('/api/v1/tl3/play/charge/:id'", meter_start)
+meter_route = INDEX_SOURCE[meter_start:meter_end]
+assert "getTrackPoolBalances" in meter_route and "settleTrackPlayback" in meter_route
+assert "tl3-meter:" in meter_route and "tl3_assertion_guard" in meter_route
+
+legacy_share_start = INDEX_SOURCE.index("app.post('/api/shares/:id/consume'")
+legacy_share_end = INDEX_SOURCE.index("\n});", legacy_share_start)
+legacy_share_route = INDEX_SOURCE[legacy_share_start:legacy_share_end]
+assert "v5MeterAsset||v4MeterAsset||v3MeterAsset" in legacy_share_route
+assert "TL3_METER_ONLY" in legacy_share_route
+assert "TL3_METER_ONLY" in ECONOMICS_SOURCE
+assert "TL_P 62% 수취" not in ECONOMICS_SOURCE
+assert "TL_P 45% 수취" not in ECONOMICS_SOURCE
+
 print(
-    f"V3 ledger validation passed: {len(tables)} tables, {triggers} triggers, "
-    "idempotent migration, unchanged legacy fixtures, balanced entries, "
-    "separate TL buckets, and immutable-record/integrity guards."
+    f"V3 ledger validation passed: {len(tables)} base tables, {triggers} base triggers, "
+    "opening-balance controls, TL precision migration, exact 70:30 settlement arithmetic, "
+    "balanced entries, and unchanged legacy fixtures."
 )

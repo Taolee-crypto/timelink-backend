@@ -3,6 +3,7 @@
  * V4/Spine files and routes remain unchanged.
  */
 import { Hono } from 'hono';
+import { getTrackPoolBalances, atomsToTl } from '../economy-ledger';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 import { ensureD1Storage, putD1Object, getD1ObjectMeta, readD1Range } from '../d1-storage';
@@ -385,26 +386,16 @@ router.post('/session-license/:id', async (c) => {
     if (!validPlayerId(playerId) || !/^[A-Za-z0-9_-]{12,128}$/.test(sessionId)) return c.json({ok:false,error:'Player 또는 재생 세션 정보가 올바르지 않습니다.'},400);
     const [player, release] = await Promise.all([
       c.env.DB.prepare('SELECT public_jwk,key_thumbprint FROM tl3_player_keys WHERE user_id=? AND player_id=? AND revoked_at IS NULL').bind(userId,playerId).first<any>(),
-      c.env.DB.prepare("SELECT share_id,wrapped_content_key,COALESCE(key_id,'legacy') AS key_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>()
+      c.env.DB.prepare("SELECT v.share_id,v.wrapped_content_key,COALESCE(v.key_id,'legacy') AS key_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.file_id=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0").bind(fileId).first<any>()
     ]);
     if (!player) return c.json({ok:false,code:'PLAYER_KEY_REQUIRED',error:'이 기기에 등록된 TimeLink Player 키가 없습니다.'},403);
     if (!release) return c.json({ok:false,error:'봉인된 TL3 V5 자산을 찾을 수 없습니다.'},404);
-    await c.env.DB.prepare(`
-      CREATE TABLE IF NOT EXISTS tl_user_files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        share_id TEXT NOT NULL,
-        tl_balance REAL DEFAULT 0,
-        total_charged REAL DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT DEFAULT (datetime('now')),
-        UNIQUE(user_id, share_id)
-      )
-    `).run();
-    const trackBalance = await c.env.DB.prepare(
-      'SELECT tl_balance FROM tl_user_files WHERE user_id=? AND share_id=?'
-    ).bind(userId,String(release.share_id)).first<any>();
-    if (Number(trackBalance?.tl_balance || 0) <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:Number(trackBalance?.tl_balance||0)},402);
+    // V3 track pools are the canonical source for newly charged playback TL.
+    // Do not gate V5 licenses against the legacy tl_user_files cache.
+    const trackPools = await getTrackPoolBalances(c.env.DB,userId,String(release.share_id));
+    const trackBalanceAtoms = trackPools.ad + trackPools.bonus + trackPools.paid;
+    const trackBalanceTl = atomsToTl(trackBalanceAtoms);
+    if (trackBalanceAtoms <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:trackBalanceTl},402);
     const masterKeys = resolveMasterKeyring(c.env);
     const releaseKeyId = String(release.key_id || 'legacy');
     const releaseMasterKey = masterKeys.keys[releaseKeyId];
@@ -434,7 +425,12 @@ router.post('/session-license/:id', async (c) => {
       expires_at:expiresAt,salt:b64u(salt),nonce:b64u(nonce),
       ephemeral_public_key:{kty:'EC',crv:'P-256',x:ephemeralPublic.x,y:ephemeralPublic.y},
       wrapped_license:b64u(wrapped),aad_thumbprint:thumb});
-  } catch(e:any) { return c.json({ok:false,error:e?.message||'TL3 V5 세션 라이선스 발급 실패'},500); }
+  } catch(e:any) {
+    const message=String(e?.message||'TL3 V5 세션 라이선스 발급 실패');
+    if(message.includes('V3_TL_ATOM_SCALE_NOT_READY')||/no such table|no such column/i.test(message))
+      return c.json({ok:false,code:'V3_LEDGER_NOT_INITIALIZED',error:'V3 TL 원장과 정밀도 마이그레이션이 아직 완료되지 않았습니다.'},503);
+    return c.json({ok:false,error:message},500);
+  }
 });
 
 /**
