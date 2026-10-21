@@ -3453,7 +3453,7 @@ app.get('/api/shares/my', async (c) => {
         "SELECT id,title,artist,album,duration,file_tl,category,file_type,category_type,description,cover_url,content_kind,release_mode,storage_mode,origin_hash,release_check,pulse,created_at FROM tl_shares WHERE CAST(user_id AS INTEGER)=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
       ).bind(userId,limit,offset).all(),
       c.env.DB.prepare(
-        "SELECT id,title,artist,genre,file_type,file_size_bytes,duration_seconds,auth_status,shared,play_count,created_at,updated_at FROM tl_files WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        "SELECT id,title,artist,genre,file_type,file_size_bytes,duration_seconds,auth_status,shared,play_count,created_at,updated_at FROM tl_files WHERE user_id=? AND COALESCE(auth_status,'')<>'deleted' ORDER BY created_at DESC LIMIT ? OFFSET ?"
       ).bind(userId,limit,offset).all()
     ]);
     return c.json({shares:shares.results||[],files:files.results||[],limit,offset});
@@ -3805,43 +3805,42 @@ app.patch('/api/shares/:id', async (c) => {
 
 app.delete('/api/shares/:id', async (c) => {
   try {
-    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const auth = c.req.header('Authorization')?.replace(/^Bearer\\s+/i,'').trim() || '';
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
     if (!payload) return c.json({error:'인증 필요'},401);
-    
-    const shareId = String(c.req.param('id') || '');
-    const userId = Number(payload.sub);
-    
-    // 1) tl_shares에서 찾기 (기존 로직)
-    let share = await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    
-    // 2) tl_shares에 없으면 tl3_releases에서 찾기 (V4 자산)
-    if (!share) {
-      const release = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? OR CAST(file_id AS TEXT)=?").bind(shareId, shareId).first<any>();
-      if (release) {
-        if (Number(release.user_id) !== userId) {
-          return c.json({error:'권한 없음'},403);
-        }
-        // V4 자산 삭제 (tl3_releases, tl3_segments, tl3_release_tokens)
-        await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(release.file_id).run().catch(()=>{});
-        await c.env.DB.prepare('DELETE FROM tl3_release_tokens WHERE file_id=?').bind(release.file_id).run().catch(()=>{});
-        await c.env.DB.prepare('DELETE FROM tl3_releases WHERE file_id=?').bind(release.file_id).run();
-        await c.env.DB.prepare('DELETE FROM tl_files WHERE id=?').bind(release.file_id).run().catch(()=>{});
-        return c.json({ok:true, deleted:'tl3_release', file_id:release.file_id});
-      }
-      return c.json({error:'파일 없음'},404);
+    const shareId=String(c.req.param('id')||'').trim();
+    const userId=Number(payload.sub);
+    if(!shareId || !Number.isSafeInteger(userId) || userId<=0) return c.json({error:'잘못된 요청'},400);
+
+    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    const v5=await c.env.DB.prepare("SELECT * FROM tl3_v5_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1").bind(shareId,shareId).first<any>().catch(()=>null);
+    const spine=await c.env.DB.prepare("SELECT * FROM tl3_spine_v4_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1").bind(shareId,shareId).first<any>().catch(()=>null);
+    const v4=await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1").bind(shareId,shareId).first<any>().catch(()=>null);
+    const release=v5||spine||v4;
+    const fileId=Number(release?.file_id||0);
+    if(!share && !release) return c.json({error:'파일 없음'},404);
+
+    const ownerId=Number(share?.user_id ?? release?.user_id);
+    if(ownerId!==userId) return c.json({error:'권한 없음'},403);
+    if(share && release && Number(release.user_id)!==userId) return c.json({error:'자산 소유자 불일치'},409);
+
+    // 자산/재생 메타데이터만 정리한다. 경제 원장, 거래, 정산 및 감사 기록은 보존한다.
+    const statements:any[]=[];
+    if(fileId>0){
+      statements.push(c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(fileId));
+      statements.push(c.env.DB.prepare('DELETE FROM tl3_release_tokens WHERE file_id=?').bind(fileId));
+      statements.push(c.env.DB.prepare('DELETE FROM tl3_v5_sessions WHERE file_id=?').bind(fileId));
+      statements.push(c.env.DB.prepare('DELETE FROM tl3_v5_releases WHERE file_id=?').bind(fileId));
+      statements.push(c.env.DB.prepare('DELETE FROM tl3_spine_v4_releases WHERE file_id=?').bind(fileId));
+      statements.push(c.env.DB.prepare('DELETE FROM tl3_releases WHERE file_id=?').bind(fileId));
+      // tl_files는 과거 거래/재생 이력의 FK 대상일 수 있으므로 물리 삭제하지 않고 비공개 처리한다.
+      statements.push(c.env.DB.prepare("UPDATE tl_files SET shared=0,auth_status='deleted' WHERE id=? AND user_id=?").bind(fileId,userId));
     }
-    
-    // 3) tl_shares가 있으면 기존 로직 (소유권 확인)
-    if (Number(share.user_id) !== userId) {
-      return c.json({error:'권한 없음'},403);
-    }
-    
-    // 기존 삭제 로직 (tl_shares + 관련 자산)
-    await c.env.DB.prepare('DELETE FROM tl_shares WHERE id=?').bind(shareId).run();
-    return c.json({ok:true, deleted:'share', id:shareId});
+    if(share) statements.push(c.env.DB.prepare('DELETE FROM tl_shares WHERE id=? AND CAST(user_id AS INTEGER)=?').bind(shareId,userId));
+    if(statements.length) await c.env.DB.batch(statements);
+    return c.json({ok:true,deleted:true,id:shareId,file_id:fileId||null});
   } catch(e:any) {
-    return c.json({error:e.message||'삭제 실패'},500);
+    return c.json({error:e?.message||'삭제 실패'},500);
   }
 });
 
