@@ -965,7 +965,7 @@ app.post('/api/tracks/:id/play', async (c) => {
 // ── 무료 MP3 원본 저장 ──
 // 무료 공개 음원은 재생을 위해 TimeLink D1 Object Storage에 저장한다.
 app.post('/api/upload/mp3', async (c) => {
-  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
   const user=token ? await verifyToken(token,c.env.JWT_SECRET).catch(()=>null) : null;
   const userId=Number(user?.sub||0);
   if(!userId) return c.json({ok:false,error:'인증 필요'},401);
@@ -988,7 +988,7 @@ app.post('/api/upload/mp3', async (c) => {
 });
 
 app.post('/api/upload/tl3', async (c) => {
-  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
   const user=token ? await verifyToken(token,c.env.JWT_SECRET).catch(()=>null) : null;
   const userId=Number(user?.sub||0);
   if(!userId) return c.json({ok:false,error:'인증 필요'},401);
@@ -4170,7 +4170,7 @@ app.patch('/api/shares/:id', async (c) => {
 
 app.delete('/api/shares/:id', async (c) => {
   try {
-    const auth = c.req.header('Authorization')?.replace(/^Bearer\\s+/i, '').trim() || '';
+    const auth = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '').trim() || '';
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
     if (!payload) return c.json({ error: '인증 필요' }, 401);
 
@@ -4211,7 +4211,7 @@ app.delete('/api/shares/:id', async (c) => {
       fileId = Number(file?.id || 0);
     }
 
-    if (!file && /^\\d+$/.test(requestedId)) {
+    if (!file && /^\d+$/.test(requestedId)) {
       file = await c.env.DB.prepare(
         'SELECT id,user_id FROM tl_files WHERE id=?'
       ).bind(Number(requestedId)).first<any>().catch(() => null);
