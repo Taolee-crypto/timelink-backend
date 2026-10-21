@@ -339,7 +339,11 @@ export async function settleTrackPlayback(
       self_play_held:userId===creatorId
     },
     lines:[...lineMap.values()],
-    atomicStatements:input.atomicStatements
+    atomicStatements:[
+      ...(input.atomicStatements||[]),
+      db.prepare('INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)')
+        .bind(fileId,userId,atomsToTl(amountAtoms),atomsToTl(creatorShareAtoms),atomsToTl(balances.ad+balances.bonus+balances.paid-amountAtoms),playedSeconds)
+    ]
   });
   return {id:posted.id,replayed:posted.replayed,amountAtoms,creatorShareAtoms,platformShareAtoms,used};
 }
