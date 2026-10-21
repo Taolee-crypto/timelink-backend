@@ -75,7 +75,7 @@ router.patch('/members/:id/access', async c => {
   const id = Number(c.req.param('id'));
   if (!Number.isSafeInteger(id) || id <= 0) return c.json({ok:false,error:'잘못된 회원 ID'},400);
   if (id === actor) return c.json({ok:false,error:'자기 계정은 정지할 수 없습니다'},409);
-  const body = await c.req.json<{suspended?:boolean}>().catch(() => ({}));
+  const body: { suspended?: boolean } = await c.req.json<{ suspended?: boolean }>().catch(() => ({}));
   if (typeof body.suspended !== 'boolean') return c.json({ok:false,error:'suspended 불리언 값 필요'},400);
   const target = await c.env.DB.prepare('SELECT id,role,is_active FROM users WHERE id=?').bind(id).first<{id:number;role:string;is_active:number}>();
   if (!target) return c.json({ok:false,error:'회원 없음'},404);
