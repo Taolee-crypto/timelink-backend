@@ -43,6 +43,7 @@ router.post('/login', async (c) => {
   const user = await c.env.DB.prepare('SELECT * FROM users WHERE email = ?')
     .bind(body.email).first<User>();
   if (!user) return c.json({ detail: 'Invalid credentials' }, 401);
+  if (!user.is_active || user.account_forfeited) return c.json({ detail: 'Account disabled' }, 403);
 
   const stored = String(user.password_hash || '');
   const isHashed = stored.includes(':');
