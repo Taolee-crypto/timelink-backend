@@ -6,19 +6,18 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Env } from './types';
+import { verifyToken } from './auth';
 
 const ads = new Hono<{ Bindings: Env }>();
 
-function parseUserId(token: string): number {
-  const m = token.match(/(?:token|fallback)_(\d+)/);
-  if (m) return Number(m[1]);
-  if (token.split('.').length === 3) {
-    try {
-      const p = JSON.parse(atob(token.split('.')[1]));
-      return Number(p.userId || p.id || p.sub || 0);
-    } catch { return 0; }
-  }
-  return 0;
+async function parseUserId(token: string, db: D1Database, secret: string): Promise<number> {
+  const payload = await verifyToken(String(token || ''), secret).catch(() => null);
+  const userId = Number(payload?.sub || 0);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return 0;
+  const user = await db.prepare(
+    'SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0'
+  ).bind(userId).first<any>();
+  return user ? userId : 0;
 }
 
 // ── DB 테이블 생성 헬퍼 ──
@@ -115,7 +114,7 @@ ads.get('/available', async (c) => {
   try {
     await ensureTables(c.env.DB);
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
 
     const result = await c.env.DB.prepare(`
       SELECT a.*,
@@ -337,7 +336,7 @@ ads.get('/stream/:adId', async (c) => {
   const adId   = c.req.param('adId');
   const token  = (c.req.header('Authorization')||'').replace('Bearer ','');
   const tkQuery = c.req.query('tk') || '';
-  const userId = parseUserId(token || tkQuery);
+  const userId = await parseUserId(token || tkQuery,c.env.DB,c.env.JWT_SECRET);
 
   const cors = {
     'Access-Control-Allow-Origin': '*',
