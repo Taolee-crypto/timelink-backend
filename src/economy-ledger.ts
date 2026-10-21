@@ -11,6 +11,11 @@ export function atomsToTl(value:number):number {
   return Number((Number(value||0)/TL_ATOMS_PER_TL).toFixed(4));
 }
 
+export async function assertTLAtomScale(db:D1Database):Promise<void>{
+  const row=await db.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>();
+  if(Number(row?.decimals)!==4) throw new Error('V3_TL_ATOM_SCALE_NOT_READY');
+}
+
 export type LedgerOwnerType = 'user' | 'platform' | 'escrow' | 'system' | 'partner';
 
 export interface LedgerLine {
@@ -186,6 +191,7 @@ export async function getLedgerWallet(db: D1Database, userId: number) {
 export type TrackPoolSource = 'paid' | 'ad' | 'bonus' | 'legacy';
 
 export async function getTrackPoolBalances(db:D1Database,userId:number,shareId:string) {
+  await assertTLAtomScale(db);
   const rows=await db.prepare(`
     SELECT a.bucket,b.available_atoms,b.held_atoms
     FROM v3_economy_accounts a
@@ -209,6 +215,7 @@ export async function chargeTrackPool(
   idempotencyKey:string,
   description='공통 지갑에서 곡 전용 TL 풀로 내부 이체'
 ) {
+  await assertTLAtomScale(db);
   if(!Number.isSafeInteger(amountAtoms)||amountAtoms<=0) throw new Error('Invalid track charge amount');
   const prior=await db.prepare(`
     SELECT id,transaction_type,source,reference_type,reference_id,actor_user_id,metadata_json
@@ -271,6 +278,7 @@ export async function settleTrackPlayback(
   }
 ) {
   const {userId,creatorId,shareId,amountAtoms,idempotencyKey,fileId,playedSeconds}=input;
+  await assertTLAtomScale(db);
   if(!Number.isSafeInteger(amountAtoms)||amountAtoms<=0) throw new Error('Invalid playback settlement amount');
   if(!Number.isSafeInteger(creatorId)||creatorId<=0) throw new Error('Track creator is unavailable');
   const balances=await getTrackPoolBalances(db,userId,shareId);
