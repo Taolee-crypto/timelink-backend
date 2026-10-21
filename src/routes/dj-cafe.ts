@@ -971,18 +971,47 @@ router.post('/charge', async (c) => {
     return c.json({ ok: false, error: '현재 방송 중인 곡과 청구 곡이 일치하지 않습니다.' }, 409);
   }
 
-  // 카페 할인은 요청값을 신뢰하지 않고, 청취자가 소유한 카페와 활성 계약이 있을 때만 적용한다.
+  // 카페 요율은 대표자 또는 승인 직원만 사용할 수 있다.
+  // 카페 청취 비용은 직원 개인 지갑이 아니라 해당 카페 대표자 지갑에서 차감한다.
   let role = 'normal';
+  let chargeUserId = auth.id;
+  let chargeChannelId = '';
   if (requestedRole === 'cafe') {
-    const contract = await c.env.DB.prepare(
-      `SELECT l.id
-       FROM dj_cafe_links l
-       INNER JOIN cafe_channels cc ON cc.channel_id = l.cafe_channel_id
-       WHERE l.dj_id=? AND cc.owner_id=? AND cc.status='active' AND l.status='active'
-       LIMIT 1`
-    ).bind(djId, auth.id).first<any>();
+    const requestedCafeId = String(body.cafe_channel_id || '').trim();
+    let contract: any = null;
+    if (requestedCafeId) {
+      contract = await c.env.DB.prepare(
+        `SELECT l.id, cc.channel_id, cc.owner_id
+         FROM dj_cafe_links l
+         INNER JOIN cafe_channels cc ON cc.channel_id = l.cafe_channel_id
+         WHERE l.dj_id=? AND cc.channel_id=? AND cc.status='active' AND l.status='active'
+         LIMIT 1`
+      ).bind(djId, requestedCafeId).first<any>();
+    } else {
+      // 기존 대표자 플레이어와의 호환
+      contract = await c.env.DB.prepare(
+        `SELECT l.id, cc.channel_id, cc.owner_id
+         FROM dj_cafe_links l
+         INNER JOIN cafe_channels cc ON cc.channel_id = l.cafe_channel_id
+         WHERE l.dj_id=? AND cc.owner_id=? AND cc.status='active' AND l.status='active'
+         LIMIT 1`
+      ).bind(djId, auth.id).first<any>();
+    }
     if (!contract) return c.json({ ok: false, error: '활성 카페 계약이 확인되지 않습니다.' }, 403);
+    if (Number(contract.owner_id) !== auth.id) {
+      await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS cafe_staff_members (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL, user_id INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending', invited_by INTEGER NOT NULL, approved_by INTEGER,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(channel_id,user_id)
+      )`).run();
+      const staff = await c.env.DB.prepare(
+        "SELECT id FROM cafe_staff_members WHERE channel_id=? AND user_id=? AND status='active'"
+      ).bind(contract.channel_id, auth.id).first<any>();
+      if (!staff) return c.json({ ok: false, error: '대표자가 승인한 카페 직원만 방송을 운영할 수 있습니다.' }, 403);
+    }
     role = 'cafe';
+    chargeUserId = Number(contract.owner_id);
+    chargeChannelId = String(contract.channel_id);
   }
 
   const rates = await getRates(c.env.DB);
@@ -999,7 +1028,7 @@ router.post('/charge', async (c) => {
   // 청취자 TL 확인
   const listener = await c.env.DB.prepare(
     'SELECT tl, tl_p, tl_a, tl_b FROM users WHERE id=?'
-  ).bind(auth.id).first<any>();
+  ).bind(chargeUserId).first<any>();
   const totalTL = Number(listener?.tl_p || 0) + Number(listener?.tl_a || 0) + Number(listener?.tl_b || 0);
 
   if (totalTL < totalCharge) {
@@ -1024,7 +1053,7 @@ router.post('/charge', async (c) => {
   // TL 차감
   await c.env.DB.prepare(
     'UPDATE users SET tl_a=?, tl_b=?, tl_p=?, tl=? WHERE id=?'
-  ).bind(tlA, tlB, tlP, tlA + tlB + tlP, auth.id).run();
+  ).bind(tlA, tlB, tlP, tlA + tlB + tlP, chargeUserId).run();
 
   // DJ/플랫폼 5:5 분배 (기존 계약 비율은 별도 정책 확인 전까지 유지)
   const djAmount = totalCharge * 0.5;
@@ -1049,6 +1078,8 @@ router.post('/charge', async (c) => {
     dj_revenue: djAmount,
     platform_revenue: platformAmount,
     new_tl: tlA + tlB + tlP,
+    charged_to_user_id: chargeUserId,
+    cafe_channel_id: chargeChannelId || null,
     wallet: { tl_a: tlA, tl_b: tlB, tl_p: tlP, total: tlA + tlB + tlP }
   });
 });
