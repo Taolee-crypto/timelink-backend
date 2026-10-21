@@ -428,10 +428,10 @@ async function cafeCodeHash(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map(x=>x.toString(16).padStart(2,'0')).join('');
 }
 async function cafeMemberRole(db: any, channelId: string, userId: number): Promise<'owner'|'staff'|'pending'|'none'> {
-  const cafe = await db.prepare('SELECT owner_id FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
+  const cafe = await db.prepare('SELECT owner_id FROM cafe_channels WHERE channel_id=?').bind(channelId).first();
   if (!cafe) return 'none';
   if (Number(cafe.owner_id) === userId) return 'owner';
-  const member = await db.prepare('SELECT status FROM cafe_staff_members WHERE channel_id=? AND user_id=?').bind(channelId,userId).first<any>();
+  const member = await db.prepare('SELECT status FROM cafe_staff_members WHERE channel_id=? AND user_id=?').bind(channelId,userId).first();
   return member?.status === 'active' ? 'staff' : member?.status === 'pending' ? 'pending' : 'none';
 }
 
