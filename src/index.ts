@@ -3777,7 +3777,19 @@ app.get('/api/shares/:id/my-tl', async (c) => {
   let requestedId=String(c.req.param('id')||'').trim();
   let canonicalShareId=requestedId;
   try{
-    // V3 track pools are the sole playback balance source after ledger cutover.
+    const share=await c.env.DB.prepare('SELECT id,file_tl FROM tl_shares WHERE id=? LIMIT 1').bind(requestedId).first<any>();
+    let release=await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedId).first<any>().catch(()=>null);
+    if(!release) release=await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedId).first<any>().catch(()=>null);
+    if(!release) release=await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 1").bind(requestedId).first<any>().catch(()=>null);
+    if(!release && /^\\d+$/.test(requestedId)){
+      const fileId=Number(requestedId);
+      release=await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>().catch(()=>null)
+        || await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>().catch(()=>null)
+        || await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1").bind(fileId).first<any>().catch(()=>null);
+    }
+    if(release) canonicalShareId=String(release.share_id||requestedId);
+    if(!share && !release) return c.json({error:'파일 없음'},404);
+    if(share && shareKind(share)==='mp3') return c.json({ok:true,tl_balance:0,total_charged:0,file_tl:Number(share.file_tl||0),share_id:canonicalShareId,free:true});
     const pool=await getTrackPoolBalances(c.env.DB,userId,canonicalShareId);
     const totalAtoms=pool.paid+pool.ad+pool.bonus;
     const charged=await c.env.DB.prepare(`
@@ -3789,13 +3801,10 @@ app.get('/api/shares/:id/my-tl', async (c) => {
         AND t.transaction_type='track_charge' AND e.amount_atoms>0
     `).bind(String(userId),'track_pool:'+canonicalShareId+':%').first<any>();
     return c.json({
-      ok:true,
-      tl_balance:atomsToTl(totalAtoms),
-      total_charged:atomsToTl(Number(charged?.amount||0)),
+      ok:true,tl_balance:atomsToTl(totalAtoms),total_charged:atomsToTl(Number(charged?.amount||0)),
       by_source:{paid:atomsToTl(pool.paid),ad:atomsToTl(pool.ad),bonus:atomsToTl(pool.bonus),legacy:atomsToTl(pool.legacy)},
-      file_tl:Number(share?.file_tl||((Number(v5Release?.duration_ms||0)>0)?Math.ceil(Number(v5Release.duration_ms)/1000):0)),
-      share_id:canonicalShareId,
-      tl_atom_scale:TL_ATOMS_PER_TL
+      file_tl:Number(share?.file_tl||((Number(release?.duration_ms||0)>0)?Math.ceil(Number(release.duration_ms)/1000):0)),
+      share_id:canonicalShareId,tl_atom_scale:TL_ATOMS_PER_TL
     });
   }catch(e:any){
     console.error('[SHARE_MY_TL_ERROR]',{requested_id:requestedId,user_id:userId,error:String(e?.message||e)});
