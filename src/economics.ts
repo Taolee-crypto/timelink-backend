@@ -215,11 +215,11 @@ eco.post('/consume', async (c) => {
     `).bind(consumedP, consumedA, consumedB, consumedP, consumedP, userId).run();
 
     // 크리에이터 수익 배분
-    let creatorEarnP = 0, creatorEarnA = 0;
-    let platformEarnP = 0, platformEarnA = 0;
+    let creatorEarnP = 0, creatorEarnA = 0, creatorEarnB = 0;
+    let platformEarnP = 0, platformEarnA = 0, platformEarnB = 0;
 
     const share = await c.env.DB.prepare(
-      'SELECT user_id as creator_id, plan FROM tl_shares WHERE id=?'
+      'SELECT user_id as creator_id FROM tl_shares WHERE id=?'
     ).bind(share_id).first() as any;
 
     if (share) {
@@ -233,10 +233,10 @@ eco.post('/consume', async (c) => {
 
       // TL_B 소비 → 플랫폼 수익 (크리에이터 분배 없음, 보너스는 원가 없음)
       // → 7:3 정책에 따라 크리에이터 몫 70%를 TL_A로 지급
-      const creatorEarnFromB = Number((consumedB * CREATOR_SHARE_RATE).toFixed(6));
-      const platformEarnFromB = Number((consumedB * PLATFORM_SHARE_RATE).toFixed(6));
+      creatorEarnB = Number((consumedB * CREATOR_SHARE_RATE).toFixed(6));
+      platformEarnB = Number((consumedB * PLATFORM_SHARE_RATE).toFixed(6));
 
-      if (creatorEarnP > 0 || creatorEarnA > 0 || creatorEarnFromB > 0) {
+      if (creatorEarnP > 0 || creatorEarnA > 0 || creatorEarnB > 0) {
         await c.env.DB.prepare(`
           UPDATE users SET
             tl_p = tl_p + ?,
@@ -246,7 +246,7 @@ eco.post('/consume', async (c) => {
           WHERE id=?
         `).bind(
           creatorEarnP, creatorEarnP,
-          creatorEarnA + creatorEarnFromB,
+          creatorEarnA + creatorEarnB,
           creatorEarnP,
           share.creator_id
         ).run();
@@ -288,8 +288,8 @@ eco.post('/consume', async (c) => {
     return c.json({
       ok: true,
       consumed: { tl_p: consumedP, tl_a: consumedA, tl_b: consumedB, total: actualConsumed },
-      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA + (consumedB > 0 ? Number((consumedB * CREATOR_SHARE_RATE).toFixed(6)) : 0) },
-      platform: { tl_p: platformEarnP, tl_a: platformEarnA, tl_b: Number((consumedB * PLATFORM_SHARE_RATE).toFixed(6)) },
+      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA + creatorEarnB },
+      platform: { tl_p: platformEarnP, tl_a: platformEarnA, tl_b: platformEarnB },
       wallet: {
         tl_p: updated?.tl_p ?? updated?.tl ?? 0,
         tl_a: updated?.tl_a ?? 0,
