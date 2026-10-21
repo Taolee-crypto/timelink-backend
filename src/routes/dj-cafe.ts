@@ -957,15 +957,37 @@ router.post('/charge', async (c) => {
   const djId = Number(body.dj_id || 0);
   const shareId = String(body.share_id || '');
   const seconds = Math.max(1, Math.min(Number(body.seconds || 1), 60));
-  const role = String(body.role || 'normal');  // 'normal' | 'cafe'
+  const requestedRole = String(body.role || 'normal');  // 'normal' | 'cafe'
 
   if (!djId || !shareId) return c.json({ ok: false, error: 'dj_id, share_id 필요' }, 400);
+
+  // 청구 대상은 해당 DJ가 현재 실제 방송 중인 곡으로 제한한다.
+  const dj = await c.env.DB.prepare(
+    'SELECT user_id, is_live, live_current_track_id FROM dj_profiles WHERE id=?'
+  ).bind(djId).first<any>();
+  if (!dj || !Number(dj.is_live || 0) || String(dj.live_current_track_id || '') !== shareId) {
+    return c.json({ ok: false, error: '현재 방송 중인 곡과 청구 곡이 일치하지 않습니다.' }, 409);
+  }
+
+  // 카페 할인은 요청값을 신뢰하지 않고, 청취자가 소유한 카페와 활성 계약이 있을 때만 적용한다.
+  let role = 'normal';
+  if (requestedRole === 'cafe') {
+    const contract = await c.env.DB.prepare(
+      `SELECT l.id
+       FROM dj_cafe_links l
+       INNER JOIN cafe_channels cc ON cc.channel_id = l.cafe_channel_id
+       WHERE l.dj_id=? AND cc.owner_id=? AND cc.status='active' AND l.status='active'
+       LIMIT 1`
+    ).bind(djId, auth.id).first<any>();
+    if (!contract) return c.json({ ok: false, error: '활성 카페 계약이 확인되지 않습니다.' }, 403);
+    role = 'cafe';
+  }
 
   const rates = await getRates(c.env.DB);
   const multiplier = role === 'cafe' ? rates.cafe : rates.normal;
 
-  // 곡의 file_tl 조회
-  const share = await c.env.DB.prepare('SELECT file_tl FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+  // 곡이 실제 공유 자산인지 확인한다.
+  const share = await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first<any>();
   if (!share) return c.json({ ok: false, error: '곡 없음' }, 404);
 
   // DJ 방송은 곡 전체 file_tl이 아니라 실제 청취 초 단위로 과금한다.
