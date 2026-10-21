@@ -241,6 +241,23 @@ assert "v3_economy_opening_batches" in opening_tables
 assert "v3_economy_opening_items" in opening_tables
 assert legacy_snapshot() == before, "Opening-balance migration changed legacy data"
 
+db.execute("""
+    INSERT INTO v3_economy_opening_batches
+      (id,status,created_by,reason,evidence_ref,item_count,checksum)
+    VALUES ('batch-a','draft','9','opening test','evidence-a',1,'checksum-a'),
+           ('batch-b','draft','9','duplicate test','evidence-b',1,'checksum-b')
+""")
+db.execute("""
+    INSERT INTO v3_economy_opening_items
+      (id,batch_id,user_id,bucket,amount_atoms,source_table,source_row_id,source_field,source_checksum,evidence_note)
+    VALUES ('opening-item-a','batch-a','1','wallet_paid',100,'tl_payments','77','tl_granted','sha-a','approved evidence')
+""")
+must_fail("""
+    INSERT INTO v3_economy_opening_items
+      (id,batch_id,user_id,bucket,amount_atoms,source_table,source_row_id,source_field,source_checksum,evidence_note)
+    VALUES ('opening-item-b','batch-b','1','wallet_paid',100,'tl_payments','77','tl_granted','sha-a','duplicate evidence')
+""")
+
 print(
     f"V3 ledger validation passed: {len(tables)} base tables, {triggers} base triggers, "
     "opening-balance migration, negative genesis-equity control only, "
