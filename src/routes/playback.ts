@@ -1,12 +1,12 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../middleware';
 import type { Env, User, TLFile } from '../types';
+import { CREATOR_SHARE_RATE } from '../economy-policy';
 
 const router = new Hono<{ Bindings: Env; Variables: { user: User } }>();
 
 router.use('*', authMiddleware);
 
-const REVENUE_SHARE = 0.7;
 const CAR_MODE_MULTIPLIER = 2.0;
 
 // POST /:id/play
@@ -25,7 +25,7 @@ router.post('/:id/play', async (c) => {
 
   const tlDeduct = Math.min(duration, file.file_tl);
   const multiplier = carMode ? CAR_MODE_MULTIPLIER : 1.0;
-  const revenue = tlDeduct * REVENUE_SHARE * multiplier;
+  const revenue = tlDeduct * CREATOR_SHARE_RATE;
   const fileTLAfter = file.file_tl - tlDeduct;
   const newPulse = file.pulse + tlDeduct * multiplier;
 
@@ -97,7 +97,7 @@ router.post('/tl3/consume', async (c) => {
   if (!debit.meta?.changes) return c.json({ok:false,error:'시간 포인트가 부족합니다.',required:seconds,balance:u.tl_balance},402);
 
   const creator = await c.env.DB.prepare('SELECT id,tl_balance FROM users WHERE id=?').bind(file.user_id).first<any>();
-  const revenue = seconds * 0.7;
+  const revenue = seconds * CREATOR_SHARE_RATE;
   if (creator) {
     const after = Number(creator.tl_balance || 0) + revenue;
     await c.env.DB.prepare('UPDATE users SET tl_balance=tl_balance+?, total_tl_earned=total_tl_earned+? WHERE id=?')
