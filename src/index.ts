@@ -3566,7 +3566,11 @@ app.post('/api/shares/:id/consume', async (c) => {
     const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
     const v5MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
     const v4MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
-    const v3MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
+    let v3MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
+    if(/^\\d+$/.test(String(shareId))){
+      const fileId=Number(shareId);
+      v3MeterAsset=v3MeterAsset||await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1").bind(fileId).first<any>().catch(()=>null);
+    }
     if(v5MeterAsset||v4MeterAsset||v3MeterAsset) return c.json({ok:false,code:'TL3_METER_ONLY',error:'TL3 자산은 실제 재생 시간 정산 경로만 사용할 수 있습니다.'},409);
 
     if(!share) return c.json({error:'파일 없음'},404);
