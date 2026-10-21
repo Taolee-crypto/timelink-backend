@@ -383,7 +383,7 @@ router.post('/admin/opening-batches', async (c) => {
     }
     const exists = await c.env.DB.prepare('SELECT id FROM users WHERE id=?').bind(userId).first();
     if (!exists) return c.json({ok:false,error:'존재하지 않는 사용자 ID가 포함되어 있습니다.'},404);
-    normalized.push({user_id:String(userId),bucket,amount_atoms:tlToAtoms(amount),source_table:sourceTable,source_row_id:sourceRowId,source_field:sourceField,source_checksum:sourceChecksum,evidence_note:evidenceNote});
+    normalized.push({user_id:String(userId),bucket,amount_atoms:amount,source_table:sourceTable,source_row_id:sourceRowId,source_field:sourceField,source_checksum:sourceChecksum,evidence_note:evidenceNote});
   }
   const canonical = JSON.stringify(normalized.slice().sort((a,b) =>
     (a.user_id+a.bucket+a.source_table+a.source_row_id+a.source_field).localeCompare(b.user_id+b.bucket+b.source_table+b.source_row_id+b.source_field)
@@ -468,8 +468,8 @@ router.post('/admin/opening-batches/:id/post', async (c) => {
           evidence_note:item.evidence_note,batch_checksum:batch.checksum
         },
         lines:[
-          {accountId:userAccount,assetCode:'TL',amountAtoms:Number(item.amount_atoms)},
-          {accountId:equityAccount,assetCode:'TL',amountAtoms:-Number(item.amount_atoms)}
+          {accountId:userAccount,assetCode:'TL',amountAtoms:tlToAtoms(Number(item.amount_atoms))},
+          {accountId:equityAccount,assetCode:'TL',amountAtoms:-tlToAtoms(Number(item.amount_atoms))}
         ]
       });
       await c.env.DB.prepare(`UPDATE v3_economy_opening_items
