@@ -1024,8 +1024,7 @@ router.post('/charge', async (c) => {
     'UPDATE users SET tl_a=?, tl_b=?, tl_p=?, tl=? WHERE id=?'
   ).bind(tlA, tlB, tlP, tlA + tlB + tlP, auth.id).run();
 
-  // DJ/플랫폼 5:5 분배
-  const dj = await c.env.DB.prepare('SELECT user_id FROM dj_profiles WHERE id=?').bind(djId).first<any>();
+  // DJ/플랫폼 5:5 분배 (기존 계약 비율은 별도 정책 확인 전까지 유지)
   const djAmount = totalCharge * 0.5;
   const platformAmount = totalCharge * 0.5;
 
