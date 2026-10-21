@@ -258,8 +258,42 @@ must_fail("""
     VALUES ('opening-item-b','batch-b','1','wallet_ad',100,'tl_payments','77','tl_granted','sha-a','duplicate evidence')
 """)
 
+
+# Migration 0012 changes only V3 TL atom precision. Legacy source values and
+# opening-batch evidence stay in whole TL; posting code scales them at posting time.
+PRECISION_MIGRATION = ROOT / "migrations" / "0012_tl_milli_atoms.sql"
+db.executescript(PRECISION_MIGRATION.read_text(encoding="utf-8"))
+assert db.execute(
+    "SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'"
+).fetchone()[0] == 4
+assert db.execute(
+    "SELECT available_atoms FROM v3_economy_balances WHERE account_id='opening-user'"
+).fetchone()[0] == 25_000_000
+assert db.execute(
+    "SELECT available_atoms FROM v3_economy_balances WHERE account_id='genesis-equity'"
+).fetchone()[0] == -25_000_000
+assert db.execute(
+    "SELECT amount_atoms FROM v3_economy_entries WHERE transaction_id='opening-tx' AND account_id='opening-user'"
+).fetchone()[0] == 25_000_000
+assert db.execute(
+    "SELECT amount_atoms FROM v3_economy_opening_items WHERE id='opening-item-a'"
+).fetchone()[0] == 100, "Opening evidence must remain denominated in whole TL"
+assert db.execute(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='tl3_assertion_guard'"
+).fetchone(), "Atomic meter assertion guard was not provisioned"
+assert legacy_snapshot() == before, "TL precision migration changed legacy data"
+
+# The 0.001 TL meter quantum is 10 atoms, so each settlement can split
+# exactly 7 creator atoms / 3 platform atoms without rounding drift.
+for amount_atoms in (10, 12340, 10_000_000):
+    creator_atoms = round(amount_atoms * 0.70)
+    platform_atoms = amount_atoms - creator_atoms
+    assert creator_atoms + platform_atoms == amount_atoms
+    assert creator_atoms == round(amount_atoms * 0.70)
+    assert platform_atoms == amount_atoms - creator_atoms
+
 print(
     f"V3 ledger validation passed: {len(tables)} base tables, {triggers} base triggers, "
-    "opening-balance migration, negative genesis-equity control only, "
-    "non-negative user/platform accounts, balanced entries, and unchanged legacy fixtures."
+    "opening-balance controls, TL precision migration, exact 70:30 settlement arithmetic, "
+    "balanced entries, and unchanged legacy fixtures."
 )
