@@ -425,7 +425,12 @@ router.post('/session-license/:id', async (c) => {
       expires_at:expiresAt,salt:b64u(salt),nonce:b64u(nonce),
       ephemeral_public_key:{kty:'EC',crv:'P-256',x:ephemeralPublic.x,y:ephemeralPublic.y},
       wrapped_license:b64u(wrapped),aad_thumbprint:thumb});
-  } catch(e:any) { return c.json({ok:false,error:e?.message||'TL3 V5 세션 라이선스 발급 실패'},500); }
+  } catch(e:any) {
+    const message=String(e?.message||'TL3 V5 세션 라이선스 발급 실패');
+    if(message.includes('V3_TL_ATOM_SCALE_NOT_READY')||/no such table|no such column/i.test(message))
+      return c.json({ok:false,code:'V3_LEDGER_NOT_INITIALIZED',error:'V3 TL 원장과 정밀도 마이그레이션이 아직 완료되지 않았습니다.'},503);
+    return c.json({ok:false,error:message},500);
+  }
 });
 
 /**
