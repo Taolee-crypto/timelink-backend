@@ -397,7 +397,7 @@ router.delete('/channels/:id', async (c) => {
 
 // ── 카페 직원 초대·승인 ──
 async function ensureCafeStaffTables(db: any) {
-  await db.prepare(\`CREATE TABLE IF NOT EXISTS cafe_staff_members (
+  await db.prepare(`CREATE TABLE IF NOT EXISTS cafe_staff_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel_id TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -407,8 +407,8 @@ async function ensureCafeStaffTables(db: any) {
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE(channel_id,user_id)
-  )\`).run();
-  await db.prepare(\`CREATE TABLE IF NOT EXISTS cafe_staff_invites (
+  )`).run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS cafe_staff_invites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel_id TEXT NOT NULL,
     code_hash TEXT NOT NULL,
@@ -418,7 +418,7 @@ async function ensureCafeStaffTables(db: any) {
     uses INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
     created_at INTEGER NOT NULL
-  )\`).run();
+  )`).run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_cafe_staff_channel_status ON cafe_staff_members(channel_id,status)').run().catch(()=>{});
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_cafe_staff_invite_hash ON cafe_staff_invites(code_hash,status)').run().catch(()=>{});
 }
