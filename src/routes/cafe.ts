@@ -471,12 +471,16 @@ router.post('/staff/join', async (c) => {
   const invite=await c.env.DB.prepare("SELECT id,created_by,expires_at,max_uses,uses FROM cafe_staff_invites WHERE channel_id=? AND code_hash=? AND status='active' ORDER BY id DESC LIMIT 1")
     .bind(channelId,hash).first<any>();
   if(!invite||Number(invite.expires_at)<now||Number(invite.uses)>=Number(invite.max_uses)) return c.json({ok:false,error:'초대 코드가 올바르지 않거나 만료되었습니다.'},400);
-  await c.env.DB.prepare("INSERT OR IGNORE INTO cafe_staff_members (channel_id,user_id,status,invited_by,created_at,updated_at) VALUES (?,?,'pending',?,?,?)")
-    .bind(channelId,auth.id,Number(invite.created_by),now,now).run();
-  const member=await c.env.DB.prepare('SELECT id,status FROM cafe_staff_members WHERE channel_id=? AND user_id=?').bind(channelId,auth.id).first<any>();
+  let member=await c.env.DB.prepare('SELECT id,status FROM cafe_staff_members WHERE channel_id=? AND user_id=?').bind(channelId,auth.id).first<any>();
+  if(member && member.status!=='revoked') {
+    return c.json({ok:true,channel_id:channelId,cafe_name:cafe.name,staff_status:member.status,message:member.status==='active'?'이미 승인된 직원 계정입니다.':'이미 대표자의 승인을 기다리고 있습니다.'});
+  }
   if(member?.status==='revoked') {
     await c.env.DB.prepare("UPDATE cafe_staff_members SET status='pending',invited_by=?,approved_by=NULL,updated_at=? WHERE id=?")
       .bind(Number(invite.created_by),now,member.id).run();
+  } else {
+    await c.env.DB.prepare("INSERT INTO cafe_staff_members (channel_id,user_id,status,invited_by,created_at,updated_at) VALUES (?,?,'pending',?,?,?)")
+      .bind(channelId,auth.id,Number(invite.created_by),now,now).run();
   }
   await c.env.DB.prepare('UPDATE cafe_staff_invites SET uses=uses+1 WHERE id=?').bind(invite.id).run();
   const refreshed=await c.env.DB.prepare('SELECT id,status FROM cafe_staff_members WHERE channel_id=? AND user_id=?').bind(channelId,auth.id).first<any>();
