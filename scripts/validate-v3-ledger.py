@@ -255,7 +255,7 @@ db.execute("""
 must_fail("""
     INSERT INTO v3_economy_opening_items
       (id,batch_id,user_id,bucket,amount_atoms,source_table,source_row_id,source_field,source_checksum,evidence_note)
-    VALUES ('opening-item-b','batch-b','1','wallet_paid',100,'tl_payments','77','tl_granted','sha-a','duplicate evidence')
+    VALUES ('opening-item-b','batch-b','1','wallet_ad',100,'tl_payments','77','tl_granted','sha-a','duplicate evidence')
 """)
 
 print(
