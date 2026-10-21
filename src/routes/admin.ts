@@ -25,6 +25,39 @@ router.get('/session', async (c) => {
   return c.json({ ok: true, user_id: userId, role: 'admin' });
 });
 
+// One-time development bootstrap: only on a completely empty V3 TL ledger.
+// Does not touch legacy balances, TLC, POC, or TON state.
+router.post('/tl/initial-issuance', async (c) => {
+  const adminId = await requireAdmin(c);
+  if (!adminId) return c.json({ok:false,error:'관리자 권한 필요'},403);
+  const confirmation = String((await c.req.json<any>().catch(()=>({}))).confirmation || '');
+  if (confirmation !== 'ISSUE_INITIAL_1000000_TL') {
+    return c.json({ok:false,error:'명시적 최초 지급 확인 문구가 필요합니다.'},400);
+  }
+  const db=c.env.DB;
+  try {
+    const scale=await db.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>();
+    if (Number(scale?.decimals)!==4) return c.json({ok:false,error:'TL 정밀도가 4가 아닙니다.'},409);
+    const existing=await db.prepare("SELECT COUNT(*) AS n FROM v3_economy_transactions").first<any>();
+    const accounts=await db.prepare("SELECT COUNT(*) AS n FROM v3_economy_accounts WHERE asset_code='TL'").first<any>();
+    if(Number(existing?.n)!==0||Number(accounts?.n)!==0) {
+      return c.json({ok:false,code:'TL_LEDGER_NOT_EMPTY',error:'V3 원장이 비어 있지 않습니다. 중복 발행을 방지하기 위해 중단했습니다.'},409);
+    }
+    const accountId=crypto.randomUUID();
+    const transactionId=crypto.randomUUID();
+    const atoms=1000000*10000;
+    // One-time issuance is not a transfer: record a positive mint entry and provenance.
+    // Atomic batch prevents an issuance transaction without its wallet credit.
+    await db.batch([
+      db.prepare("INSERT INTO v3_economy_accounts(id,owner_type,owner_id,asset_code,bucket) VALUES (?,'user',?,'TL','wallet_bonus')").bind(accountId,String(adminId)),
+      db.prepare("INSERT INTO v3_economy_balances(account_id,available_atoms) VALUES (?,?)").bind(accountId,atoms),
+      db.prepare("INSERT INTO v3_economy_transactions(id,idempotency_key,transaction_type,source,reference_type,reference_id,actor_user_id,description,metadata_json) VALUES (?,'initial_dev_tl_issuance_20261022','initial_issuance','admin','user',?,?,'관리자 개발용 최초 TL 1,000,000 지급',?)").bind(transactionId,String(adminId),String(adminId),JSON.stringify({amount_atoms:atoms,non_redeemable:true,development_only:true})),
+      db.prepare("INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES (?,?,'TL',?)").bind(transactionId,accountId,atoms)
+    ]);
+    return c.json({ok:true,admin_user_id:adminId,issued_tl:1000000,bucket:'wallet_bonus',development_only:true});
+  }catch(e:any){return c.json({ok:false,error:e?.message||'최초 TL 지급 실패'},500);}
+});
+
 // ── POST /api/admin/sql ──
 // 관리자 전용 SQL 실행. DROP/ALTER/TRUNCATE는 차단.
 router.post('/sql', async (c) => {
