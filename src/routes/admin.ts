@@ -350,4 +350,30 @@ router.get('/finance/source-audit',async c=>{
   }catch(e:any){return c.json({ok:false,error:'재무 원천 테이블 검사 실패',detail:String(e?.message||'')},503);}
 });
 
+
+/* Administrator-only, read-only ledger integrity checks; no financial totals inferred. */
+router.get('/finance/ledger-integrity',async c=>{
+  if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
+  try{
+    const db=c.env.DB;
+    const required=['v3_economy_assets','v3_economy_accounts','v3_economy_balances','v3_economy_transactions','v3_economy_entries'];
+    const missing:string[]=[];
+    for(const table of required){if(!(await adminTableColumns(db,table)).length)missing.push(table);}
+    if(missing.length)return c.json({ok:false,code:'LEDGER_SCHEMA_INCOMPLETE',missing,error:'V3 경제 원장 테이블이 누락되었습니다.'},503);
+    const [types,imbalanced,orphans,assets]=await Promise.all([
+      db.prepare("SELECT transaction_type,COUNT(*) AS count FROM v3_economy_transactions GROUP BY transaction_type ORDER BY count DESC LIMIT 100").all(),
+      db.prepare("SELECT COUNT(*) AS count FROM (SELECT e.transaction_id,e.asset_code,SUM(e.amount_atoms) AS balance FROM v3_economy_entries e GROUP BY e.transaction_id,e.asset_code HAVING balance <> 0)").first<{count:number}>(),
+      db.prepare("SELECT COUNT(*) AS count FROM v3_economy_entries e LEFT JOIN v3_economy_transactions t ON t.id=e.transaction_id WHERE t.id IS NULL").first<{count:number}>(),
+      db.prepare("SELECT asset_code,decimals FROM v3_economy_assets ORDER BY asset_code").all()
+    ]);
+    const tl=(assets.results||[]).find((a:any)=>a.asset_code==='TL') as any;
+    return c.json({ok:true,as_of:new Date().toISOString(),read_only:true,
+      ledger_integrity:{imbalanced_transaction_assets:Number(imbalanced?.count||0),
+        orphan_entries:Number(orphans?.count||0),tl_precision_ready:Number(tl?.decimals)===4},
+      transaction_types:types.results||[],assets:assets.results||[],
+      financial_totals_verified:false,
+      note:'거래 유형은 원장 기록의 분류이며 매출·정산 금액을 뜻하지 않습니다.'});
+  }catch(e:any){return c.json({ok:false,error:'원장 무결성 조회 실패',detail:String(e?.message||'')},503);}
+});
+
 export default router;
