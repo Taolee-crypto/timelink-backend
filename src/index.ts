@@ -3857,7 +3857,7 @@ app.delete('/api/shares/:id', async (c) => {
           'SELECT id,user_id FROM tl_files WHERE stream_url=? AND user_id=? ORDER BY id DESC LIMIT 1'
         ).bind(String(share.stream_url), userId).first<any>().catch(() => null);
       }
-      if (!share && !release && !file && /^\\d+$/.test(requestedId)) {
+      if (!share && !release && !file && /^\d+$/.test(requestedId)) {
         file = await c.env.DB.prepare(
           'SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?'
         ).bind(Number(requestedId), userId).first<any>().catch(() => null);
