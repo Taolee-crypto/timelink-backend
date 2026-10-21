@@ -185,7 +185,7 @@ ads.post('/:id/click', async (c) => {
     await ensureTables(c.env.DB);
     const adId = c.req.param('id');
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     await c.env.DB.prepare('UPDATE tl_ads SET clicks=clicks+1 WHERE id=?').bind(adId).run();
     if (userId) {
       await c.env.DB.prepare(
