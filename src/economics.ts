@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from './types';
+import { CREATOR_SHARE_RATE, PLATFORM_SHARE_RATE } from './economy-policy';
 
 const eco = new Hono<{ Bindings: Env }>();
 
@@ -10,13 +11,11 @@ const eco = new Hono<{ Bindings: Env }>();
    TL_A (광고): 광고 시청 보상, 플랫폼 내 소비만 가능, 교환 불가
    TL_B (보너스): 가입·이벤트 지급, 플랫폼 내 소비만 가능, 교환 불가
 
-   크리에이터 플랜
+   분배 원칙
    ─────────────────────────────────────────────────────
-   플랜 A (기본): TL_P 소비 → 크리에이터 62% / 플랫폼 38%
-                  TL_A 소비 → 크리에이터 50% TL_A / 플랫폼 50% TL_A (비교환)
-   플랜 B (성장): TL_P 소비 → 크리에이터 45% / 플랫폼 55%
-                  TL_A 소비 → 크리에이터 35% TL_A / 플랫폼 65% TL_A (비교환)
-                  TLC 채굴 배율 2.0x 보너스
+   모든 유효 소비의 기본 분배: 크리에이터 70% / 플랫폼 30%
+   TL_P / TL_A / TL_B의 출처별 성격과 지급 버킷은 별도로 유지
+   플랜 B의 TLC 채굴 배율 2.0x는 분배 비율과 무관
 
    POC 기여지수 (최소 0.1, 최대 5.0)
    ─────────────────────────────────────────────────────
@@ -225,18 +224,17 @@ eco.post('/consume', async (c) => {
 
     if (share) {
       // TL_P 소비 → 크리에이터에게 TL_P (교환 가능)
-      const rateP = 0.70;
-      creatorEarnP = Number((consumedP * rateP).toFixed(6));
-      platformEarnP = consumedP - creatorEarnP;
+      creatorEarnP = Number((consumedP * CREATOR_SHARE_RATE).toFixed(6));
+      platformEarnP = Number((consumedP * PLATFORM_SHARE_RATE).toFixed(6));
 
       // TL_A 소비 → 크리에이터에게 TL_A (비교환)
-      const rateA = 0.70;
-      creatorEarnA = Number((consumedA * rateA).toFixed(6));
-      platformEarnA = consumedA - creatorEarnA;
+      creatorEarnA = Number((consumedA * CREATOR_SHARE_RATE).toFixed(6));
+      platformEarnA = Number((consumedA * PLATFORM_SHARE_RATE).toFixed(6));
 
       // TL_B 소비 → 플랫폼 수익 (크리에이터 분배 없음, 보너스는 원가 없음)
       // → 7:3 정책에 따라 크리에이터 몫 70%를 TL_A로 지급
-      const creatorEarnFromB = Number((consumedB * 0.70).toFixed(6));
+      const creatorEarnFromB = Number((consumedB * CREATOR_SHARE_RATE).toFixed(6));
+      const platformEarnFromB = Number((consumedB * PLATFORM_SHARE_RATE).toFixed(6));
 
       if (creatorEarnP > 0 || creatorEarnA > 0 || creatorEarnFromB > 0) {
         await c.env.DB.prepare(`
@@ -290,7 +288,8 @@ eco.post('/consume', async (c) => {
     return c.json({
       ok: true,
       consumed: { tl_p: consumedP, tl_a: consumedA, tl_b: consumedB, total: actualConsumed },
-      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA },
+      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA + (consumedB > 0 ? Number((consumedB * CREATOR_SHARE_RATE).toFixed(6)) : 0) },
+      platform: { tl_p: platformEarnP, tl_a: platformEarnA, tl_b: Number((consumedB * PLATFORM_SHARE_RATE).toFixed(6)) },
       wallet: {
         tl_p: updated?.tl_p ?? updated?.tl ?? 0,
         tl_a: updated?.tl_a ?? 0,
