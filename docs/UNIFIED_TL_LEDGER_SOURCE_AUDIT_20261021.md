@@ -15,6 +15,7 @@ Static source audit only. No production database writes, browser tests, or deplo
 ## Confirmed risks
 - Legacy POST /api/shares/:id/consume contains both wallet-to-track auto-funding and a subsequent wallet debit alongside track-pool debit. This conflicts with the agreed rule that playback consumes only the track pool.
 - POST /api/eco/consume directly debits P/A/B and credits creator balances outside V3. Its distribution percentage is now 70% on this branch, but it still bypasses the V3 append-only ledger.
+- The legacy routes calculate the 30% platform remainder, but do not consistently post it as a balanced credit to a canonical V3 platform account. The split percentage is aligned; platform-side ledger recognition is not complete.
 - `src/routes/playback.ts` and legacy `/api/shares/:id/consume` still contain direct legacy balance mutations; centralizing the percentage does not resolve their separate wallet/track-pool double-debit or migration risks.
 - Payment providers directly update users.tl/tl_p; their duplicate handling differs.
 - Ads code directly updates users.tl/tl_a. Its token parser originally derived IDs without JWT verification; this branch now uses shared signed-token verification and checks that the account is active. Reward writes still need migration to V3.
