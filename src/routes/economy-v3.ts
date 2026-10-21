@@ -16,6 +16,10 @@ router.use('*', async (c, next) => {
       error: 'V3 economy migration has not been applied to this database'
     }, 503);
   }
+  const tlAsset = await c.env.DB.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<{decimals:number}>();
+  if (Number(tlAsset?.decimals) !== 4) {
+    return c.json({ok:false,code:'V3_TL_ATOM_SCALE_NOT_READY',error:'TL 정밀도 마이그레이션(0012)이 아직 적용되지 않았습니다.'},503);
+  }
   await next();
 });
 
