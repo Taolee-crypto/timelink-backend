@@ -4170,43 +4170,106 @@ app.patch('/api/shares/:id', async (c) => {
 
 app.delete('/api/shares/:id', async (c) => {
   try {
-    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
+    const auth = c.req.header('Authorization')?.replace(/^Bearer\\s+/i, '').trim() || '';
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
-    if (!payload) return c.json({error:'인증 필요'},401);
-    
-    const shareId = String(c.req.param('id') || '');
+    if (!payload) return c.json({ error: '인증 필요' }, 401);
+
+    const requestedId = String(c.req.param('id') || '').trim();
     const userId = Number(payload.sub);
-    
-    // 1) tl_shares에서 찾기 (기존 로직)
-    let share = await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    
-    // 2) tl_shares에 없으면 tl3_releases에서 찾기 (V4 자산)
-    if (!share) {
-      const release = await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? OR CAST(file_id AS TEXT)=?").bind(shareId, shareId).first<any>();
-      if (release) {
-        if (Number(release.user_id) !== userId) {
-          return c.json({error:'권한 없음'},403);
-        }
-        // V4 자산 삭제 (tl3_releases, tl3_segments, tl3_release_tokens)
-        await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(release.file_id).run().catch(()=>{});
-        await c.env.DB.prepare('DELETE FROM tl3_release_tokens WHERE file_id=?').bind(release.file_id).run().catch(()=>{});
-        await c.env.DB.prepare('DELETE FROM tl3_releases WHERE file_id=?').bind(release.file_id).run();
-        await c.env.DB.prepare('DELETE FROM tl_files WHERE id=?').bind(release.file_id).run().catch(()=>{});
-        return c.json({ok:true, deleted:'tl3_release', file_id:release.file_id});
-      }
-      return c.json({error:'파일 없음'},404);
+    if (!requestedId || !Number.isSafeInteger(userId) || userId <= 0) {
+      return c.json({ error: '잘못된 삭제 요청' }, 400);
     }
-    
-    // 3) tl_shares가 있으면 기존 로직 (소유권 확인)
-    if (Number(share.user_id) !== userId) {
-      return c.json({error:'권한 없음'},403);
+
+    // Dashboard cards may identify an asset by tl_shares.id, V5 share_id,
+    // V4 share_id, or the underlying tl_files.id. Resolve all identifiers
+    // to the same owner-controlled tl_files record before changing visibility.
+    const share = await c.env.DB.prepare(
+      'SELECT * FROM tl_shares WHERE CAST(id AS TEXT)=?'
+    ).bind(requestedId).first<any>().catch(() => null);
+
+    const v5 = await c.env.DB.prepare(
+      'SELECT file_id,user_id,share_id FROM tl3_v5_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1'
+    ).bind(requestedId, requestedId).first<any>().catch(() => null);
+
+    const v4 = await c.env.DB.prepare(
+      'SELECT file_id,user_id,share_id FROM tl3_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1'
+    ).bind(requestedId, requestedId).first<any>().catch(() => null);
+
+    const spine = await c.env.DB.prepare(
+      'SELECT file_id,user_id,share_id FROM tl3_spine_v4_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1'
+    ).bind(requestedId, requestedId).first<any>().catch(() => null);
+
+    let fileId = Number(v5?.file_id || v4?.file_id || spine?.file_id || 0);
+    let file = fileId > 0
+      ? await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE id=?').bind(fileId).first<any>().catch(() => null)
+      : null;
+
+    if (!file && share?.stream_url) {
+      file = await c.env.DB.prepare(
+        'SELECT id,user_id FROM tl_files WHERE stream_url=? ORDER BY id DESC LIMIT 1'
+      ).bind(String(share.stream_url)).first<any>().catch(() => null);
+      fileId = Number(file?.id || 0);
     }
-    
-    // 기존 삭제 로직 (tl_shares + 관련 자산)
-    await c.env.DB.prepare('DELETE FROM tl_shares WHERE id=?').bind(shareId).run();
-    return c.json({ok:true, deleted:'share', id:shareId});
-  } catch(e:any) {
-    return c.json({error:e.message||'삭제 실패'},500);
+
+    if (!file && /^\\d+$/.test(requestedId)) {
+      file = await c.env.DB.prepare(
+        'SELECT id,user_id FROM tl_files WHERE id=?'
+      ).bind(Number(requestedId)).first<any>().catch(() => null);
+      fileId = Number(file?.id || 0);
+    }
+
+    const owners = [share?.user_id, v5?.user_id, v4?.user_id, spine?.user_id, file?.user_id]
+      .map((value) => Number(value || 0)).filter((value) => value > 0);
+    if (!share && !v5 && !v4 && !spine && !file) {
+      return c.json({ error: '삭제할 콘텐츠를 찾을 수 없습니다.' }, 404);
+    }
+    if (!owners.length || owners.some((ownerId) => ownerId !== userId)) {
+      return c.json({ error: '삭제 권한이 없습니다.' }, 403);
+    }
+
+    // Keep an auditable tombstone in D1, but make the asset unavailable to
+    // catalogues, playback discovery and the owner's content list.
+    if (fileId > 0) {
+      await c.env.DB.prepare(
+        "UPDATE tl_files SET shared=0, shared_to_shareplace=0, auth_status='deleted', updated_at=datetime('now') WHERE id=? AND user_id=?"
+      ).bind(fileId, userId).run();
+      await c.env.DB.prepare(
+        "UPDATE tl3_releases SET status='deleted', updated_at=datetime('now') WHERE file_id=? AND user_id=?"
+      ).bind(fileId, userId).run().catch(() => {});
+      await c.env.DB.prepare(
+        "UPDATE tl3_v5_releases SET status='deleted', updated_at=datetime('now') WHERE file_id=? AND user_id=?"
+      ).bind(fileId, userId).run().catch(() => {});
+      await c.env.DB.prepare(
+        "UPDATE tl3_spine_v4_releases SET status='deleted' WHERE file_id=? AND user_id=?"
+      ).bind(fileId, userId).run().catch(() => {});
+    }
+
+    if (share) {
+      await c.env.DB.prepare('DELETE FROM tl_shares WHERE CAST(id AS TEXT)=? AND CAST(user_id AS INTEGER)=?')
+        .bind(requestedId, userId).run();
+    }
+
+    // The asset-specific playback pool belongs to this asset, not the user's
+    // common wallet. Remove only the matching per-asset pool on deletion.
+    const poolIds = new Set<string>([requestedId]);
+    if (share?.id != null) poolIds.add(String(share.id));
+    if (v5?.share_id) poolIds.add(String(v5.share_id));
+    if (v4?.share_id) poolIds.add(String(v4.share_id));
+    if (spine?.share_id) poolIds.add(String(spine.share_id));
+    if (fileId > 0) poolIds.add(String(fileId));
+    for (const poolId of poolIds) {
+      await c.env.DB.prepare('DELETE FROM tl_user_files WHERE share_id=? AND user_id=?')
+        .bind(poolId, userId).run().catch(() => {});
+    }
+
+    return c.json({
+      ok: true,
+      deleted: true,
+      file_id: fileId || null,
+      message: '콘텐츠가 비공개 처리되고 해당 콘텐츠의 TL 잔액/재생권이 삭제되었습니다. 공통 지갑 잔액은 유지됩니다.'
+    });
+  } catch (e: any) {
+    return c.json({ error: e?.message || '삭제 실패' }, 500);
   }
 });
 
