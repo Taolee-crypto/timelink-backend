@@ -16,8 +16,8 @@ Static source audit only. No production database writes, browser tests, or deplo
 - Legacy POST /api/shares/:id/consume contains both wallet-to-track auto-funding and a subsequent wallet debit alongside track-pool debit. This conflicts with the agreed rule that playback consumes only the track pool.
 - POST /api/eco/consume directly debits P/A/B and credits creator balances outside V3.
 - Payment providers directly update users.tl/tl_p; their duplicate handling differs.
-- Ads code directly updates users.tl/tl_a. Its token parser derives IDs without verifying JWT signatures; replace with shared auth before connecting reward writes.
-- /api/payment/virtual/charge is documented as development/test-only but is mounted as a normal authenticated route; production exposure must be checked and blocked or isolated.
+- Ads code directly updates users.tl/tl_a. Its token parser originally derived IDs without JWT verification; this branch now uses shared signed-token verification and checks that the account is active. Reward writes still need migration to V3.
+- /api/payment/virtual/charge was documented as development/test-only but mounted as a normal authenticated route; this branch now blocks it when ENVIRONMENT=production.
 - Frontend wallet, dashboard, sidebar/topbar, track, SharePlace, creator, payment result, radio/in-car and admin surfaces read or mutate different legacy fields and localStorage snapshots.
 
 ## Screens found in current frontend tree
