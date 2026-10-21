@@ -289,8 +289,8 @@ for amount_atoms in (10, 12340, 10_000_000):
     creator_atoms = round(amount_atoms * 0.70)
     platform_atoms = amount_atoms - creator_atoms
     assert creator_atoms + platform_atoms == amount_atoms
-    assert creator_atoms == round(amount_atoms * 0.70)
-    assert platform_atoms == amount_atoms - creator_atoms
+    assert creator_atoms * 10 == amount_atoms * 7
+    assert platform_atoms * 10 == amount_atoms * 3
 
 print(
     f"V3 ledger validation passed: {len(tables)} base tables, {triggers} base triggers, "
