@@ -2134,8 +2134,6 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const poolAfter=await getTrackPoolBalances(c.env.DB,user.id,String(file.share_id));
     const assetRemaining=atomsToTl(poolAfter.ad+poolAfter.bonus+poolAfter.paid);
     const stop=chargedSeconds+1e-9<totalMs/1000&&(delta+1e-9<targetSeconds-already||assetRemaining<0.001);
-    await c.env.DB.prepare('INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)')
-      .bind(fileId,user.id,delta,atomsToTl(settlement.creatorShareAtoms),assetRemaining,delta).run().catch(()=>{});
     return c.json({
       ok:true,billed_seconds:chargedSeconds,charged_tl:chargedSeconds,delta_tl:delta,
       wallet_tl:atomsToTl(walletAtoms),asset_tl:assetRemaining,
