@@ -2016,9 +2016,9 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
     if(!fileId||String(fileId)!==rawId) fileId=Number(await resolveTL3FileId(c.env.DB,rawId)||0);
     if(!fileId) return c.json({ok:false,error:'TL3 자산을 찾을 수 없습니다.'},404);
     const file=await c.env.DB.prepare(
-      "SELECT f.user_id,f.revenue_held,COALESCE(v5.share_id,v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_v5_releases v5 ON v5.file_id=f.id AND v5.status='sealed' LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (v5.file_id IS NOT NULL OR r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
+      "SELECT f.user_id,f.revenue_held,f.shared,COALESCE(v5.share_id,v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_v5_releases v5 ON v5.file_id=f.id AND v5.status='sealed' LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (v5.file_id IS NOT NULL OR r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
     ).bind(fileId).first<any>();
-    if(!file||file.revenue_held) return c.json({ok:false,error:'재생할 수 없는 TL3 자산입니다.'},404);
+    if(!file||file.revenue_held||!Number(file.shared)) return c.json({ok:false,error:'공개되지 않았거나 재생할 수 없는 TL3 자산입니다.'},404);
     const v5Duration=await c.env.DB.prepare("SELECT duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>();
     const v4Duration=await c.env.DB.prepare(
       "SELECT duration_ms,segment_count FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
@@ -2065,9 +2065,9 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     if(!/^[A-Za-z0-9_-]{8,100}$/.test(sessionId)||!Number.isFinite(playedMs)||playedMs<0||playedMs>86400000)
       return c.json({ok:false,error:'재생 세션 또는 재생 시간 값이 올바르지 않습니다.'},400);
     const file=await c.env.DB.prepare(
-      "SELECT f.id,f.user_id,f.revenue_held,COALESCE(v5.share_id,v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_v5_releases v5 ON v5.file_id=f.id AND v5.status='sealed' LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (v5.file_id IS NOT NULL OR r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
+      "SELECT f.id,f.user_id,f.revenue_held,f.shared,COALESCE(v5.share_id,v.share_id,r.share_id) share_id FROM tl_files f LEFT JOIN tl3_v5_releases v5 ON v5.file_id=f.id AND v5.status='sealed' LEFT JOIN tl3_releases r ON r.file_id=f.id AND r.status='released' LEFT JOIN tl3_spine_v4_releases v ON v.file_id=f.id AND v.status='sealed' WHERE f.id=? AND (v5.file_id IS NOT NULL OR r.file_id IS NOT NULL OR v.file_id IS NOT NULL) LIMIT 1"
     ).bind(fileId).first<any>();
-    if(!file||file.revenue_held) return c.json({ok:false,error:'재생할 수 없는 TL3 자산입니다.'},404);
+    if(!file||file.revenue_held||!Number(file.shared)) return c.json({ok:false,error:'공개되지 않았거나 재생할 수 없는 TL3 자산입니다.'},404);
     const v5Session=await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=? AND expires_at>?').bind(sessionId,user.id,fileId,Math.floor(Date.now()/1000)).first().catch(()=>null);
     const isV5=!!(await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first().catch(()=>null));
     if(isV5&&!v5Session) return c.json({ok:false,error:'V5 Player 세션 인증이 필요합니다.'},403);
@@ -3530,6 +3530,10 @@ app.post('/api/shares/:id/charge', async (c) => {
       if(release) shareId=String(release.share_id||shareId);
     }
     if(!release && !share) return c.json({error:'파일 없음'},404);
+    if(release){
+      const publicFile=await c.env.DB.prepare('SELECT shared,revenue_held FROM tl_files WHERE id=?').bind(Number(release.file_id)).first<any>().catch(()=>null);
+      if(!publicFile||!Number(publicFile.shared)||Number(publicFile.revenue_held||0)!==0) return c.json({error:'공개 승인되지 않았거나 정산 보류된 자산입니다.'},403);
+    }
     if(share && shareKind(share)==='mp3') return c.json({error:'MP3는 무료 재생이며 TL 충전 대상이 아닙니다.'},400);
     if(!release) return c.json({error:'TL3 공개 자산만 곡 전용 충전이 가능합니다.'},409);
     const idempotencyKey=String(c.req.header('Idempotency-Key')||body.idempotency_key||crypto.randomUUID()).slice(0,200);
