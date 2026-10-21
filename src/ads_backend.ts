@@ -226,7 +226,7 @@ ads.use('/upload-tl', bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ads.post('/upload-tl', async (c) => {
   if (!c.env.R2) return c.json({ ok:false, error:'R2 없음' }, 500);
   const token = (c.req.header('Authorization')||'').replace('Bearer ','');
-  const userId = parseUserId(token);
+  const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
   if (!userId) return c.json({ error:'로그인 필요' }, 401);
 
   try {
