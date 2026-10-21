@@ -66,6 +66,25 @@ router.get('/members/:id/deletion-preview', async c => {
     reason:'간접 참조, 결제·정산 보존 의무 및 연관 데이터 검증 전 삭제 잠금'});
 });
 
+
+// Suspend or restore access without deleting any user data.
+// Permanent copyright bans remain a separate, audited workflow.
+router.patch('/members/:id/access', async c => {
+  const actor = await adminId(c);
+  if (!actor) return c.json({ok:false,error:'관리자 권한 필요'},403);
+  const id = Number(c.req.param('id'));
+  if (!Number.isSafeInteger(id) || id <= 0) return c.json({ok:false,error:'잘못된 회원 ID'},400);
+  if (id === actor) return c.json({ok:false,error:'자기 계정은 정지할 수 없습니다'},409);
+  const body = await c.req.json<{suspended?:boolean}>().catch(() => ({}));
+  if (typeof body.suspended !== 'boolean') return c.json({ok:false,error:'suspended 불리언 값 필요'},400);
+  const target = await c.env.DB.prepare('SELECT id,role,is_active FROM users WHERE id=?').bind(id).first<{id:number;role:string;is_active:number}>();
+  if (!target) return c.json({ok:false,error:'회원 없음'},404);
+  if (target.role === 'admin') return c.json({ok:false,error:'관리자 계정 정지는 별도 승인 필요'},403);
+  const result = await c.env.DB.prepare('UPDATE users SET is_active=?, updated_at=datetime(\'now\') WHERE id=? AND role!=\'admin\'').bind(body.suspended ? 0 : 1,id).run();
+  if (Number(result.meta?.changes || 0) !== 1) return c.json({ok:false,error:'변경 실패'},409);
+  return c.json({ok:true,id,suspended:body.suspended});
+});
+
 router.delete('/members/:id', async c => {
   if (!await adminId(c)) return c.json({error:'관리자 권한 필요'},403);
   return c.json({ok:false,error:'안전성 검증 전 회원 삭제가 잠겨 있습니다.'},423);
