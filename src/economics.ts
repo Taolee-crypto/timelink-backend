@@ -180,7 +180,6 @@ eco.post('/consume', async (c) => {
     ).bind(userId).first() as any;
     if (!user) return c.json({ error: '유저 없음' }, 404);
 
-    const userPlan = user.plan || 'A';
     const tlP = user.tl_p ?? user.tl ?? 0;
     const tlA = user.tl_a ?? 0;
     const tlB = user.tl_b ?? 0;
@@ -226,18 +225,18 @@ eco.post('/consume', async (c) => {
 
     if (share) {
       // TL_P 소비 → 크리에이터에게 TL_P (교환 가능)
-      const rateP = userPlan === 'B' ? 0.45 : 0.62;
-      creatorEarnP = Math.floor(consumedP * rateP);
+      const rateP = 0.70;
+      creatorEarnP = Number((consumedP * rateP).toFixed(6));
       platformEarnP = consumedP - creatorEarnP;
 
       // TL_A 소비 → 크리에이터에게 TL_A (비교환)
-      const rateA = userPlan === 'B' ? 0.35 : 0.50;
-      creatorEarnA = Math.floor(consumedA * rateA);
+      const rateA = 0.70;
+      creatorEarnA = Number((consumedA * rateA).toFixed(6));
       platformEarnA = consumedA - creatorEarnA;
 
       // TL_B 소비 → 플랫폼 수익 (크리에이터 분배 없음, 보너스는 원가 없음)
-      // → 크리에이터에게 TL_B의 30%만 TL_A로 지급
-      const creatorEarnFromB = Math.floor(consumedB * 0.30);
+      // → 7:3 정책에 따라 크리에이터 몫 70%를 TL_A로 지급
+      const creatorEarnFromB = Number((consumedB * 0.70).toFixed(6));
 
       if (creatorEarnP > 0 || creatorEarnA > 0 || creatorEarnFromB > 0) {
         await c.env.DB.prepare(`
