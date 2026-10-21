@@ -17,6 +17,7 @@ import filesRouter from './routes/files';
 import playbackRouter from './routes/playback';
 import shareplaceRouter from './routes/shareplace';
 import adminRouter from './routes/admin';
+import adminMembersRouter from './routes/admin-members';
 import disputesRouter from './routes/disputes';
 import chartsRouter from './routes/charts';
 import scoreRouter from './routes/score';
@@ -391,6 +392,7 @@ app.route('/api/v1/shareplace', shareplaceRouter);
 // SharePlace legacy endpoint: 기존 프론트엔드가 사용하는 /api/shares 경로를 유지한다.
 app.route('/api/shares', shareplaceRouter);
 app.route('/api/admin', adminRouter);
+app.route('/api/admin', adminMembersRouter);
 app.route('/api/cafe', cafeRouter);
 app.route('/api/incar', incarRouter);
 app.route('/api/search', searchRouter);
