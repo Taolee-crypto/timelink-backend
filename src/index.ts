@@ -3755,7 +3755,7 @@ app.get('/api/shares/my', async (c) => {
         "SELECT id,title,artist,album,duration,file_tl,category,file_type,category_type,description,cover_url,content_kind,release_mode,storage_mode,origin_hash,release_check,pulse,created_at FROM tl_shares WHERE CAST(user_id AS INTEGER)=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
       ).bind(userId,limit,offset).all(),
       c.env.DB.prepare(
-        "SELECT id,title,artist,genre,file_type,file_size_bytes,duration_seconds,auth_status,shared,play_count,created_at,updated_at FROM tl_files WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        "SELECT id,title,artist,genre,file_type,file_size_bytes,duration_seconds,auth_status,shared,play_count,created_at,updated_at FROM tl_files WHERE user_id=? AND COALESCE(auth_status,'')<>'deleted' ORDER BY created_at DESC LIMIT ? OFFSET ?"
       ).bind(userId,limit,offset).all()
     ]);
     return c.json({shares:shares.results||[],files:files.results||[],limit,offset});
@@ -4170,6 +4170,7 @@ app.patch('/api/shares/:id', async (c) => {
 
 app.delete('/api/shares/:id', async (c) => {
   try {
+
     const auth = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '').trim() || '';
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
     if (!payload) return c.json({ error: '인증 필요' }, 401);
@@ -4270,6 +4271,61 @@ app.delete('/api/shares/:id', async (c) => {
     });
   } catch (e: any) {
     return c.json({ error: e?.message || '삭제 실패' }, 500);
+    const auth=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
+    const payload=auth?await verifyToken(auth,c.env.JWT_SECRET):null;
+    if(!payload)return c.json({error:'인증 필요'},401);
+    const requestedId=String(c.req.param('id')||'').trim();
+    const userId=Number(payload.sub);
+    const kind=String(c.req.query('kind')||'').toLowerCase();
+    if(!requestedId||!Number.isSafeInteger(userId)||userId<=0)return c.json({error:'잘못된 요청'},400);
+
+    let share:any=null;
+    let release:any=null;
+    let file:any=null;
+    if(kind==='legacy'){
+      if(!/^\d+$/.test(requestedId))return c.json({error:'잘못된 파일 ID'},400);
+      file=await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?').bind(Number(requestedId),userId).first<any>();
+      if(!file)return c.json({error:'파일 없음 또는 삭제 권한 없음'},404);
+    }else{
+      share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(requestedId).first<any>();
+      const lookups=[
+        "SELECT * FROM tl3_v5_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1",
+        "SELECT * FROM tl3_spine_v4_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1",
+        "SELECT * FROM tl3_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1"
+      ];
+      for(const sql of lookups){
+        if(release)break;
+        release=await c.env.DB.prepare(sql).bind(requestedId,requestedId).first<any>().catch(()=>null);
+      }
+      if(share&&Number(share.user_id)!==userId)return c.json({error:'권한 없음'},403);
+      if(release&&Number(release.user_id||0)>0&&Number(release.user_id)!==userId)return c.json({error:'권한 없음'},403);
+      if(share?.stream_url){
+        file=await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE stream_url=? AND user_id=? ORDER BY id DESC LIMIT 1')
+          .bind(String(share.stream_url),userId).first<any>().catch(()=>null);
+      }
+      if(!share&&!release&&!file&&/^\d+$/.test(requestedId)){
+        file=await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?')
+          .bind(Number(requestedId),userId).first<any>().catch(()=>null);
+      }
+      if(!share&&!release&&!file)return c.json({error:'파일 없음'},404);
+    }
+
+    const fileId=Number(file?.id||release?.file_id||0);
+    // 보관함에서는 즉시 사라지게 비공개/삭제 상태로 전환한다.
+    // 거래·정산·감사 이력의 FK를 보호하기 위해 tl_files 행 자체는 보존한다.
+    if(fileId>0){
+      await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_release_tokens WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_v5_sessions WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_v5_releases WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_spine_v4_releases WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_releases WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare("UPDATE tl_files SET shared=0,auth_status='deleted' WHERE id=? AND user_id=?").bind(fileId,userId).run();
+    }
+    if(share)await c.env.DB.prepare('DELETE FROM tl_shares WHERE id=? AND CAST(user_id AS INTEGER)=?').bind(requestedId,userId).run();
+    return c.json({ok:true,deleted:true,id:requestedId,file_id:fileId||null,kind:kind==='legacy'?'legacy':'share'});
+  }catch(e:any){
+    return c.json({error:e?.message||'삭제 실패'},500);
   }
 });
 
