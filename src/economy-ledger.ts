@@ -70,6 +70,19 @@ export async function ensureLedgerAccount(
   return account.id;
 }
 
+function sameFingerprintAfterTLScale(oldFingerprint:string,newFingerprint:string):boolean {
+  try {
+    const oldValue=JSON.parse(oldFingerprint);
+    const newValue=JSON.parse(newFingerprint);
+    if(!Array.isArray(oldValue.lines)||!Array.isArray(newValue.lines)) return false;
+    oldValue.lines=oldValue.lines.map((line:any)=>({
+      ...line,
+      amountAtoms:line.assetCode==='TL'?Number(line.amountAtoms)*TL_ATOMS_PER_TL:Number(line.amountAtoms)
+    }));
+    return JSON.stringify(oldValue)===JSON.stringify(newValue);
+  } catch { return false; }
+}
+
 export async function postLedgerTransaction(
   db: D1Database,
   input: LedgerTransactionInput
@@ -116,7 +129,7 @@ export async function postLedgerTransaction(
   if (existing) {
     let oldFingerprint = '';
     try { oldFingerprint = String(JSON.parse(existing.metadata_json || '{}')._fingerprint || ''); } catch {}
-    if (oldFingerprint !== fingerprint) throw new Error('Idempotency key was already used for a different transaction');
+    if (oldFingerprint !== fingerprint && !sameFingerprintAfterTLScale(oldFingerprint,fingerprint)) throw new Error('Idempotency key was already used for a different transaction');
     return { id: existing.id, replayed: true };
   }
 
@@ -169,7 +182,7 @@ export async function postLedgerTransaction(
     if (raced) {
       let oldFingerprint = '';
       try { oldFingerprint = String(JSON.parse(raced.metadata_json || '{}')._fingerprint || ''); } catch {}
-      if (oldFingerprint === fingerprint) return { id: raced.id, replayed: true };
+      if (oldFingerprint === fingerprint || sameFingerprintAfterTLScale(oldFingerprint,fingerprint)) return { id: raced.id, replayed: true };
       throw new Error('Idempotency key conflict');
     }
     throw error;
