@@ -1,4 +1,3 @@
-import type { Env } from './types';
 import { CREATOR_SHARE_RATE } from './economy-policy';
 
 export const TL_ATOMS_PER_TL = 10000;
@@ -342,7 +341,7 @@ export async function settleTrackPlayback(
     atomicStatements:[
       ...(input.atomicStatements||[]),
       db.prepare('INSERT INTO play_events(file_id,player_user_id,tl_deducted,revenue_credited,file_tl_after,play_duration_seconds,car_mode) VALUES(?,?,?,?,?,?,0)')
-        .bind(fileId,userId,atomsToTl(amountAtoms),atomsToTl(creatorShareAtoms),atomsToTl(balances.ad+balances.bonus+balances.paid-amountAtoms),playedSeconds)
+        .bind(fileId,userId,atomsToTl(amountAtoms),userId===creatorId?0:atomsToTl(creatorShareAtoms),atomsToTl(balances.ad+balances.bonus+balances.paid-amountAtoms),playedSeconds)
     ]
   });
   return {id:posted.id,replayed:posted.replayed,amountAtoms,creatorShareAtoms,platformShareAtoms,used};
