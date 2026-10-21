@@ -1,3 +1,17 @@
+## 2026-10-21 V3 playback settlement alignment
+
+- Canonical policy: creator 70%, platform 30%, defined in `src/economy-policy.ts`.
+- TL precision: `1 TL = 10,000 integer atoms` (4 decimal places). This allows the existing audible-time meter's 0.001-second/0.001-TL increments to be represented while keeping the 70:30 split exact at each 0.001 TL.
+- Migration `0012_tl_milli_atoms.sql` scales existing V3 TL entries and cached balances by 10,000 and sets TL decimals to 4. It does not alter legacy `users` balances or `tl_user_files`; it must be reviewed and applied before the V3 playback routes can operate.
+- `src/economy-ledger.ts` now owns V3 track charging and playback settlement helpers. Charging transfers from common wallet buckets into per-track pools in the established priority TL_A → TL_B → TL_P. Legacy/unclassified pool balances are visible but are not spendable until their source is reconciled.
+- V5 online meter `POST /api/v1/tl3/play/meter/:id` now debits only the V3 per-track pool. Its D1 batch posts the balanced source-preserving entries and advances the meter session with a compare-and-swap guard atomically. No second debit is made against the common wallet.
+- Source payout: TL_P → creator `wallet_paid`; TL_A → creator `wallet_ad`; TL_B → creator `wallet_ad` (TL_A). The platform's 30% is posted to platform-owned `playback_revenue_paid/ad/bonus` accounts. Self-play does not credit the listener's wallet; the creator 70% is held in a creator-specific escrow bucket.
+- Track charge routes `/api/shares/:id/charge` and `/api/v3/economy/tracks/:shareId/charge`, plus `/api/shares/:id/my-tl`, now use V3 track pools. Frontend Track, Radio, In-car, and SharePlace charge requests retain an idempotency key across retries and synchronize the wallet from the server response.
+- Legacy TL3 consumption paths are blocked: `/api/shares/:id/consume`, `/api/eco/consume` for released TL3 shares, and `/api/v1/playback/tl3/consume`. Old full-track/segment metering and offline TL3 debit/refund paths return 410 or 409 instead of mutating legacy balances.
+- `/api/eco/wallet` reads V3 wallet buckets only after the TL precision migration is present; before that it keeps the legacy read-only view. V3 economy routes return 503 until migration 0012 has set TL decimals to 4.
+- Remaining cutover work: reconcile and import legacy user balances and per-track `tl_user_files` balances into V3 opening batches with evidence; update any remaining creator/admin/statistics screens that still read legacy `users` payout fields; review offline playback support before re-enabling it.
+- Validation status: source-level edits only. Migration 0012 has not been applied to any D1 database; no runtime playback, accounting, TypeScript build, or CI run has been completed. No deployment or production data mutation has been performed.
+
 # TL ledger source audit
 
 Date: 2026-10-21
