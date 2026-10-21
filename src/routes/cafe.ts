@@ -199,6 +199,18 @@ router.post('/channels', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
 
+  // 카페 채널은 개인회원 가입 때 사용한 동일 계정의 이메일 인증이 완료되어야 개설할 수 있다.
+  const emailState = await c.env.DB.prepare(
+    'SELECT COALESCE(email_verified,0) AS email_verified FROM users WHERE id=?'
+  ).bind(auth.id).first<any>();
+  if (Number(emailState?.email_verified || 0) !== 1) {
+    return c.json({
+      ok: false,
+      code: 'EMAIL_NOT_VERIFIED',
+      error: '카페 채널을 개설하려면 TimeLink 개인회원 계정의 이메일 인증을 먼저 완료해주세요.'
+    }, 403);
+  }
+
   const body = await c.req.json<any>().catch(() => ({}));
   const channelId = String(body.channel_id || '').trim().toLowerCase();
   const name = String(body.name || '').trim();

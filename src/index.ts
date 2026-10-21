@@ -3987,11 +3987,13 @@ app.post('/api/auth/verify', async (c) => {
     let user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
     if (!user) {
       const now = new Date().toISOString().replace('T',' ').substring(0,19);
+      const passwordHash = await hashPassword(password || '');
       await c.env.DB.prepare(
-        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at) VALUES (?,?,?,42500,42500,0,?)'
-      ).bind(email, username||email, password||'', now).run();
+        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, email_verified) VALUES (?,?,?,42500,42500,0,?,1)'
+      ).bind(email, username||email, passwordHash, now).run();
       user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
     }
+    await c.env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=?').bind(Number((user as any).id)).run();
     const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
     return c.json({ ok: true, token, user });
   } catch (e: any) {
@@ -4038,7 +4040,7 @@ app.post('/api/auth/login', async (c) => {
     const { email, password } = await c.req.json();
     if (!email || !password) return c.json({ error: '이메일/비밀번호 필요' }, 400);
     const user = await c.env.DB.prepare(
-      `SELECT id,email,username,password_hash,COALESCE(tl_balance,0) as tl,COALESCE(tl_p,0) as tl_p,COALESCE(tl_a,0) as tl_a,COALESCE(tl_b,0) as tl_b,COALESCE(tlc_balance,0) as tlc,COALESCE(is_advertiser,0) as is_advertiser,COALESCE(biz_reg_num,'') as biz_reg_num,COALESCE(business_name,'') as business_name FROM users WHERE email=?`
+      `SELECT id,email,username,password_hash,COALESCE(tl_balance,0) as tl,COALESCE(tl_p,0) as tl_p,COALESCE(tl_a,0) as tl_a,COALESCE(tl_b,0) as tl_b,COALESCE(tlc_balance,0) as tlc,COALESCE(is_advertiser,0) as is_advertiser,COALESCE(biz_reg_num,'') as biz_reg_num,COALESCE(business_name,'') as business_name,COALESCE(email_verified,0) as email_verified FROM users WHERE email=?`
     ).bind(email.trim()).first<any>();
     if (!user) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
     const storedPw = String(user.password_hash || '');
@@ -4046,7 +4048,7 @@ app.post('/api/auth/login', async (c) => {
     if (!valid) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
     const token = await makeAccessToken(Number(user.id), c.env.JWT_SECRET);
     return c.json({ ok: true, access_token: token, token, token_type: 'bearer', user_id: Number(user.id),
-      user: { id:Number(user.id), email:user.email, username:user.username, tl:Number(user.tl||0), tl_p:Number(user.tl_p||0), tl_a:Number(user.tl_a||0), tl_b:Number(user.tl_b||0), tlc:Number(user.tlc||0), is_advertiser:Number(user.is_advertiser||0), biz_reg_num:user.biz_reg_num||'', business_name:user.business_name||'' } });
+      user: { id:Number(user.id), email:user.email, username:user.username, tl:Number(user.tl||0), tl_p:Number(user.tl_p||0), tl_a:Number(user.tl_a||0), tl_b:Number(user.tl_b||0), tlc:Number(user.tlc||0), is_advertiser:Number(user.is_advertiser||0), biz_reg_num:user.biz_reg_num||'', business_name:user.business_name||'', email_verified:Number(user.email_verified||0) } });
   } catch (e: any) {
     return c.json({ error: e.message || '로그인 처리 실패' }, 500);
   }
@@ -4123,9 +4125,10 @@ app.post('/api/auth/signup', async (c) => {
       const now = new Date().toISOString().replace('T',' ').substring(0,19);
       const hashedPw2 = await hashPassword(password||'');
       await c.env.DB.prepare(
-        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,?,?,0,?,?,?,?)'
+        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name, email_verified) VALUES (?,?,?,?,?,0,?,?,?,?,1)'
       ).bind(email, username, hashedPw2, isAdvertiser?300000:42500, isAdvertiser?300000:42500, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
       const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
+      await c.env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=?').bind(Number((user as any).id)).run();
       const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
       return c.json({ ok: true, token, user });
     }
