@@ -125,7 +125,8 @@ eco.get('/wallet', async (c) => {
     `).bind(userId).first() as any;
     if (!user) return c.json({ error: '유저 없음' }, 404);
 
-    const ledgerReady=!!(await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v3_economy_accounts'").first());
+    const tlAsset=await c.env.DB.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>().catch(()=>null);
+    const ledgerReady=Number(tlAsset?.decimals)===4;
     let tlP=0,tlA=0,tlB=0;
     if(ledgerReady){
       const accounts:any[]=await getLedgerWallet(c.env.DB,Number(userId)) as any[];
