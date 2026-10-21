@@ -10,15 +10,16 @@ Static source audit only. No production database writes, browser tests, or deplo
 - Wallet fields coexist: users.tl, tl_balance, tl_p, tl_a, tl_b. Track balances live in tl_user_files.
 - TLC and POC remain separate assets/contribution records.
 - V5 playback meter currently charges tl_user_files by cumulative played-time delta and does not debit the common wallet again. Preserve this behavior and the V5 encrypted container format.
-- Creator distribution policies conflict in current code: economics.ts defines plan A/B rates by TL_P/TL_A and a TL_B-to-TL_A rule, while the V5 meter currently credits a flat 70% into creator TL_P. This must be reconciled before changing creator settlement.
+- Canonical creator distribution policy confirmed by the product owner: creator 70%, platform 30%. The legacy POST /api/eco/consume implementation has now been changed on this branch to apply 70% to TL_P, TL_A, and TL_B consumption while retaining source treatment (TL_P→creator TL_P, TL_A→creator TL_A, TL_B→creator TL_A). It uses six-decimal shares rather than integer floor rounding. The V5 online meter and legacy offline settlement paths already calculate 70% creator / 30% platform remainder. This is a source-level alignment only; runtime and accounting tests have not yet been run.
 
 ## Confirmed risks
 - Legacy POST /api/shares/:id/consume contains both wallet-to-track auto-funding and a subsequent wallet debit alongside track-pool debit. This conflicts with the agreed rule that playback consumes only the track pool.
-- POST /api/eco/consume directly debits P/A/B and credits creator balances outside V3.
+- POST /api/eco/consume directly debits P/A/B and credits creator balances outside V3. Its distribution percentage is now 70% on this branch, but it still bypasses the V3 append-only ledger.
 - Payment providers directly update users.tl/tl_p; their duplicate handling differs.
 - Ads code directly updates users.tl/tl_a. Its token parser originally derived IDs without JWT verification; this branch now uses shared signed-token verification and checks that the account is active. Reward writes still need migration to V3.
 - /api/payment/virtual/charge was documented as development/test-only but mounted as a normal authenticated route; this branch now blocks it when ENVIRONMENT=production.
 - Frontend wallet, dashboard, sidebar/topbar, track, SharePlace, creator, payment result, radio/in-car and admin surfaces read or mutate different legacy fields and localStorage snapshots.
+- The V5 meter still settles against aggregate `tl_user_files.tl_balance` and credits creator TL_P. The new V3 track-charge path creates source-specific V3 track-pool buckets; end-to-end interoperability between that V3 pool and the existing V5 meter is not yet demonstrated. This is a cutover blocker: do not enable the new charge path for live playback until both paths debit the same authoritative pool exactly once and preserve source provenance.
 
 ## Screens found in current frontend tree
 wallet.html, wallet-v2.html, dashboard.html, sidebar.js, _shared/topbar.js, _shared/topbar-v2.js, index.html, track.html, shareplace.html, renewal/shareplace.html, creator.html, radio.html, incar.html, cafe-radio.html, cafe-channel.html, incar-channel.html, ads.html, advertiser.html, chart.html, admin.html, payment-success.html.
