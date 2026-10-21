@@ -182,11 +182,14 @@ eco.post('/consume', async (c) => {
     await migrateDB(c.env.DB);
     const requestedShare=String(share_id||'').trim();
     if(requestedShare){
-      const v5=await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
-      const v4=await c.env.DB.prepare("SELECT file_id FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
+      let v5=await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
+      let v4=await c.env.DB.prepare("SELECT file_id FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
       let v3=await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
       if(/^\d+$/.test(requestedShare)){
-        v3=v3||await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1").bind(Number(requestedShare)).first<any>().catch(()=>null);
+        const fileId=Number(requestedShare);
+        v5=v5||await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>().catch(()=>null);
+        v4=v4||await c.env.DB.prepare("SELECT file_id FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>().catch(()=>null);
+        v3=v3||await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1").bind(fileId).first<any>().catch(()=>null);
       }
       if(v5||v4||v3) return c.json({ok:false,code:'TL3_METER_ONLY',error:'TL3 자산은 실제 재생 시간 정산 경로만 사용할 수 있습니다.'},409);
     }
