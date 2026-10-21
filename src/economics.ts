@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from './types';
+import { getLedgerWallet, atomsToTl } from './economy-ledger';
 import { CREATOR_SHARE_RATE, PLATFORM_SHARE_RATE } from './economy-policy';
 
 const eco = new Hono<{ Bindings: Env }>();
@@ -124,17 +125,22 @@ eco.get('/wallet', async (c) => {
     `).bind(userId).first() as any;
     if (!user) return c.json({ error: '유저 없음' }, 404);
 
-    // TL3 settlement uses split buckets first and falls back to legacy
-    // balances only when every split bucket is empty. The wallet API must
-    // report the same authoritative total; tl_balance can be stale after
-    // older split-wallet operations and must not override live P/A/B funds.
-    const tlP = Number(user.tl_p ?? user.tl ?? 0) || 0;
-    const tlA = Number(user.tl_a ?? 0) || 0;
-    const tlB = Number(user.tl_b ?? 0) || 0;
-    const splitTotal = tlP + tlA + tlB;
-    const legacyCandidates = [user.tl_balance, user.tl].map((value: any) => Number(value));
-    const legacyTotal = legacyCandidates.find((value: number) => Number.isFinite(value) && value > 0) ?? 0;
-    const authoritativeTotal = splitTotal > 0 ? splitTotal : legacyTotal;
+    const ledgerReady=!!(await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v3_economy_accounts'").first());
+    let tlP=0,tlA=0,tlB=0;
+    if(ledgerReady){
+      const accounts:any[]=await getLedgerWallet(c.env.DB,Number(userId)) as any[];
+      tlP=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_paid').reduce((n,a)=>n+Number(a.available_atoms||0),0));
+      tlA=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0));
+      tlB=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0));
+    }else{
+      tlP=Number(user.tl_p ?? user.tl ?? 0)||0;
+      tlA=Number(user.tl_a ?? 0)||0;
+      tlB=Number(user.tl_b ?? 0)||0;
+    }
+    const splitTotal=tlP+tlA+tlB;
+    const legacyCandidates=[user.tl_balance,user.tl].map((value:any)=>Number(value));
+    const legacyTotal=legacyCandidates.find((value:number)=>Number.isFinite(value)&&value>0)??0;
+    const authoritativeTotal=ledgerReady?splitTotal:(splitTotal>0?splitTotal:legacyTotal);
 
     return c.json({
       wallet: {
@@ -173,6 +179,13 @@ eco.post('/consume', async (c) => {
 
   try {
     await migrateDB(c.env.DB);
+    const requestedShare=String(share_id||'').trim();
+    if(requestedShare){
+      const v5=await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
+      const v4=await c.env.DB.prepare("SELECT file_id FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
+      const v3=await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
+      if(v5||v4||v3) return c.json({ok:false,code:'TL3_METER_ONLY',error:'TL3 자산은 실제 재생 시간 정산 경로만 사용할 수 있습니다.'},409);
+    }
 
     const user = await c.env.DB.prepare(
       'SELECT tl, tl_p, tl_a, tl_b, plan FROM users WHERE id=?'
