@@ -247,7 +247,7 @@ eco.post('/consume', async (c) => {
         `).bind(
           creatorEarnP, creatorEarnP,
           creatorEarnA + creatorEarnB,
-          creatorEarnP,
+          creatorEarnP + creatorEarnA + creatorEarnB,
           share.creator_id
         ).run();
       }
