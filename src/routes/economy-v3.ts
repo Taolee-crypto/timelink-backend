@@ -40,11 +40,12 @@ router.get('/wallet', async (c) => {
     if (!match) continue;
     const shareId = match[1], source = match[2];
     const pool = trackPoolMap.get(shareId) || {
-      share_id: shareId, available_tl: 0, held_tl: 0,
+      share_id: shareId, available_tl: 0, legacy_tl: 0, held_tl: 0,
       by_source: { paid: 0, ad: 0, bonus: 0, legacy: 0 }
     };
     const available = Number(account.available_atoms || 0);
-    pool.available_tl += atomsToTl(available);
+    if(source==='legacy') pool.legacy_tl += atomsToTl(available);
+    else pool.available_tl += atomsToTl(available);
     pool.held_tl += atomsToTl(Number(account.held_atoms || 0));
     pool.by_source[source] += atomsToTl(available);
     trackPoolMap.set(shareId, pool);
@@ -114,7 +115,7 @@ router.post('/tracks/:shareId/charge', async (c) => {
       tl_a:atomsToTl(accounts.filter(a=>a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0)),
       tl_b:atomsToTl(accounts.filter(a=>a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0))
     };
-    const poolAtoms=accounts.filter(a=>String(a.bucket||'').startsWith('track_pool:'+shareId+':'))
+    const poolAtoms=accounts.filter(a=>['paid','ad','bonus'].some(source=>a.bucket==='track_pool:'+shareId+':'+source))
       .reduce((n,a)=>n+Number(a.available_atoms||0),0);
     return c.json({
       ok:true,replayed:posted.replayed,amount_tl:atomsToTl(amountAtoms),amount_atoms:amountAtoms,
