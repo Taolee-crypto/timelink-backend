@@ -3671,6 +3671,8 @@ app.get('/api/shares/:id', async (c) => {
     return c.json({
       id:String(row.id),user_id:Number(row.user_id||0),username:String(row.username||'User'),
       title:String(row.title||''),artist:String(row.artist||''),album:String(row.album||''),
+      composer:String(row.composer||''),lyricist:String(row.lyricist||''),producer:String(row.producer||''),arranger:String(row.arranger||''),
+      lyrics:String(row.lyrics||''),lyrics_timed:String(row.lyrics_timed||''),
       duration:durationSec,duration_sec:durationSec,file_tl:requiredTL,price_tl:requiredTL,category:String(row.category||'Music'),
       file_type:v5Release?'audio/tl3':String(row.file_type||''),category_type:String(row.category_type||'audio'),description:String(row.description||''),
       plan:String(row.plan||'FREE'),spotify_id:row.spotify_id||null,spotify_url:row.spotify_url||null,
@@ -3767,6 +3769,9 @@ app.patch('/api/shares/:id', async (c) => {
     "ALTER TABLE tl_shares ADD COLUMN gallery_images TEXT DEFAULT '[]'",
     "ALTER TABLE tl_shares ADD COLUMN production_note TEXT DEFAULT ''",
     "ALTER TABLE tl_shares ADD COLUMN origin_hash TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN producer TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN arranger TEXT DEFAULT ''",
+    "ALTER TABLE tl_shares ADD COLUMN lyrics_timed TEXT DEFAULT ''",
   ];
   for (const sql of newCols) {
     await c.env.DB.prepare(sql).run().catch(() => {});
@@ -3776,7 +3781,8 @@ app.patch('/api/shares/:id', async (c) => {
   const allowed: Record<string, string> = {
     artist:'artist', album:'album', category:'category',
     description:'description', composer:'composer', lyricist:'lyricist',
-    lyrics:'lyrics', cover_url:'cover_url', creation_story:'creation_story',
+    producer:'producer', arranger:'arranger', lyrics:'lyrics', lyrics_timed:'lyrics_timed',
+    cover_url:'cover_url', creation_story:'creation_story',
     production_note:'production_note', musical_key:'musical_key',
     credits:'credits', mood_tags:'mood_tags', social_links:'social_links',
     gallery_images:'gallery_images',
@@ -3843,6 +3849,61 @@ app.delete('/api/shares/:id', async (c) => {
     if(statements.length) await c.env.DB.batch(statements);
     return c.json({ok:true,deleted:true,id:shareId,file_id:fileId||null});
   } catch(e:any) {
+    const auth=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
+    const payload=auth?await verifyToken(auth,c.env.JWT_SECRET):null;
+    if(!payload)return c.json({error:'인증 필요'},401);
+    const requestedId=String(c.req.param('id')||'').trim();
+    const userId=Number(payload.sub);
+    const kind=String(c.req.query('kind')||'').toLowerCase();
+    if(!requestedId||!Number.isSafeInteger(userId)||userId<=0)return c.json({error:'잘못된 요청'},400);
+
+    let share:any=null;
+    let release:any=null;
+    let file:any=null;
+    if(kind==='legacy'){
+      if(!/^\d+$/.test(requestedId))return c.json({error:'잘못된 파일 ID'},400);
+      file=await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?').bind(Number(requestedId),userId).first<any>();
+      if(!file)return c.json({error:'파일 없음 또는 삭제 권한 없음'},404);
+    }else{
+      share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(requestedId).first<any>();
+      const lookups=[
+        "SELECT * FROM tl3_v5_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1",
+        "SELECT * FROM tl3_spine_v4_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1",
+        "SELECT * FROM tl3_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1"
+      ];
+      for(const sql of lookups){
+        if(release)break;
+        release=await c.env.DB.prepare(sql).bind(requestedId,requestedId).first<any>().catch(()=>null);
+      }
+      if(share&&Number(share.user_id)!==userId)return c.json({error:'권한 없음'},403);
+      if(release&&Number(release.user_id||0)>0&&Number(release.user_id)!==userId)return c.json({error:'권한 없음'},403);
+      if(share?.stream_url){
+        file=await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE stream_url=? AND user_id=? ORDER BY id DESC LIMIT 1')
+          .bind(String(share.stream_url),userId).first<any>().catch(()=>null);
+      }
+      if(!share&&!release&&!file&&/^\d+$/.test(requestedId)){
+        file=await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?')
+          .bind(Number(requestedId),userId).first<any>().catch(()=>null);
+      }
+      if(!share&&!release&&!file)return c.json({error:'파일 없음'},404);
+    }
+
+    const fileId=Number(file?.id||release?.file_id||0);
+    // 보관함에서는 즉시 사라지게 비공개/삭제 상태로 전환한다.
+    // 거래·정산·감사 이력의 FK를 보호하기 위해 tl_files 행 자체는 보존한다.
+    if(fileId>0){
+      await c.env.DB.prepare('DELETE FROM tl3_segments WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_release_tokens WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_v5_sessions WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_v5_releases WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_spine_v4_releases WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare('DELETE FROM tl3_releases WHERE file_id=?').bind(fileId).run().catch(()=>{});
+      await c.env.DB.prepare("UPDATE tl_files SET shared=0,auth_status='deleted' WHERE id=? AND user_id=?").bind(fileId,userId).run();
+    }
+    if(share)await c.env.DB.prepare('DELETE FROM tl_shares WHERE id=? AND CAST(user_id AS INTEGER)=?').bind(requestedId,userId).run();
+    return c.json({ok:true,deleted:true,id:requestedId,file_id:fileId||null,kind:kind==='legacy'?'legacy':'share'});
+  }catch(e:any){
+
     return c.json({error:e?.message||'삭제 실패'},500);
   }
 });
