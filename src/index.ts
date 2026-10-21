@@ -990,7 +990,7 @@ app.post('/api/upload/mp3', async (c) => {
 });
 
 app.post('/api/upload/tl3', async (c) => {
-  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
   const user=token ? await verifyToken(token,c.env.JWT_SECRET).catch(()=>null) : null;
   const userId=Number(user?.sub||0);
   if(!userId) return c.json({ok:false,error:'인증 필요'},401);
