@@ -210,8 +210,11 @@ export async function getTrackPoolBalances(db:D1Database,userId:number,shareId:s
     FROM v3_economy_accounts a
     JOIN v3_economy_balances b ON b.account_id=a.id
     WHERE a.owner_type='user' AND a.owner_id=? AND a.asset_code='TL'
-      AND a.bucket LIKE ?
-  `).bind(String(userId),'track_pool:'+shareId+':%').all<any>();
+      AND a.bucket IN (?,?,?,?)
+  `).bind(String(userId),
+    'track_pool:'+shareId+':paid','track_pool:'+shareId+':ad',
+    'track_pool:'+shareId+':bonus','track_pool:'+shareId+':legacy'
+  ).all<any>();
   const result:Record<string,number>={paid:0,ad:0,bonus:0,legacy:0};
   for(const row of rows.results||[]){
     const match=String(row.bucket||'').match(/^track_pool:[^:]+:(paid|ad|bonus|legacy)$/);
