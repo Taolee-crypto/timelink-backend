@@ -18,6 +18,13 @@ async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<number | nul
   return userId;
 }
 
+// Dedicated, read-only admin session verification.
+router.get('/session', async (c) => {
+  const userId = await requireAdmin(c);
+  if (!userId) return c.json({ ok: false, error: '관리자 권한 필요' }, 403);
+  return c.json({ ok: true, user_id: userId, role: 'admin' });
+});
+
 // ── POST /api/admin/sql ──
 // 관리자 전용 SQL 실행. DROP/ALTER/TRUNCATE는 차단.
 router.post('/sql', async (c) => {
