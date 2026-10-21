@@ -2140,6 +2140,8 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
 
   }catch(e:any){
     const message=String(e?.message||'TL3 재생 시간 정산 실패');
+    if(/no such table|no such column/i.test(message)) return c.json({ok:false,code:'V3_LEDGER_NOT_INITIALIZED',error:'V3 TL 원장 전환이 아직 완료되지 않았습니다.'},503);
+    if(message.includes('INSUFFICIENT_TRACK_TL')) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 부족합니다.'},402);
     if(message.includes('CHECK constraint failed')) return c.json({ok:false,code:'METER_CONFLICT',error:'재생 정산이 겹쳤습니다. 다시 요청해 주세요.'},409);
     return c.json({ok:false,error:message},500);
   }
@@ -3775,70 +3777,25 @@ app.get('/api/shares/:id/my-tl', async (c) => {
   let requestedId=String(c.req.param('id')||'').trim();
   let canonicalShareId=requestedId;
   try{
-    await ensureShareTLBalances(c.env.DB);
-
-    // First resolve a normal share. Do not assume tl3_releases.share_id exists:
-    // older production schemas may predate that additive column.
-    const share=await c.env.DB.prepare(
-      'SELECT id,file_tl FROM tl_shares WHERE id=? LIMIT 1'
-    ).bind(requestedId).first<any>();
-    // V5 Creator releases may have no legacy tl_shares row. Resolve by share_id first.
-    let v5Release=await c.env.DB.prepare(
-      "SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1"
-    ).bind(requestedId).first<any>().catch(()=>null);
-
-    if(!share && !v5Release && /^\d+$/.test(requestedId)){
-      const fileId=Number(requestedId);
-      v5Release=await c.env.DB.prepare(
-        "SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1"
-      ).bind(fileId).first<any>().catch(()=>null);
-      if(v5Release){
-        canonicalShareId=String(v5Release.share_id);
-      }else{
-        // A sealed Spine v4 release is authoritative for current Track assets.
-        // Resolve its share_id first so the wallet lookup does not depend on the
-        // retired v3 release/segment schema.
-        const spineRelease=await c.env.DB.prepare(
-          "SELECT file_id,share_id FROM tl3_spine_v4_releases WHERE file_id=? AND status='sealed' LIMIT 1"
-        ).bind(fileId).first<any>().catch(()=>null);
-        if(spineRelease){
-          canonicalShareId=String(spineRelease.share_id||fileId);
-        }else{
-          const release=await c.env.DB.prepare(
-            "SELECT file_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1"
-          ).bind(fileId).first<any>();
-          if(!release) return c.json({error:'파일 없음'},404);
-
-          // share_id is optional across deployed legacy schema generations.
-          let releaseWithShare:any=release;
-          try{
-            releaseWithShare=await c.env.DB.prepare(
-              "SELECT file_id,share_id FROM tl3_releases WHERE file_id=? AND status='released' LIMIT 1"
-            ).bind(fileId).first<any>() || release;
-          }catch(_){}
-          canonicalShareId=String(releaseWithShare?.share_id||fileId);
-        }
-      }
-    }else if(!share && !v5Release){
-      return c.json({error:'파일 없음'},404);
-    }
-    if(v5Release) canonicalShareId=String(v5Release.share_id);
-
-    let row=await c.env.DB.prepare(
-      'SELECT tl_balance,total_charged FROM tl_user_files WHERE user_id=? AND share_id=?'
-    ).bind(userId,canonicalShareId).first<any>();
-    if(!row){
-      await c.env.DB.prepare(
-        'INSERT OR IGNORE INTO tl_user_files (user_id,share_id,tl_balance,total_charged) VALUES (?,?,0,0)'
-      ).bind(userId,canonicalShareId).run();
-      row={tl_balance:0,total_charged:0};
-    }
+    // V3 track pools are the sole playback balance source after ledger cutover.
+    const pool=await getTrackPoolBalances(c.env.DB,userId,canonicalShareId);
+    const totalAtoms=pool.paid+pool.ad+pool.bonus;
+    const charged=await c.env.DB.prepare(`
+      SELECT COALESCE(SUM(e.amount_atoms),0) amount
+      FROM v3_economy_entries e
+      JOIN v3_economy_accounts a ON a.id=e.account_id
+      JOIN v3_economy_transactions t ON t.id=e.transaction_id
+      WHERE a.owner_type='user' AND a.owner_id=? AND a.bucket LIKE ?
+        AND t.transaction_type='track_charge' AND e.amount_atoms>0
+    `).bind(String(userId),'track_pool:'+canonicalShareId+':%').first<any>();
     return c.json({
       ok:true,
-      tl_balance:Number(row.tl_balance||0),
-      total_charged:Number(row.total_charged||0),
+      tl_balance:atomsToTl(totalAtoms),
+      total_charged:atomsToTl(Number(charged?.amount||0)),
+      by_source:{paid:atomsToTl(pool.paid),ad:atomsToTl(pool.ad),bonus:atomsToTl(pool.bonus),legacy:atomsToTl(pool.legacy)},
       file_tl:Number(share?.file_tl||((Number(v5Release?.duration_ms||0)>0)?Math.ceil(Number(v5Release.duration_ms)/1000):0)),
-      share_id:canonicalShareId
+      share_id:canonicalShareId,
+      tl_atom_scale:TL_ATOMS_PER_TL
     });
   }catch(e:any){
     console.error('[SHARE_MY_TL_ERROR]',{requested_id:requestedId,user_id:userId,error:String(e?.message||e)});
@@ -3905,6 +3862,11 @@ app.post('/api/shares/:id/consume', async (c) => {
     const seconds=Math.max(1,Math.min(30,Math.floor(Number(body.seconds||0))));
     await ensureShareTLBalances(c.env.DB);
     const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
+    const v5MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
+    const v4MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_spine_v4_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
+    const v3MeterAsset=await c.env.DB.prepare("SELECT file_id FROM tl3_releases WHERE share_id=? AND status='released' LIMIT 1").bind(shareId).first<any>().catch(()=>null);
+    if(v5MeterAsset||v4MeterAsset||v3MeterAsset) return c.json({ok:false,code:'TL3_METER_ONLY',error:'TL3 자산은 실제 재생 시간 정산 경로만 사용할 수 있습니다.'},409);
+
     if(!share) return c.json({error:'파일 없음'},404);
     const isMp3=shareKind(share)==='mp3';
     if(isMp3) return c.json({ok:true,consumed:0,user_tl:0,tl_balance:0,free:true});
