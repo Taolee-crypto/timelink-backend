@@ -23,7 +23,7 @@ Static source audit only. No production database writes, browser tests, or deplo
 - V3 append-only ledger tables and read APIs exist, but legacy payment, advertising, charging, and playback writes still update users and legacy tables directly.
 - Wallet fields coexist: users.tl, tl_balance, tl_p, tl_a, tl_b. Track balances live in tl_user_files.
 - TLC and POC remain separate assets/contribution records.
-- V5 playback meter currently charges tl_user_files by cumulative played-time delta and does not debit the common wallet again. Preserve this behavior and the V5 encrypted container format.
+- V5 playback license issuance (`/api/v1/tl3/v5/session-license/:id`), preflight, and online meter now use the canonical V3 per-track pool. The V5 encrypted container and key-wrapping flow remain unchanged. The meter posts source-preserving 70:30 settlement and the meter-session compare-and-swap in one D1 batch.
 - Canonical creator distribution policy confirmed by the product owner: creator 70%, platform 30%. `src/economy-policy.ts` now defines the shared 70:30 constants. The legacy POST /api/eco/consume, V5 online meter, offline settlement endpoints, and legacy playback routes now reference the shared creator-rate constant. Source treatment remains distinct in `/api/eco/consume` (TL_P→creator TL_P, TL_A→creator TL_A, TL_B→creator TL_A). The old playback route's car-mode multiplier no longer increases creator payout above 70%; it remains a pulse/contribution multiplier only. This is source-level alignment; runtime and accounting tests have not yet been run.
 
 ## Confirmed risks
@@ -35,7 +35,7 @@ Static source audit only. No production database writes, browser tests, or deplo
 - Ads code directly updates users.tl/tl_a. Its token parser originally derived IDs without JWT verification; this branch now uses shared signed-token verification and checks that the account is active. Reward writes still need migration to V3.
 - /api/payment/virtual/charge was documented as development/test-only but mounted as a normal authenticated route; this branch now blocks it when ENVIRONMENT=production.
 - Frontend wallet, dashboard, sidebar/topbar, track, SharePlace, creator, payment result, radio/in-car and admin surfaces read or mutate different legacy fields and localStorage snapshots.
-- The V5 meter still settles against aggregate `tl_user_files.tl_balance` and credits creator TL_P. The new V3 track-charge path creates source-specific V3 track-pool buckets; end-to-end interoperability between that V3 pool and the existing V5 meter is not yet demonstrated. This is a cutover blocker: do not enable the new charge path for live playback until both paths debit the same authoritative pool exactly once and preserve source provenance.
+- V5 license issuance and online meter are now connected to the same V3 track-pool buckets created by the V3 charge route. The meter preserves paid/ad/bonus provenance, credits the creator 70% to the matching eligible bucket (TL_B creator share is TL_A), and posts the platform 30% to platform revenue accounts. This source-level connection is implemented on the branch but remains unverified by runtime playback and concurrency tests.
 
 ## Screens found in current frontend tree
 wallet.html, wallet-v2.html, dashboard.html, sidebar.js, _shared/topbar.js, _shared/topbar-v2.js, index.html, track.html, shareplace.html, renewal/shareplace.html, creator.html, radio.html, incar.html, cafe-radio.html, cafe-channel.html, incar-channel.html, ads.html, advertiser.html, chart.html, admin.html, payment-success.html.
