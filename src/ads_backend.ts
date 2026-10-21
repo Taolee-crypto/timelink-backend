@@ -141,7 +141,7 @@ ads.post('/:id/complete', async (c) => {
     await ensureTables(c.env.DB);
     const adId = c.req.param('id');
     const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = parseUserId(token);
+    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
     if (!userId) return c.json({ error: '로그인 필요' }, 401);
 
     const body = await c.req.json<any>().catch(() => ({}));
