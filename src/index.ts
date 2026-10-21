@@ -3805,7 +3805,7 @@ app.patch('/api/shares/:id', async (c) => {
 
 app.delete('/api/shares/:id', async (c) => {
   try {
-    const auth = c.req.header('Authorization')?.replace(/^Bearer\\s+/i,'').trim() || '';
+    const auth = c.req.header('Authorization')?.replace(/^Bearer\s+/i,'').trim() || '';
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
     if (!payload) return c.json({error:'인증 필요'},401);
     const shareId=String(c.req.param('id')||'').trim();
