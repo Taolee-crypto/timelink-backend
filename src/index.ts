@@ -3817,7 +3817,10 @@ app.delete('/api/shares/:id', async (c) => {
     const spine=await c.env.DB.prepare("SELECT * FROM tl3_spine_v4_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1").bind(shareId,shareId).first<any>().catch(()=>null);
     const v4=await c.env.DB.prepare("SELECT * FROM tl3_releases WHERE share_id=? OR CAST(file_id AS TEXT)=? LIMIT 1").bind(shareId,shareId).first<any>().catch(()=>null);
     const release=v5||spine||v4;
-    const fileId=Number(release?.file_id||0);
+    const linkedFile=share?.stream_url
+      ? await c.env.DB.prepare('SELECT id FROM tl_files WHERE stream_url=? AND user_id=? ORDER BY id DESC LIMIT 1').bind(String(share.stream_url),userId).first<any>().catch(()=>null)
+      : null;
+    const fileId=Number(release?.file_id||linkedFile?.id||0);
     if(!share && !release) return c.json({error:'파일 없음'},404);
 
     const ownerId=Number(share?.user_id ?? release?.user_id);
