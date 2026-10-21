@@ -1,5 +1,5 @@
 import type { Env } from './types';
-import { CREATOR_SHARE_RATE, PLATFORM_SHARE_RATE } from './economy-policy';
+import { CREATOR_SHARE_RATE } from './economy-policy';
 
 export const TL_ATOMS_PER_TL = 10000;
 export function tlToAtoms(value:number):number {
@@ -210,6 +210,22 @@ export async function chargeTrackPool(
   description='공통 지갑에서 곡 전용 TL 풀로 내부 이체'
 ) {
   if(!Number.isSafeInteger(amountAtoms)||amountAtoms<=0) throw new Error('Invalid track charge amount');
+  const prior=await db.prepare(`
+    SELECT id,transaction_type,source,reference_type,reference_id,actor_user_id,metadata_json
+    FROM v3_economy_transactions WHERE idempotency_key=? LIMIT 1
+  `).bind(idempotencyKey).first<any>();
+  if(prior){
+    let metadata:any={};
+    try{metadata=JSON.parse(prior.metadata_json||'{}');}catch{}
+    const stored=Number(metadata.amount_atoms||0);
+    const sameAmount=stored===amountAtoms || stored*TL_ATOMS_PER_TL===amountAtoms;
+    if(prior.transaction_type==='track_charge'&&prior.source==='wallet_to_track'&&
+       prior.reference_type==='track'&&String(prior.reference_id)===shareId&&
+       String(prior.actor_user_id)===String(userId)&&sameAmount){
+      return {id:prior.id,replayed:true,amountAtoms,allocation:metadata.allocation||{}};
+    }
+    throw new Error('Idempotency key was already used for a different transaction');
+  }
   const paidAccount=await ensureLedgerAccount(db,'user',userId,'TL','wallet_paid');
   const adAccount=await ensureLedgerAccount(db,'user',userId,'TL','wallet_ad');
   const bonusAccount=await ensureLedgerAccount(db,'user',userId,'TL','wallet_bonus');
