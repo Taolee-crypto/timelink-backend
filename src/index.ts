@@ -2044,7 +2044,9 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
     return c.json({ok:true,file_id:fileId,required_tl:requiredTL,duration_ms:totalMs,wallet_tl:walletBalance,asset_tl:assetBalance,tl_atom_scale:TL_ATOMS_PER_TL,can_play:!insufficientTL,insufficient_tl:insufficientTL,message:insufficientTL?'필요한 재생 TL이 부족합니다. 먼저 충전해주십시오.':null});
   }catch(e:any){
     const message=String(e?.message||'재생 사전 확인 실패');
-    if(message.includes('V3_TL_ATOM_SCALE_NOT_READY')||/no such table|no such column/i.test(message)) return c.json({ok:false,code:'V3_LEDGER_NOT_INITIALIZED',error:'V3 TL 원장과 정밀도 마이그레이션이 아직 완료되지 않았습니다.'},503);
+    if(message.includes('V3_TL_ATOM_SCALE_NOT_READY')) return c.json({ok:false,code:'V3_TL_PRECISION_NOT_READY',error:'TL 원장 정밀도가 4자리로 설정되지 않았습니다. 기존 정밀도 마이그레이션 적용 상태를 확인해야 합니다.'},503);
+    if(/no such table/i.test(message)) return c.json({ok:false,code:'V3_LEDGER_TABLE_MISSING',error:'재생에 필요한 V3 경제 원장 테이블이 없습니다. D1 연결과 원장 스키마를 확인해야 합니다.'},503);
+    if(/no such column/i.test(message)) return c.json({ok:false,code:'V3_LEDGER_COLUMN_MISSING',error:'재생에 필요한 V3 원장 컬럼이 없습니다. 운영 D1 스키마를 확인해야 합니다.'},503);
     return c.json({ok:false,error:message},500);
   }
 });
