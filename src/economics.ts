@@ -251,8 +251,7 @@ eco.post('/consume', async (c) => {
       creatorEarnA = Number((consumedA * CREATOR_SHARE_RATE).toFixed(6));
       platformEarnA = Number((consumedA * PLATFORM_SHARE_RATE).toFixed(6));
 
-      // TL_B 소비 → 플랫폼 수익 (크리에이터 분배 없음, 보너스는 원가 없음)
-      // → 7:3 정책에 따라 크리에이터 몫 70%를 TL_A로 지급
+      // TL_B 소비도 공통 7:3 정책 적용: 창작자 70%는 출처 제한을 보존해 TL_A로 지급
       creatorEarnB = Number((consumedB * CREATOR_SHARE_RATE).toFixed(6));
       platformEarnB = Number((consumedB * PLATFORM_SHARE_RATE).toFixed(6));
 
@@ -697,8 +696,8 @@ eco.post('/set-plan', async (c) => {
     return c.json({
       ok: true, plan,
       note: plan === 'A'
-        ? '플랜A: TL_P 62% 수취, 교환수수료 5%'
-        : '플랜B: TL_P 45% 수취, TLC 2배 채굴, 교환수수료 3%'
+        ? '플랜A: 창작자 배분 70%, 교환수수료 5%'
+        : '플랜B: 창작자 배분 70%, TLC 2배 채굴, 교환수수료 3%'
     });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
