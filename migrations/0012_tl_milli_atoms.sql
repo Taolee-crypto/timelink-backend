@@ -19,6 +19,8 @@ WHERE account_id IN (
 
 UPDATE v3_economy_assets SET decimals=4 WHERE asset_code='TL';
 
+CREATE TABLE IF NOT EXISTS tl3_assertion_guard (ok INTEGER NOT NULL CHECK(ok=1));
+
 UPDATE v3_economy_legacy_imports
 SET imported_atoms = imported_atoms * 10000
 WHERE target_account_id IN (
