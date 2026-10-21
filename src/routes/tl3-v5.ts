@@ -393,7 +393,7 @@ router.post('/session-license/:id', async (c) => {
     // V3 track pools are the canonical source for newly charged playback TL.
     // Do not gate V5 licenses against the legacy tl_user_files cache.
     const trackPools = await getTrackPoolBalances(c.env.DB,userId,String(release.share_id));
-    const trackBalanceAtoms = trackPools.ad + trackPools.bonus + trackPools.paid + trackPools.legacy;
+    const trackBalanceAtoms = trackPools.ad + trackPools.bonus + trackPools.paid;
     const trackBalanceTl = atomsToTl(trackBalanceAtoms);
     if (trackBalanceAtoms <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:trackBalanceTl},402);
     const masterKeys = resolveMasterKeyring(c.env);
