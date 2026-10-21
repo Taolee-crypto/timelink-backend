@@ -8,6 +8,7 @@ import tl3PlayerSessionRouter from './tl3-player-session';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
 import { verifyToken, makeAccessToken, hashPassword, verifyPassword } from './auth';
+import { CREATOR_SHARE_RATE } from './economy-policy';
 
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
@@ -2107,7 +2108,7 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     // Creator rewards are paid only when listener and creator are different
     // accounts. Self-play must not increase the listener's own wallet.
     const revenue=creator&&Number(creator.id)!==Number(user.id)
-      ? Number((delta*0.7).toFixed(6))
+      ? Number((delta*CREATOR_SHARE_RATE).toFixed(6))
       : 0;
     const creatorBefore=creator?Number(creator.p||0)+Number(creator.a||0)+Number(creator.b||0):0;
     const creatorAfter=creatorBefore+revenue;
@@ -2328,7 +2329,7 @@ app.post('/api/v1/tl3/spend', async (c) => {
       'UPDATE users SET tl=?, tl_p=?, tl_a=?, tl_b=?, total_tl_spent=COALESCE(total_tl_spent,0)+? WHERE id=?'
     ).bind(newTotal, new_p, new_a, new_b, cost, u.id).run();
 
-    const revenue = Number((cost * 0.7).toFixed(3));
+    const revenue = Number((cost * CREATOR_SHARE_RATE).toFixed(3));
     const creator = await c.env.DB.prepare(
       'SELECT id, COALESCE(tl_balance,0) as tl_balance FROM users WHERE id=?'
     ).bind(file.user_id).first<any>();
@@ -2460,7 +2461,7 @@ app.post('/api/v1/tl3/settle-offline', async (c) => {
     for (const [fileIdStr, info] of Object.entries(perFile)) {
       const fileId = Number(fileIdStr);
       const cost = Number((info.seconds * info.rate).toFixed(3));
-      const revenue = Number((cost * 0.7).toFixed(3));
+      const revenue = Number((cost * CREATOR_SHARE_RATE).toFixed(3));
       creatorTotal += revenue;
 
       try {
@@ -3977,7 +3978,7 @@ app.post('/api/shares/:id/consume', async (c) => {
       walletTotal = newTotal;
     }
 
-    const revenue=seconds*0.7;
+    const revenue=seconds*CREATOR_SHARE_RATE;
     const creatorId=Number(share.user_id||0);
     const creator=creatorId?await c.env.DB.prepare('SELECT * FROM users WHERE id=?').bind(creatorId).first<any>():null;
     const creatorCol='tl_balance';
