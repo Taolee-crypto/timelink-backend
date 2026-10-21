@@ -261,4 +261,58 @@ router.post('/dj-links/:id/force-end', async (c) => {
   }
 });
 
+
+/* Admin Center: read-only operational status, no writes or schema migrations. */
+async function adminTableColumns(db: Env['DB'], table: string): Promise<string[]> {
+  const rows=await db.prepare("SELECT name FROM pragma_table_info(?)").bind(table).all<{name:string}>();
+  return (rows.results||[]).map(r=>String(r.name));
+}
+async function adminCount(db: Env['DB'],table:string,condition?:string):Promise<number|null>{
+  const columns=await adminTableColumns(db,table);
+  if(!columns.length)return null;
+  const row=await db.prepare('SELECT COUNT(*) AS n FROM "'+table+'"'+(condition?' WHERE '+condition:'')).first<{n:number}>();
+  return Number(row?.n??0);
+}
+async function adminSum(db:Env['DB'],table:string,column:string):Promise<number|null>{
+  const cols=await adminTableColumns(db,table);
+  if(!cols.includes(column))return null;
+  const row=await db.prepare('SELECT SUM("'+column+'") AS n FROM "'+table+'"').first<{n:number|null}>();
+  return Number(row?.n??0);
+}
+router.get('/realtime',async c=>{
+  if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
+  try{
+    const db=c.env.DB;
+    const [userCount,shareCount,pulse,fileTl,cafes]=await Promise.all([
+      adminCount(db,'users'),adminCount(db,'tl_shares'),adminSum(db,'tl_shares','pulse'),
+      adminSum(db,'tl_shares','file_tl'),adminCount(db,'cafe_channels')
+    ]);
+    const sharesCols=await adminTableColumns(db,'tl_shares');
+    let topTracks:any[]=[];
+    if(['title','pulse'].every(x=>sharesCols.includes(x))){
+      const artist=sharesCols.includes('artist')?'artist':'NULL AS artist';
+      const rows=await db.prepare('SELECT title,'+artist+',pulse FROM tl_shares ORDER BY pulse DESC LIMIT 10').all();
+      topTracks=rows.results||[];
+    }
+    return c.json({ok:true,as_of:new Date().toISOString(),
+      users:{total:userCount,total_tl:null},
+      shares:{total:shareCount,total_pulse:pulse,total_file_tl:fileTl},
+      today:{payments:null,revenue_krw:null},cafe_channels:cafes,top_tracks:topTracks,
+      unavailable:['users.total_tl','today.payments','today.revenue_krw']
+    });
+  }catch(e:any){return c.json({ok:false,error:'실시간 데이터 조회 실패',detail:String(e?.message||'')},503);}
+});
+router.get('/revenue',async c=>{
+  if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
+  // A financial figure must never be derived from an unverified payment/ledger schema.
+  return c.json({ok:false,code:'FINANCIAL_SOURCE_NOT_VERIFIED',
+    error:'결제 및 TL 원장 기준을 검증하기 전에는 재무 수치를 제공할 수 없습니다.',
+    as_of:new Date().toISOString()},503);
+});
+router.get('/creators/payouts',async c=>{
+  if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
+  return c.json({ok:false,code:'PAYOUT_SOURCE_NOT_VERIFIED',
+    error:'크리에이터 정산 원장과 지급 상태 검증 후 조회를 제공합니다.'},503);
+});
+
 export default router;
