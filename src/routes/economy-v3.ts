@@ -491,6 +491,20 @@ router.post('/admin/opening-batches/:id/post', async (c) => {
   if (!batch || !['approved','posting'].includes(String(batch.status))) {
     return c.json({ok:false,error:'승인된 초기 잔액 배치만 기록할 수 있습니다.'},409);
   }
+  const allRows = await c.env.DB.prepare("SELECT * FROM v3_economy_opening_items WHERE batch_id=? ORDER BY id").bind(id).all<any>();
+  const canonicalItems = (allRows.results || []).map((item:any) => ({
+    user_id:String(item.user_id),bucket:String(item.bucket),amount_atoms:Number(item.amount_atoms),
+    source_table:String(item.source_table),source_row_id:String(item.source_row_id),
+    source_field:String(item.source_field),source_checksum:String(item.source_checksum),
+    evidence_note:String(item.evidence_note)
+  })).sort((a:any,b:any) =>
+    (a.user_id+a.bucket+a.source_table+a.source_row_id+a.source_field)
+      .localeCompare(b.user_id+b.bucket+b.source_table+b.source_row_id+b.source_field)
+  );
+  const verifiedChecksum = await sha256Hex(JSON.stringify(canonicalItems));
+  if (verifiedChecksum !== String(batch.checksum)) {
+    return c.json({ok:false,error:'초기 잔액 배치 체크섬이 일치하지 않습니다. 기록을 중단했습니다.'},409);
+  }
   await c.env.DB.prepare("UPDATE v3_economy_opening_batches SET status='posting' WHERE id=? AND status='approved'").bind(id).run();
   const equityAccount = await ensureLedgerAccount(c.env.DB,'system','timelink','TL','genesis_equity');
   const rows = await c.env.DB.prepare("SELECT * FROM v3_economy_opening_items WHERE batch_id=? AND status='pending' ORDER BY id").bind(id).all<any>();
