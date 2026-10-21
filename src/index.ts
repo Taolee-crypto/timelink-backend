@@ -54,7 +54,7 @@ app.use('/api/v1/tl3/v5/manufacture', bodyLimit({ maxSize: 17 * 1024 * 1024 }));
 app.use('*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization'],
+  allowHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
   exposeHeaders: ['X-TL3-Segment-Duration-Ms'],
   maxAge: 86400,
 }));
