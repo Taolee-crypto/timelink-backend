@@ -956,7 +956,9 @@ router.post('/charge', async (c) => {
   const body = await c.req.json<any>().catch(() => ({}));
   const djId = Number(body.dj_id || 0);
   const shareId = String(body.share_id || '');
-  const seconds = Math.max(1, Math.min(Number(body.seconds || 1), 60));
+  const secondsInput = Number(body.seconds ?? 1);
+  if (!Number.isFinite(secondsInput) || secondsInput <= 0) return c.json({ ok: false, error: '청취 초 값이 올바르지 않습니다.' }, 400);
+  const seconds = Math.max(1, Math.min(Math.floor(secondsInput), 60));
   const requestedRole = String(body.role || 'normal');  // 'normal' | 'cafe'
 
   if (!djId || !shareId) return c.json({ ok: false, error: 'dj_id, share_id 필요' }, 400);
