@@ -3755,7 +3755,7 @@ app.get('/api/shares/my', async (c) => {
         "SELECT id,title,artist,album,duration,file_tl,category,file_type,category_type,description,cover_url,content_kind,release_mode,storage_mode,origin_hash,release_check,pulse,created_at FROM tl_shares WHERE CAST(user_id AS INTEGER)=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
       ).bind(userId,limit,offset).all(),
       c.env.DB.prepare(
-        "SELECT id,title,artist,genre,file_type,file_size_bytes,duration_seconds,auth_status,shared,play_count,created_at,updated_at FROM tl_files WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        "SELECT id,title,artist,genre,file_type,file_size_bytes,duration_seconds,auth_status,shared,play_count,created_at,updated_at FROM tl_files WHERE user_id=? AND COALESCE(auth_status,'')<>'deleted' ORDER BY created_at DESC LIMIT ? OFFSET ?"
       ).bind(userId,limit,offset).all()
     ]);
     return c.json({shares:shares.results||[],files:files.results||[],limit,offset});
