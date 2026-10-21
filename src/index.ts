@@ -2040,7 +2040,11 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
     const walletBalance=Number((walletP+walletA+walletB).toFixed(4));
     const insufficientTL=assetBalance+1e-9<requiredTL;
     return c.json({ok:true,file_id:fileId,required_tl:requiredTL,duration_ms:totalMs,wallet_tl:walletBalance,asset_tl:assetBalance,tl_atom_scale:TL_ATOMS_PER_TL,can_play:!insufficientTL,insufficient_tl:insufficientTL,message:insufficientTL?'필요한 재생 TL이 부족합니다. 먼저 충전해주십시오.':null});
-  }catch(e:any){return c.json({ok:false,error:e?.message||'재생 사전 확인 실패'},500);}
+  }catch(e:any){
+    const message=String(e?.message||'재생 사전 확인 실패');
+    if(message.includes('V3_TL_ATOM_SCALE_NOT_READY')||/no such table|no such column/i.test(message)) return c.json({ok:false,code:'V3_LEDGER_NOT_INITIALIZED',error:'V3 TL 원장과 정밀도 마이그레이션이 아직 완료되지 않았습니다.'},503);
+    return c.json({ok:false,error:message},500);
+  }
 });
 
 // 실제 재생 시간 누적 정산: 완전히 재생된 1초마다 1 TL 차감
@@ -2140,7 +2144,7 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
 
   }catch(e:any){
     const message=String(e?.message||'TL3 재생 시간 정산 실패');
-    if(/no such table|no such column/i.test(message)) return c.json({ok:false,code:'V3_LEDGER_NOT_INITIALIZED',error:'V3 TL 원장 전환이 아직 완료되지 않았습니다.'},503);
+    if(message.includes('V3_TL_ATOM_SCALE_NOT_READY')||/no such table|no such column/i.test(message)) return c.json({ok:false,code:'V3_LEDGER_NOT_INITIALIZED',error:'V3 TL 원장과 정밀도 마이그레이션이 아직 완료되지 않았습니다.'},503);
     if(message.includes('INSUFFICIENT_TRACK_TL')) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 부족합니다.'},402);
     if(message.includes('CHECK constraint failed')) return c.json({ok:false,code:'METER_CONFLICT',error:'재생 정산이 겹쳤습니다. 다시 요청해 주세요.'},409);
     return c.json({ok:false,error:message},500);
@@ -3808,7 +3812,8 @@ app.get('/api/shares/:id/my-tl', async (c) => {
     });
   }catch(e:any){
     console.error('[SHARE_MY_TL_ERROR]',{requested_id:requestedId,user_id:userId,error:String(e?.message||e)});
-    return c.json({error:'TL 잔액 조회에 실패했습니다.',code:'SHARE_TL_LOOKUP_FAILED'},500);
+    if(String(e?.message||'').includes('V3_TL_ATOM_SCALE_NOT_READY')||/no such table|no such column/i.test(String(e?.message||''))) return c.json({error:'V3 TL 원장과 정밀도 마이그레이션이 아직 완료되지 않았습니다.',code:'V3_LEDGER_NOT_INITIALIZED'},503);
+    return c.json({error:'TL 잔액 조회에 실패했습니다.',code:'SHARE_MY_TL_LOOKUP_FAILED'},500);
   }
 });
 
@@ -3848,7 +3853,7 @@ app.post('/api/shares/:id/charge', async (c) => {
       tl_b:atomsToTl(accounts.filter(a=>a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0))
     };
     const pool=await getTrackPoolBalances(c.env.DB,userId,shareId);
-    const poolTl=atomsToTl(pool.ad+pool.bonus+pool.paid+pool.legacy);
+    const poolTl=atomsToTl(pool.ad+pool.bonus+pool.paid);
     return c.json({
       ok:true,amount,user_tl:wallet.tl_p+wallet.tl_a+wallet.tl_b,
       tl_balance:poolTl,total_charged:amount,tl_p:wallet.tl_p,tl_a:wallet.tl_a,tl_b:wallet.tl_b,
@@ -3856,7 +3861,7 @@ app.post('/api/shares/:id/charge', async (c) => {
     });
   }catch(e:any){
     if(String(e?.message||'').includes('INSUFFICIENT_TL')) return c.json({error:'TL 잔액이 부족합니다.',code:'INSUFFICIENT_TL'},402);
-    if(/no such table|no such column/i.test(String(e?.message||''))) return c.json({error:'V3 TL 원장 전환이 아직 완료되지 않았습니다.',code:'V3_LEDGER_NOT_INITIALIZED'},503);
+    if(String(e?.message||'').includes('V3_TL_ATOM_SCALE_NOT_READY')||/no such table|no such column/i.test(String(e?.message||''))) return c.json({error:'V3 TL 원장과 정밀도 마이그레이션이 아직 완료되지 않았습니다.',code:'V3_LEDGER_NOT_INITIALIZED'},503);
     return c.json({error:e?.message||'TL 충전 실패'},500);
   }
 });
