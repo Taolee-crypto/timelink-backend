@@ -536,7 +536,9 @@ router.get('/staff/access/:channelId', async (c) => {
   const cafe=await c.env.DB.prepare('SELECT channel_id,name,owner_id,status,expires_at FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
   if(!cafe) return c.json({ok:false,error:'카페 채널을 찾을 수 없습니다.'},404);
   const role=await cafeMemberRole(c.env.DB,channelId,auth.id);
-  return c.json({ok:true,channel:{channel_id:cafe.channel_id,name:cafe.name,status:cafe.status,expires_at:cafe.expires_at},role,can_operate:role==='owner'||role==='staff'});
+  const active=String(cafe.status)==='active'&&(!cafe.expires_at||Number(cafe.expires_at)>Date.now());
+  const canOperate=active&&(role==='owner'||role==='staff');
+  return c.json({ok:true,channel:{channel_id:cafe.channel_id,name:cafe.name,status:cafe.status,expires_at:cafe.expires_at},role,can_operate:canOperate,error:active?undefined:'카페 채널이 비활성 상태이거나 이용 기간이 만료되었습니다.'});
 });
 
 // ── GET /api/cafe/channels/:channelId/broadcast — 카페 방송 정보 ──
