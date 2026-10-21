@@ -968,8 +968,9 @@ router.post('/charge', async (c) => {
   const share = await c.env.DB.prepare('SELECT file_tl FROM tl_shares WHERE id=?').bind(shareId).first<any>();
   if (!share) return c.json({ ok: false, error: '곡 없음' }, 404);
 
-  const fileTl = Number(share.file_tl || 0);
-  const totalCharge = fileTl * multiplier * seconds;
+  // DJ 방송은 곡 전체 file_tl이 아니라 실제 청취 초 단위로 과금한다.
+  // TimeLink 기준: 1초 = 1 TL, 기존 normal/cafe 요율만 적용한다.
+  const totalCharge = seconds * multiplier;
 
   // 청취자 TL 확인
   const listener = await c.env.DB.prepare(
