@@ -3811,7 +3811,7 @@ app.patch('/api/shares/:id', async (c) => {
 
 app.delete('/api/shares/:id', async (c) => {
   try {
-    const auth = (c.req.header('Authorization') || '').replace(/^Bearer\\s+/i, '').trim();
+    const auth = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '').trim();
     const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
     if (!payload) return c.json({ error: '인증 필요' }, 401);
 
@@ -3827,7 +3827,7 @@ app.delete('/api/shares/:id', async (c) => {
     let file: any = null;
 
     if (kind === 'legacy') {
-      if (!/^\\d+$/.test(requestedId)) return c.json({ error: '잘못된 파일 ID' }, 400);
+      if (!/^\d+$/.test(requestedId)) return c.json({ error: '잘못된 파일 ID' }, 400);
       file = await c.env.DB.prepare(
         'SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?'
       ).bind(Number(requestedId), userId).first<any>();
@@ -3864,7 +3864,7 @@ app.delete('/api/shares/:id', async (c) => {
           'SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?'
         ).bind(Number(release.file_id), userId).first<any>().catch(() => null);
       }
-      if (!file && /^\\d+$/.test(requestedId)) {
+      if (!file && /^\d+$/.test(requestedId)) {
         file = await c.env.DB.prepare(
           'SELECT id,user_id FROM tl_files WHERE id=? AND user_id=?'
         ).bind(Number(requestedId), userId).first<any>().catch(() => null);
