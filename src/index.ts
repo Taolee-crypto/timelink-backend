@@ -2136,7 +2136,8 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     return c.json({
       ok:true,billed_seconds:chargedSeconds,charged_tl:chargedSeconds,delta_tl:delta,
       wallet_tl:atomsToTl(walletAtoms),asset_tl:assetRemaining,
-      creator_revenue:atomsToTl(settlement.creatorShareAtoms),
+      creator_revenue:user.id===creatorId?0:atomsToTl(settlement.creatorShareAtoms),
+      creator_share_held:user.id===creatorId?atomsToTl(settlement.creatorShareAtoms):0,
       platform_share:atomsToTl(settlement.platformShareAtoms),stop
     });
 
