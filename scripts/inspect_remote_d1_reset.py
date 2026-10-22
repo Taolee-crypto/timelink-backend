@@ -92,9 +92,9 @@ def main():
     output_sql.unlink(missing_ok=True)
     if not blockers:
         with output_sql.open("w", encoding="utf-8") as handle:
-            handle.write("-- REVIEW ONLY; no remote deletion performed.\\n")
+            handle.write("-- REVIEW ONLY; no remote deletion performed.\n")
             for name in deletion_order:
-                handle.write('DELETE FROM "' + name.replace('"', '""') + '";\\n')
+                handle.write('DELETE FROM "' + name.replace('"', '""') + '";\n')
     report = [
         "TIMELINK REMOTE D1 SCHEMA INSPECTION (READ ONLY)",
         "No backup created. No data deleted.",
