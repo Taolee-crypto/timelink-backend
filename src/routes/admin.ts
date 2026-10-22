@@ -42,7 +42,7 @@ router.get('/tl/initial-issuance/status', async (c) => {
   }catch(e:any){return c.json({ok:false,error:e?.message||'원장 상태 확인 실패'},500);}
 });
 
-// One-time development bootstrap: only on a completely empty V3 TL ledger.
+// One-time development bootstrap: only on a completely empty V5 경제원장 TL ledger.
 // Does not touch legacy balances, TLC, POC, or TON state.
 router.post('/tl/initial-issuance', async (c) => {
   const adminId = await requireAdmin(c);
@@ -58,7 +58,7 @@ router.post('/tl/initial-issuance', async (c) => {
     const existing=await db.prepare("SELECT COUNT(*) AS n FROM v3_economy_transactions").first<any>();
     const accounts=await db.prepare("SELECT COUNT(*) AS n FROM v3_economy_accounts WHERE asset_code='TL'").first<any>();
     if(Number(existing?.n)!==0||Number(accounts?.n)!==0) {
-      return c.json({ok:false,code:'TL_LEDGER_NOT_EMPTY',error:'V3 원장이 비어 있지 않습니다. 중복 발행을 방지하기 위해 중단했습니다.'},409);
+      return c.json({ok:false,code:'TL_LEDGER_NOT_EMPTY',error:'V5 경제원장이 비어 있지 않습니다. 중복 발행을 방지하기 위해 중단했습니다.'},409);
     }
     const accountId=crypto.randomUUID();
     const transactionId=crypto.randomUUID();
@@ -76,7 +76,7 @@ router.post('/tl/initial-issuance', async (c) => {
 });
 
 
-/** V3 TL bucket adjustments. Never update legacy users.tl / tl_balance here. */
+/** V5 경제원장 TL bucket adjustments. Never update legacy users.tl / tl_balance here. */
 router.post('/tl/adjust', async (c) => {
   const adminId=await requireAdmin(c);
   if(!adminId)return c.json({ok:false,error:'관리자 권한 필요'},403);
@@ -95,7 +95,7 @@ router.post('/tl/adjust', async (c) => {
   const db=c.env.DB;
   try{
     const scale=await db.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>();
-    if(Number(scale?.decimals)!==4)return c.json({ok:false,error:'V3 TL 정밀도 마이그레이션 미완료'},409);
+    if(Number(scale?.decimals)!==4)return c.json({ok:false,error:'V5 경제원장 TL 정밀도 마이그레이션 미완료'},409);
     const user=await db.prepare('SELECT id FROM users WHERE lower(email)=?').bind(email).first<any>();
     if(!user)return c.json({ok:false,error:'회원을 찾을 수 없습니다.'},404);
     const targetBucket=bucket==='tl_a'?'wallet_ad':'wallet_bonus';
@@ -493,7 +493,7 @@ router.get('/finance/ledger-integrity',async c=>{
     const required=['v3_economy_assets','v3_economy_accounts','v3_economy_balances','v3_economy_transactions','v3_economy_entries'];
     const missing:string[]=[];
     for(const table of required){if(!(await adminTableColumns(db,table)).length)missing.push(table);}
-    if(missing.length)return c.json({ok:false,code:'LEDGER_SCHEMA_INCOMPLETE',missing,error:'V3 경제 원장 테이블이 누락되었습니다.'},503);
+    if(missing.length)return c.json({ok:false,code:'LEDGER_SCHEMA_INCOMPLETE',missing,error:'V5 경제원장 테이블이 누락되었습니다.'},503);
     const [types,imbalanced,orphans,assets]=await Promise.all([
       db.prepare("SELECT transaction_type,COUNT(*) AS count FROM v3_economy_transactions GROUP BY transaction_type ORDER BY count DESC LIMIT 100").all(),
       db.prepare("SELECT COUNT(*) AS count FROM (SELECT e.transaction_id,e.asset_code,SUM(e.amount_atoms) AS balance FROM v3_economy_entries e GROUP BY e.transaction_id,e.asset_code HAVING balance <> 0)").first<{count:number}>(),
