@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
+import { assertTLAtomScale, tlToAtoms, atomsToTl, ensureLedgerAccount, postLedgerTransaction } from '../economy-ledger';
 
 const router = new Hono<{ Bindings: Env }>();
 
@@ -263,21 +264,31 @@ router.post('/channels', async (c) => {
   // ⭐ trial=true → 무료 체험 (finalFee = 0)
   if (trial) finalFee = 0;
 
-  const user = await c.env.DB.prepare('SELECT tl, tl_balance FROM users WHERE id=?').bind(auth.id).first<any>();
-  const bal = Number(user?.tl_balance ?? user?.tl ?? 0);
-  if (finalFee > 0 && bal < finalFee) return c.json({ ok: false, error: `TL 잔액이 부족합니다. (필요: ${finalFee.toLocaleString()} TL, 보유: ${bal.toLocaleString()} TL)` }, 402);
+  // V5 economic ledger is the sole source of spendable TL.
+  let walletSources: Array<{accountId:string; available:number}> = [];
+  let feeAtoms = 0;
+  if (finalFee > 0) {
+    try {
+      await assertTLAtomScale(c.env.DB);
+      feeAtoms = tlToAtoms(finalFee);
+      for (const bucket of ['wallet_ad','wallet_bonus','wallet_paid']) {
+        const accountId = await ensureLedgerAccount(c.env.DB,'user',auth.id,'TL',bucket);
+        const row = await c.env.DB.prepare('SELECT available_atoms FROM v3_economy_balances WHERE account_id=?').bind(accountId).first<any>();
+        walletSources.push({accountId,available:Number(row?.available_atoms||0)});
+      }
+      const total = walletSources.reduce((sum,source)=>sum+source.available,0);
+      if (total < feeAtoms) return c.json({ok:false,error:`TL 잔액이 부족합니다. (필요: ${finalFee.toLocaleString()} TL, 보유: ${atomsToTl(total).toLocaleString()} TL)`},402);
+    } catch(e:any) {
+      return c.json({ok:false,error:'V5 경제원장 조회 실패: '+String(e?.message||e)},503);
+    }
+  }
 
   const now = Date.now();
   const expiresAt = trial ? (now + trialDays * 24 * 60 * 60 * 1000) : (now + 30 * 24 * 60 * 60 * 1000);
 
   try {
-    if (finalFee > 0) {
-      await c.env.DB.prepare(
-        'UPDATE users SET tl = tl - ?, tl_balance = tl_balance - ? WHERE id = ?'
-      ).bind(finalFee, finalFee, auth.id).run();
-    }
-
-    await c.env.DB.prepare(
+    // Channel creation and TL posting are committed together in one D1 batch.
+    const channelInsert = c.env.DB.prepare(
       `INSERT INTO cafe_channels
        (channel_id, name, owner_id, country, biz_reg_num, biz_type, biz_verified, biz_verified_at,
         addr, addr_detail, description, images, playlist, schedules,
@@ -287,7 +298,28 @@ router.post('/channels', async (c) => {
       channelId, name, auth.id, country, bizNo, bizType, bizCheck.verified ? 1 : 0, bizCheck.verified ? now : 0,
       addr, addrDetail, description, images, playlist, schedules,
       trial ? 'trial' : 'free', 'active', expiresAt, now, now
-    ).run();
+    );
+
+    if (finalFee > 0) {
+      const revenueAccount = await ensureLedgerAccount(c.env.DB,'platform','timelink','TL','cafe_channel_revenue');
+      let remaining = feeAtoms;
+      const lines: Array<{accountId:string;assetCode:'TL';amountAtoms:number}> = [];
+      for (const source of walletSources) {
+        const taken = Math.min(Math.max(0,source.available),remaining);
+        if (taken) { lines.push({accountId:source.accountId,assetCode:'TL',amountAtoms:-taken}); remaining-=taken; }
+      }
+      if (remaining !== 0) throw new Error('INSUFFICIENT_TL');
+      lines.push({accountId:revenueAccount,assetCode:'TL',amountAtoms:feeAtoms});
+      await postLedgerTransaction(c.env.DB,{
+        idempotencyKey:'cafe:create:'+channelId,
+        transactionType:'cafe_channel_create',source:'cafe_channel',
+        referenceType:'cafe_channel',referenceId:channelId,actorUserId:String(auth.id),
+        description:'카페채널 개설 TL 결제',metadata:{channel_id:channelId,fee_tl:finalFee},
+        lines,atomicStatements:[channelInsert]
+      });
+    } else {
+      await channelInsert.run();
+    }
 
     // ⭐ 체험 구독 생성
     if (trial) {
