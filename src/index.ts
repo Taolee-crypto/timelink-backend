@@ -2449,19 +2449,12 @@ app.post('/api/v1/assets', async (c) => {
 
     const body = await c.req.json<any>().catch(()=>({}));
 
-    // ASSETS_SHAREID_V1: file_id 또는 share_id 지원
-    let fileId = Number(body.file_id || 0);
+    // V5: resolve the canonical TL3 file via the shared resolver.
+    // Legacy tl3_releases alone does not contain V5 sealed shares.
     const shareIdRaw = String(body.share_id || '').trim();
-
-    if (!fileId && shareIdRaw) {
-      // share_id로 file_id 조회
-      const relRow = await c.env.DB.prepare(
-        'SELECT file_id FROM tl3_releases WHERE share_id=? LIMIT 1'
-      ).bind(shareIdRaw).first<any>();
-      if (!relRow) return c.json({ok:false,error:'share_id를 찾을 수 없습니다'},404);
-      fileId = Number(relRow.file_id);
-    }
-    if (!fileId) return c.json({ok:false,error:'file_id 또는 share_id 필요'},400);
+    const rawFileId = String(body.file_id || '').trim();
+    const fileId = await resolveTL3FileId(c.env.DB, shareIdRaw || rawFileId);
+    if (!fileId) return c.json({ok:false,error:'V5 공유 곡의 원본 파일을 찾을 수 없습니다.',code:'ASSET_FILE_NOT_FOUND'},404);
 
     const file = await c.env.DB.prepare(
       'SELECT id, user_id, title, artist FROM tl_files WHERE id=?'
