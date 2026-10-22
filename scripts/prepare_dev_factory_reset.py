@@ -74,13 +74,15 @@ def main():
         "Do not run this SQL until the schema and dependencies have been reviewed.",
     ]
     args.preview.write_text("\n".join(preview) + "\n", encoding="utf-8")
+    if fk_warnings:
+        sys.exit("STOP: preserved tables reference deleted tables. Preview written; no executable SQL generated.")
     if not targets:
         sys.exit("ERROR: no reset targets detected; refusing to create empty reset")
-    statements = [
+    # Delete children before parents where possible. Cycles require separate review.\n    dependencies = {n: {fk[2] for fk in connection.execute(f"PRAGMA foreign_key_list({quote(n)})") if fk[2] in targets} for n in targets}\n    ordered = []\n    remaining = set(targets)\n    while remaining:\n        leaves = sorted(n for n in remaining if not any(n in dependencies[other] for other in remaining if other != n))\n        if not leaves:\n            sys.exit("STOP: foreign-key cycle detected. Preview written; no executable SQL generated.")\n        ordered.extend(leaves)\n        remaining.difference_update(leaves)\n    statements = [
         "-- GENERATED FROM A BACKUP. REVIEW BEFORE EXECUTION.",
         "-- This file removes DATA ONLY. Does not drop schema, migrations or application code.",
         "PRAGMA defer_foreign_keys = ON;",
-        *[f"DELETE FROM {quote(n)};" for n in targets],
+        *[f"DELETE FROM {quote(n)};" for n in ordered],
     ]
     args.out.write_text("\n".join(statements) + "\n", encoding="utf-8")
     print(f"Prepared {args.out} and {args.preview}; {len(targets)} data tables, {len(preserved)} preserved.")
