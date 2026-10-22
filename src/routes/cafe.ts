@@ -212,7 +212,7 @@ router.post('/channels', async (c) => {
   }
 
   const body = await c.req.json<any>().catch(() => ({}));
-  const channelId = String(body.channel_id || '').trim().toLowerCase();
+  const channelId = 'cafe_' + crypto.randomUUID().replace(/-/g,'').slice(0,16);
   const name = String(body.name || '').trim();
   const country = String(body.country || 'KR').toUpperCase();
   const bizNo = String(body.biz_reg_num || '').trim();
@@ -228,7 +228,6 @@ router.post('/channels', async (c) => {
   const discountCode = String(body.discount_code || '').trim().toUpperCase();
 
   if (!name) return c.json({ ok: false, error: '카페 이름은 필수입니다.' }, 400);
-  if (!/^[a-z0-9_]{3,20}$/.test(channelId)) return c.json({ ok: false, error: '채널 ID는 영문 소문자/숫자/언더스코어 3~20자입니다.' }, 400);
   if (!SUPPORTED_COUNTRIES.includes(country)) return c.json({ ok: false, error: '지원하지 않는 국가입니다.' }, 400);
   if (!bizNo) return c.json({ ok: false, error: '사업자등록번호는 필수입니다.' }, 400);
   if (!['individual','corporate','other'].includes(bizType)) return c.json({ ok: false, error: '사업자 유형이 올바르지 않습니다.' }, 400);
