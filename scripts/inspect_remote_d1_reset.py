@@ -28,7 +28,7 @@ def main():
     command = [npx, "wrangler", "d1", "execute", DB, "--remote", "--json", "--command", QUERY]
     print("Reading remote D1 schema (read-only; no backup)...", flush=True)
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
     except FileNotFoundError:
         sys.exit("ERROR: npx launcher could not start; run where.exe npx to check its location")
     except subprocess.CalledProcessError as exc:
