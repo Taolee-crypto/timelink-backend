@@ -183,6 +183,26 @@ eco.get('/wallet', async (c) => {
       tlA=Number(user.tl_a ?? 0)||0;
       tlB=Number(user.tl_b ?? 0)||0;
     }
+    // Read-only explanation of why a legacy signup grant was not reconciled.
+    // Never create a grant based on this diagnostic alone.
+    let signupReconciliationBlocker='not_eligible';
+    const legacyEligible=((Number(user.tl_balance)===42500 && (Number(user.tl)===0 || Number(user.tl)===42500)) ||
+      (Number(user.tl)===42500 && Number(user.tl_balance)===0)) &&
+      Number(user.total_tl_spent||0)===0 && Number(user.tl_p_lifetime||0)===0 &&
+      Number(user.tl_p_exchanged||0)===0;
+    if(ledgerReady && legacyEligible){
+      const owner=String(userId);
+      const existingTx=await c.env.DB.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?')
+        .bind('v5-signup-bonus-legacy-user-'+owner).first<any>();
+      const ledgerActivity=await c.env.DB.prepare(`
+        SELECT 1 AS found FROM v3_economy_entries e
+        JOIN v3_economy_accounts a ON a.id=e.account_id
+        WHERE a.owner_type='user' AND a.owner_id=? LIMIT 1
+      `).bind(owner).first<any>();
+      signupReconciliationBlocker=existingTx?'prior_reconciliation_transaction':
+        ledgerActivity?'existing_ledger_activity':
+        (tlP+tlA+tlB)>0?'existing_wallet_balance':'eligible_but_not_posted';
+    }
     const splitTotal=tlP+tlA+tlB;
     const legacyCandidates=[user.tl_balance,user.tl].map((value:any)=>Number(value));
     const legacyTotal=legacyCandidates.find((value:number)=>Number.isFinite(value)&&value>0)??0;
@@ -205,6 +225,7 @@ eco.get('/wallet', async (c) => {
           legacy_tl_balance: Number(user.tl_balance || 0),
           legacy_tl: Number(user.tl || 0),
           legacy_total: legacyTotal,
+          signup_reconciliation_blocker: signupReconciliationBlocker,
           signup_reconciliation_eligible: ((Number(user.tl_balance)===42500 && (Number(user.tl)===0 || Number(user.tl)===42500)) || (Number(user.tl)===42500 && Number(user.tl_balance)===0)) && Number(user.total_tl_spent||0)===0 && Number(user.tl_p_lifetime||0)===0 && Number(user.tl_p_exchanged||0)===0
         },
         tlc: user.tlc_balance || 0,
