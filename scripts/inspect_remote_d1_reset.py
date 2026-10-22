@@ -4,6 +4,8 @@
 Read-only. Does not delete or modify Cloudflare data.
 """
 import json
+import os
+import shutil
 import re
 import subprocess
 import sys
@@ -20,12 +22,15 @@ QUERY = "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
 
 
 def main():
-    command = ["npx", "wrangler", "d1", "execute", DB, "--remote", "--json", "--command", QUERY]
+    npx = shutil.which("npx.cmd" if os.name == "nt" else "npx") or shutil.which("npx")
+    if not npx:
+        sys.exit("ERROR: npx launcher not found on PATH; check where.exe npx in PowerShell")
+    command = [npx, "wrangler", "d1", "execute", DB, "--remote", "--json", "--command", QUERY]
     print("Reading remote D1 schema (read-only; no backup)...", flush=True)
     try:
         result = subprocess.run(command, capture_output=True, text=True, check=True)
     except FileNotFoundError:
-        sys.exit("ERROR: npx not found; run in a terminal with Node.js installed")
+        sys.exit("ERROR: npx launcher could not start; run where.exe npx to check its location")
     except subprocess.CalledProcessError as exc:
         sys.exit("ERROR: Wrangler schema query failed:\n" + (exc.stderr or exc.stdout))
     try:
