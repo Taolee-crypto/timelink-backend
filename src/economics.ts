@@ -170,10 +170,11 @@ eco.get('/wallet', async (c) => {
     const tlAsset=await c.env.DB.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>().catch(()=>null);
     const ledgerReady=Number(tlAsset?.decimals)===4;
     let tlP=0,tlA=0,tlB=0;
+    let reconciliationError: string | null = null;
     if(ledgerReady){
       // 복구 실패 시 잔액을 임의로 부풀리지 않는다. 기존 기록은 그대로 유지.
       try { await reconcilePristineSignupBonus(c.env.DB,user); }
-      catch(e) { console.error('[V5 signup bonus reconciliation]',e); }
+      catch(e:any) { reconciliationError=String(e?.message || e || 'unknown error').slice(0,400); console.error('[V5 signup bonus reconciliation]',e); }
       const accounts:any[]=await getLedgerWallet(c.env.DB,Number(userId)) as any[];
       tlP=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_paid').reduce((n,a)=>n+Number(a.available_atoms||0),0));
       tlA=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0));
@@ -208,7 +209,8 @@ eco.get('/wallet', async (c) => {
         // Read-only V5 ledger diagnostic. No balances or transactions are mutated here.
         ledger_diagnostic: {
           ledger_ready: ledgerReady,
-          reconciliation_status: reconciliationStatus,
+          reconciliation_status: reconciliationError ? 'posting_failed' : reconciliationStatus,
+          reconciliation_error: reconciliationError,
           ledger_tl_total: splitTotal,
           legacy_tl_balance: Number(user.tl_balance || 0),
           legacy_tl: Number(user.tl || 0),
