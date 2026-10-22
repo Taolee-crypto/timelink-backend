@@ -1095,6 +1095,16 @@ app.get('/api/storage/:key{.+}', async (c) => {
       if(Number(file.shared)===1&&Number(file.revenue_held||0)===0){const release=await c.env.DB.prepare("SELECT 1 FROM tl3_releases WHERE file_id=? AND status='released' AND rights_confirmed=1 LIMIT 1").bind(file.id).first();if(release)isPublic=true;}
     }
 
+    // Public V5 cover art must be readable by <img> without an Authorization header.
+    // Restrict this exception to images referenced by an already published,
+    // sealed V5 release. Never relax access to audio/TL3 objects.
+    if(!isPublic && /^image\\//i.test(String(meta.content_type||''))){
+      const artworkRows=await c.env.DB.prepare(
+        "SELECT f.id,f.user_id FROM tl_files f JOIN tl3_v5_releases v ON v.file_id=f.id WHERE f.cover_image=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1"
+      ).bind(canonical).all<any>().catch(()=>({results:[]}));
+      if((artworkRows.results||[]).length) isPublic=true;
+    }
+
     const isOwner=ownerIds.has(viewerId)&&viewerId>0;
     if(!isOwner&&!isPublic) return c.json({error:'공개 승인되지 않았거나 접근 권한이 없습니다.'},403);
 
