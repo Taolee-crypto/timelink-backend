@@ -119,6 +119,16 @@ router.post('/settings/:key', async (c) => {
   const key = c.req.param('key');
   const body = await c.req.json<any>().catch(() => ({}));
   const value = String(body.value || '');
+  if (key === 'signup_hero') {
+    if (value.length > 1400000) return c.json({ error: '이미지 크기 제한 초과' }, 413);
+    let setting: any;
+    try { setting = JSON.parse(value); } catch { return c.json({ error: '잘못된 이미지 설정' }, 400); }
+    if (!setting || typeof setting.image !== 'string' ||
+      (setting.image !== '' && !/^data:image\/webp;base64,[A-Za-z0-9+/=]+$/.test(setting.image))) {
+      return c.json({ error: 'WebP 이미지 데이터만 허용됩니다.' }, 400);
+    }
+  }
+
   
   await c.env.DB.prepare(
     `CREATE TABLE IF NOT EXISTS tl_settings (
