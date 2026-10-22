@@ -76,7 +76,7 @@ def main():
     remaining = set(targets)
     deletion_order = []
     while remaining:
-        ready = sorted(name for name in remaining if not (dependencies[name] & (remaining - {name})))
+        ready = sorted(name for name in remaining if not any(name in dependencies[other] for other in remaining if other != name))
         if not ready:
             break
         deletion_order.extend(ready)
@@ -87,6 +87,8 @@ def main():
         preserved.append("tl3_assertion_guard")
         targets.remove("tl3_assertion_guard")
     blockers = errors + preserved_links + sorted(remaining)
+    if remaining:
+        blockers.append("Foreign-key cycle detected: " + ", ".join(sorted(remaining)))
     from pathlib import Path
     output_sql = Path("reset-dev-data.sql")
     output_sql.unlink(missing_ok=True)
@@ -107,6 +109,7 @@ def main():
         "",
         "FK/schema blockers: " + ("; ".join(blockers) if blockers else "none"),
         "Local deletion SQL prepared: " + ("YES" if not blockers else "NO"),
+        "Delete order: child tables before referenced parent tables.",
         "WARNING: Review tl_settings and preserved asset rows before running any deletion.",
     ]
     output = "\n".join(report) + "\n"
