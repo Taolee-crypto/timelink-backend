@@ -4,11 +4,22 @@
  */
 export type BroadcastAudience = 'general' | 'incar' | 'cafe';
 export type GeoPoint = { lat: number; lon: number };
+export type AdministrativeArea = {
+  /** ISO 3166-1 alpha-2, e.g. KR, US, JP. */
+  countryCode: string;
+  /** Provider-issued stable jurisdiction identifier; never compare localized names. */
+  areaId: string;
+  /** Ancestor IDs from most specific to broadest, excluding country. */
+  ancestorIds?: string[];
+};
 export type GeoCampaign = {
   id: string;
   enabled: boolean;
   scope: 'local' | 'national';
   center?: GeoPoint;
+  /** ISO country and provider-issued area IDs for worldwide administrative targeting. */
+  countryCode?: string;
+  targetAreaIds?: string[];
   radiusKm?: number;
   startsAt: number;
   endsAt: number;
@@ -20,6 +31,8 @@ export type AdContext = {
   now: number;
   locationConsent: boolean;
   location?: GeoPoint;
+  /** Resolved server-side using a versioned worldwide administrative boundary dataset. */
+  administrativeArea?: AdministrativeArea;
   locationObservedAt?: number;
   previousAdAt?: number;
   minimumGapMs: number;
@@ -51,9 +64,18 @@ export function selectBroadcastAd(campaigns: GeoCampaign[], ctx: AdContext): Geo
         !Number.isFinite(ad.startsAt) || !Number.isFinite(ad.endsAt) ||
         ctx.now < ad.startsAt || ctx.now >= ad.endsAt) return false;
     if (ad.scope === 'national') return true;
-    return ad.scope === 'local' && freshLocation && validPoint(ad.center) &&
-      Number.isFinite(ad.radiusKm) && ad.radiusKm! > 0 && ad.radiusKm! <= 100 &&
+    if (ad.scope !== 'local' || !freshLocation) return false;
+    const area = ctx.administrativeArea;
+    const areaTarget = !!area && /^[A-Z]{2}$/.test(area.countryCode) &&
+      ad.countryCode === area.countryCode &&
+      Array.isArray(ad.targetAreaIds) && ad.targetAreaIds.length > 0 &&
+      ad.targetAreaIds.some(id => [area.areaId, ...(area.ancestorIds || [])].includes(id));
+    const radiusTarget = validPoint(ad.center) && Number.isFinite(ad.radiusKm) &&
+      ad.radiusKm! > 0 && ad.radiusKm! <= 100 &&
       distanceKm(ctx.location!, ad.center!) <= ad.radiusKm!;
+    // If country is supplied for radius targeting, do not cross the border.
+    const countryAllowed = !ad.countryCode || (area && area.countryCode === ad.countryCode);
+    return !!countryAllowed && (areaTarget || radiusTarget);
   });
   eligible.sort((a,b) => (a.scope === 'local' ? -1 : 0) - (b.scope === 'local' ? -1 : 0) ||
     (b.priority || 0) - (a.priority || 0) || a.id.localeCompare(b.id));
