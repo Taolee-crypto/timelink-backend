@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { verifyToken } from './auth';
 import type { Env } from './types';
-import { getLedgerWallet, atomsToTl } from './economy-ledger';
+import { getLedgerWallet, atomsToTl, ensureLedgerAccount, postLedgerTransaction, tlToAtoms } from './economy-ledger';
 import { CREATOR_SHARE_RATE, PLATFORM_SHARE_RATE } from './economy-policy';
 
 const eco = new Hono<{ Bindings: Env }>();
@@ -110,6 +110,43 @@ eco.post('/migrate', async (c) => {
    GET /api/eco/wallet
    유저 지갑 조회 (TL_P / TL_A / TL_B / TLC 분리)
 ══════════════════════════════════════════════════════ */
+
+/**
+ * V5 경제원장: 과거 회원가입 보상 누락 복구.
+ * 가입 보상액이 그대로 남아 있고 원장 거래 이력이 전혀 없는 회원만 처리한다.
+ * 구매 TL로 전환하거나 이미 소비된 보상을 재지급하지 않는다.
+ */
+export async function reconcilePristineSignupBonus(db: D1Database, user: any): Promise<void> {
+  const expected=Number(user.tl_balance);
+  if(expected!==42500 || Number(user.tl)!==42500 ||
+     Number(user.total_tl_spent||0)!==0 || Number(user.tl_p_lifetime||0)!==0 ||
+     Number(user.tl_p_exchanged||0)!==0) return;
+  const owner=String(user.id);
+  const activity=await db.prepare(`
+    SELECT 1 AS found FROM v3_economy_entries e
+    JOIN v3_economy_accounts a ON a.id=e.account_id
+    WHERE a.owner_type='user' AND a.owner_id=? LIMIT 1
+  `).bind(owner).first<any>();
+  if(activity) return;
+  const existing=await getLedgerWallet(db,Number(user.id)) as any[];
+  if(existing.some(a=>a.asset_code==='TL' && (Number(a.available_atoms||0)!==0 || Number(a.held_atoms||0)!==0))) return;
+  const key='v5-signup-bonus-legacy-user-'+owner;
+  const prior=await db.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>();
+  if(prior)return;
+  const destination=await ensureLedgerAccount(db,'user',owner,'TL','wallet_bonus');
+  const source=await ensureLedgerAccount(db,'system','v5-signup-promotion','TL','issuance');
+  await postLedgerTransaction(db,{
+    idempotencyKey:key,transactionType:'signup_bonus',source:'v5_promotion',
+    referenceType:'user',referenceId:owner,
+    description:'기존 회원가입 42,500 TL_B 지급 이력 복구',
+    metadata:{non_redeemable:true,legacy_signup_reconciliation:true},
+    lines:[
+      {accountId:source,assetCode:'TL',amountAtoms:-tlToAtoms(42500)},
+      {accountId:destination,assetCode:'TL',amountAtoms:tlToAtoms(42500)}
+    ]
+  });
+}
+
 eco.get('/wallet', async (c) => {
   const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
@@ -129,6 +166,9 @@ eco.get('/wallet', async (c) => {
     const ledgerReady=Number(tlAsset?.decimals)===4;
     let tlP=0,tlA=0,tlB=0;
     if(ledgerReady){
+      // 복구 실패 시 잔액을 임의로 부풀리지 않는다. 기존 기록은 그대로 유지.
+      try { await reconcilePristineSignupBonus(c.env.DB,user); }
+      catch(e) { console.error('[V5 signup bonus reconciliation]',e); }
       const accounts:any[]=await getLedgerWallet(c.env.DB,Number(userId)) as any[];
       tlP=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_paid').reduce((n,a)=>n+Number(a.available_atoms||0),0));
       tlA=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0));
