@@ -25,15 +25,10 @@ const SUPPORTED_COUNTRIES = ['KR', 'US', 'JP', 'CN', 'GB'];
 type VerifyResult = { ok: boolean; verified: boolean; error?: string };
 
 function verifyKR(bizNo: string): VerifyResult {
-  const cleaned = bizNo.replace(/-/g, '').trim();
-  if (!/^\d{10}$/.test(cleaned)) return { ok: false, verified: false, error: '한국 사업자등록번호는 10자리 숫자입니다.' };
-  const weights = [1,3,7,1,3,7,1,3,5];
-  const nums = cleaned.split('').map(Number);
-  let sum = 0;
-  for (let i = 0; i < 9; i++) sum += nums[i] * weights[i];
-  sum += Math.floor((nums[8] * 5) / 10);
-  const checkDigit = (10 - (sum % 10)) % 10;
-  if (checkDigit !== nums[9]) return { ok: false, verified: false, error: '한국 사업자등록번호 체크섬이 올바르지 않습니다.' };
+  // 국세청 실시간 인증이 비활성화된 동안에는 표시용 하이픈을 제거하고
+  // 숫자 10자리 형식만 검증한다. 체크섬을 실제 사업자 인증으로 오인하지 않는다.
+  const cleaned = bizNo.replace(/\D/g, '');
+  if (!/^\d{10}$/.test(cleaned)) return { ok: false, verified: false, error: '사업자등록번호는 숫자 10자리로 입력해주세요.' };
   return { ok: true, verified: false };
 }
 
