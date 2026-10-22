@@ -49,3 +49,10 @@ export function splitIncarPromotionAtoms(
   const djAtoms = channel === 'dj' ? Math.floor(totalAtoms * policy.djShareBps / 10000) : 0;
   return { djAtoms, platformAtoms: totalAtoms - djAtoms };
 }
+
+/** Read the administrator's in-car promotion policy; invalid settings fail closed. */
+export async function getIncarPromotionPolicy(db: D1Database): Promise<IncarPromotionPolicy> {
+  const row = await db.prepare("SELECT value FROM tl_settings WHERE key='incar_promotion_policy'").first<{value:string}>().catch(() => null);
+  if (!row) return { ...DEFAULT_INCAR_PROMOTION_POLICY };
+  return validateIncarPromotionPolicy(JSON.parse(row.value));
+}
