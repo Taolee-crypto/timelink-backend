@@ -1098,7 +1098,7 @@ app.get('/api/storage/:key{.+}', async (c) => {
     // Public V5 cover art must be readable by <img> without an Authorization header.
     // Restrict this exception to images referenced by an already published,
     // sealed V5 release. Never relax access to audio/TL3 objects.
-    if(!isPublic && /^image\\//i.test(String(meta.content_type||''))){
+    if(!isPublic && String(meta.content_type||'').toLowerCase().startsWith('image/')){
       const artworkRows=await c.env.DB.prepare(
         "SELECT f.id,f.user_id FROM tl_files f JOIN tl3_v5_releases v ON v.file_id=f.id WHERE f.cover_image=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1"
       ).bind(canonical).all<any>().catch(()=>({results:[]}));
