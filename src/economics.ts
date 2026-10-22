@@ -198,6 +198,15 @@ eco.get('/wallet', async (c) => {
         tl_legacy_balance: Number(user.tl_balance || 0) || 0,
         tl_locked: Number(user.tl_locked || 0),
         tl_total: authoritativeTotal,
+        // Read-only V5 ledger diagnostic. No balances or transactions are mutated here.
+        ledger_diagnostic: {
+          ledger_ready: ledgerReady,
+          ledger_tl_total: splitTotal,
+          legacy_tl_balance: Number(user.tl_balance || 0),
+          legacy_tl: Number(user.tl || 0),
+          legacy_total: legacyTotal,
+          signup_reconciliation_eligible: ((Number(user.tl_balance)===42500 && (Number(user.tl)===0 || Number(user.tl)===42500)) || (Number(user.tl)===42500 && Number(user.tl_balance)===0)) && Number(user.total_tl_spent||0)===0 && Number(user.tl_p_lifetime||0)===0 && Number(user.tl_p_exchanged||0)===0
+        },
         tlc: user.tlc_balance || 0,
         poc_index: Number((user.poc_index || 1.0).toFixed(3)),
         plan: user.plan || 'A',
