@@ -3726,6 +3726,15 @@ app.get('/api/shares/:id', async (c) => {
     const releasedDurationSec=Math.ceil(durationMs/1000);
     const durationSec=releasedDurationSec>0?releasedDurationSec:Math.max(0,Number(row.duration||0));
     const requiredTL=v5Release?durationSec:Number(releaseDuration?.price_tl||0)>0?Number(releaseDuration.price_tl):durationSec>0?durationSec:Math.max(0,Number(row.file_tl||0));
+    // V5 Creator 자켓은 tl_files.cover_image에 저장된다.
+    // 기존 tl_shares.cover_url이 비어 있을 때 해당 V5 파일 자켓을 연결한다.
+    let resolvedCover=String(row.cover_url||'').trim();
+    if(!resolvedCover && v5Release?.file_id){
+      const assetCover=await c.env.DB.prepare(
+        'SELECT cover_image FROM tl_files WHERE id=? AND user_id=?'
+      ).bind(Number(v5Release.file_id),Number(row.user_id)).first<any>().catch(()=>null);
+      resolvedCover=String(assetCover?.cover_image||'').trim();
+    }
     const _ck=String(row.content_kind||'').toLowerCase();
     const _rm=String(row.release_mode||'').toLowerCase();
     const _ft=String(row.file_type||'').toLowerCase();
@@ -3738,7 +3747,7 @@ app.get('/api/shares/:id', async (c) => {
       duration:durationSec,duration_sec:durationSec,file_tl:requiredTL,price_tl:requiredTL,category:String(row.category||'Music'),
       file_type:v5Release?'audio/tl3':String(row.file_type||''),category_type:String(row.category_type||'audio'),description:String(row.description||''),
       plan:String(row.plan||'FREE'),spotify_id:row.spotify_id||null,spotify_url:row.spotify_url||null,
-      cover_url:row.cover_url||null,country:String(row.country||'KR'),content_lang:String(row.content_lang||'ko'),
+      cover_url:resolvedCover||null,country:String(row.country||'KR'),content_lang:String(row.content_lang||'ko'),
       content_kind:_kind,release_mode:String(row.release_mode||''),player_version:v5Release?5:undefined,
       stream_url:origin+'/api/stream/'+encodeURIComponent(String(row.id))
     });
