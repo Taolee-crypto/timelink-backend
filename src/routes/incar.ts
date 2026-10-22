@@ -88,8 +88,9 @@ router.post('/channel', async (c) => {
   const existing = await c.env.DB.prepare('SELECT channel_id FROM incar_channels WHERE channel_id=?').bind(channelId).first<any>();
   if (existing) return c.json({ ok: false, error: '이미 사용 중인 채널 ID입니다.' }, 409);
 
-  // V5 policy: in-car registration and listening are free.
-  // Do not debit legacy users.tl balances; promotion is funded by creators separately.
+  // V5 policy: only in-car channel registration is free.
+  // Music listening remains charged to the listener's own TL via the canonical V5 playback ledger.
+  // Promotion spend is an additional creator-funded service, not a replacement for listener charges.
   const fee = 0;
 
   const now = Date.now();
