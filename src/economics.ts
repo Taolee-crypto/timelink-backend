@@ -116,7 +116,7 @@ eco.post('/migrate', async (c) => {
  * 가입 보상액이 그대로 남아 있고 원장 거래 이력이 전혀 없는 회원만 처리한다.
  * 구매 TL로 전환하거나 이미 소비된 보상을 재지급하지 않는다.
  */
-async function reconcilePristineSignupBonus(db: D1Database, user: any): Promise<void> {
+export async function reconcilePristineSignupBonus(db: D1Database, user: any): Promise<void> {
   const expected=Number(user.tl_balance);
   if(expected!==42500 || Number(user.tl)!==42500 ||
      Number(user.total_tl_spent||0)!==0 || Number(user.tl_p_lifetime||0)!==0 ||
