@@ -6,7 +6,7 @@ Workflow:
   python scripts/prepare_dev_factory_reset.py backup-before-reset.sql
 Review reset-preview.txt and reset-dev-data.sql before any remote execution.
 
-The SQL export is the REQUIRED backup. This script never connects to Cloudflare.
+The SQL export is used as schema input only; no rows are restored. This script never connects to Cloudflare.
 It intentionally does not delete R2 objects; those need a separately reviewed manifest.
 """
 import argparse
@@ -39,11 +39,36 @@ def main():
         sys.exit("ERROR: nonempty D1 SQL backup/export is required")
     if args.out.resolve() == args.export.resolve():
         sys.exit("ERROR: output must not overwrite backup")
+    # Parse schema statements only. Never load exported row INSERTs into memory.
+    # A large D1 export can exceed SQLite's SQL statement size and exhaust RAM.
     connection = sqlite3.connect(":memory:")
+    pending = []
+    reading_table = False
+    schema_count = 0
+    create_re = re.compile(r"^\\s*CREATE\\s+TABLE\\b", re.I)
+    virtual_re = re.compile(r"^\\s*CREATE\\s+VIRTUAL\\s+TABLE\\b", re.I)
     try:
-        connection.executescript(args.export.read_text(encoding="utf-8"))
-    except sqlite3.DatabaseError as exc:
-        sys.exit(f"ERROR: cannot load SQL export into SQLite: {exc}")
+        with args.export.open("r", encoding="utf-8-sig") as source:
+            for line in source:
+                if not reading_table:
+                    if virtual_re.match(line):
+                        sys.exit("STOP: virtual table schema requires manual review")
+                    if not create_re.match(line):
+                        continue
+                    pending = [line]
+                    reading_table = True
+                else:
+                    pending.append(line)
+                statement = "".join(pending)
+                if sqlite3.complete_statement(statement):
+                    connection.execute(statement)
+                    schema_count += 1
+                    pending = []
+                    reading_table = False
+    except (sqlite3.DatabaseError, UnicodeError) as exc:
+        sys.exit(f"ERROR: cannot parse D1 table schema: {exc}")
+    if reading_table or not schema_count:
+        sys.exit("STOP: incomplete or missing CREATE TABLE statements in export")
     rows = connection.execute(
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     ).fetchall()
@@ -52,7 +77,7 @@ def main():
     targets = [n for n in names if n not in preserved]
     # Avoid accidentally preserving user-created settings tables with test data:
     # require explicit human review of the preserved table list.
-    count = {n: connection.execute(f"SELECT COUNT(*) FROM {quote(n)}").fetchone()[0] for n in names}
+    # The export is deliberately not restored: counts are unavailable here.
     fk_warnings = []
     for table in preserved:
         for fk in connection.execute(f"PRAGMA foreign_key_list({quote(table)})"):
@@ -63,7 +88,7 @@ def main():
         f"BACKUP: {args.export.resolve()}",
         "NO COMMANDS HAVE BEEN EXECUTED AGAINST REMOTE D1.",
         "Tables to DELETE (data only; schema preserved):",
-        *[f"  {n}: {count[n]} rows" for n in targets],
+        *[f"  {n}: row count not loaded" for n in targets],
         "Tables PRESERVED (review for test data that also needs clearing):",
         *[f"  {n}: {count[n]} rows" for n in preserved],
         "Foreign key warnings:",
