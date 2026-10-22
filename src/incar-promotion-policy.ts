@@ -2,7 +2,7 @@
  * TimeLink V5 — In-car promotion settlement policy.
  *
  * Promotion purchases are NOT ordinary TL3 playback royalties.
- * A creator pays for promotion from purchased TL_P; drivers listen free.
+ * A creator pays for promotion from purchased TL_P; drivers register free but pay\n * for ordinary music listening from their own TL through the V5 playback ledger.
  * Central radio retains 100% of the promotion service revenue.
  * DJ-selected promotion broadcasts split revenue between the DJ and platform.
  * Cafe/DJ contracts and their 50/30/20 defaults are a separate product.
