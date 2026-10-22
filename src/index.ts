@@ -1701,7 +1701,7 @@ app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
     if(!fileId) return c.json({ok:false,error:'해당 SharePlace 항목에 연결된 TL3 자산을 하나로 특정할 수 없습니다.',share_id:shareId},404);
     // Copyright certificate is mandatory for any TL3 file download.
     // Do not rely on the frontend button; revoke access when certification is revoked.
-    const authorization=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
+    const authorization=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
     const requester=authorization?await verifyToken(authorization,c.env.JWT_SECRET):null;
     if(!requester) return c.json({ok:false,error:'TL3 다운로드는 로그인이 필요합니다.'},401);
     const activeCert=await c.env.DB.prepare(
