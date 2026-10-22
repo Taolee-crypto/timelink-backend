@@ -33,6 +33,35 @@ async function ensureIncarTables(db: any) {
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`).run();
+  // Existing production tables may predate fields added to the V5 channel model.
+  // CREATE TABLE IF NOT EXISTS does not upgrade an existing schema.
+  const columns = await db.prepare('PRAGMA table_info(incar_channels)').all();
+  const existing = new Set((columns.results || []).map((row: any) => String(row.name)));
+  const upgrades: Array<[string, string]> = [
+    ['owner_name', "TEXT DEFAULT ''"],
+    ['car_plate', "TEXT DEFAULT ''"],
+    ['car_type', "TEXT DEFAULT ''"],
+    ['drive_region', "TEXT DEFAULT ''"],
+    ['description', "TEXT DEFAULT ''"],
+    ['theme', "TEXT DEFAULT 'city'"],
+    ['playlist', "TEXT DEFAULT '[]'"],
+    ['schedules', "TEXT DEFAULT '[]'"],
+    ['poc_index_at_creation', 'REAL DEFAULT 1'],
+    ['status', "TEXT DEFAULT 'active'"],
+    ['created_at', 'INTEGER NOT NULL DEFAULT 0'],
+    ['updated_at', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [name, definition] of upgrades) {
+    if (!existing.has(name)) {
+      try {
+        await db.prepare(`ALTER TABLE incar_channels ADD COLUMN ${name} ${definition}`).run();
+      } catch (error: any) {
+        // Concurrent requests can race to add the same column; verify actual schema.
+        const latest = await db.prepare('PRAGMA table_info(incar_channels)').all();
+        if (!(latest.results || []).some((row: any) => row.name === name)) throw error;
+      }
+    }
+  }
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_incar_channels_owner ON incar_channels(owner_id)').run().catch(() => {});
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_incar_channels_status ON incar_channels(status, created_at)').run().catch(() => {});
 }
