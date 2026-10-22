@@ -9,6 +9,7 @@ import shutil
 import re
 import subprocess
 import sys
+import sqlite3
 
 DB = "timelink-db"
 KEEP_EXACT = {
@@ -40,12 +41,60 @@ def main():
         if not rows:
             sys.exit("STOP: no schema rows returned; nothing will be changed")
         names = {row["name"] for row in rows}
+        definitions = {row["name"]: row.get("sql") for row in rows}
     except (ValueError, KeyError, TypeError) as exc:
         sys.exit(f"ERROR: unexpected Wrangler JSON output: {exc}; no changes made")
     preserved = sorted(n for n in names if n in KEEP_EXACT or n.startswith(KEEP_PREFIXES) or REVIEW.search(n))
     targets = sorted(names - set(preserved))
     if not targets:
         sys.exit("STOP: no candidate data tables; no changes made")
+    # Rebuild only the schema in memory; no remote data, exports, or backups.
+    model = sqlite3.connect(":memory:")
+    errors = []
+    for name in sorted(names):
+        if name.startswith(("sqlite_", "_cf_")):
+            continue
+        definition = definitions.get(name)
+        if not definition:
+            errors.append("Missing schema: " + name)
+            continue
+        try:
+            model.execute(definition)
+        except sqlite3.DatabaseError as exc:
+            errors.append(name + ": " + str(exc))
+    def fks(table):
+        escaped = table.replace('"', '""')
+        return {fk[2] for fk in model.execute('PRAGMA foreign_key_list("' + escaped + '")')}
+    preserved_links = []
+    for name in preserved:
+        if name.startswith(("sqlite_", "_cf_")):
+            continue
+        for parent in fks(name):
+            if parent in targets:
+                preserved_links.append(name + " -> " + parent)
+    dependencies = {name: fks(name) & set(targets) for name in targets}
+    remaining = set(targets)
+    deletion_order = []
+    while remaining:
+        ready = sorted(name for name in remaining if not (dependencies[name] & (remaining - {name})))
+        if not ready:
+            break
+        deletion_order.extend(ready)
+        remaining.difference_update(ready)
+    # tl3_assertion_guard is a sentinel, not disposable user data.
+    if "tl3_assertion_guard" in deletion_order:
+        deletion_order.remove("tl3_assertion_guard")
+        preserved.append("tl3_assertion_guard")
+        targets.remove("tl3_assertion_guard")
+    blockers = errors + preserved_links + sorted(remaining)
+    from pathlib import Path
+    output_sql = Path("reset-dev-data.sql")
+    output_sql.unlink(missing_ok=True)
+    if not blockers:
+        with output_sql.open("w", encoding="utf-8") as handle:
+            handle.write("-- REVIEW ONLY; no remote deletion performed.\\n")
+            for name in deletion_order:
+                handle.write('DELETE FROM "' + name.replace('"', '""') + '";\\n')
     report = [
         "TIMELINK REMOTE D1 SCHEMA INSPECTION (READ ONLY)",
         "No backup created. No data deleted.",
@@ -56,7 +105,9 @@ def main():
         "PRESERVED / MANUAL REVIEW:",
         *["  " + n for n in preserved],
         "",
-        "WARNING: candidate list is not deletion SQL. Foreign keys and economic dependencies must be reviewed before reset.",
+        "FK/schema blockers: " + ("; ".join(blockers) if blockers else "none"),
+        "Local deletion SQL prepared: " + ("YES" if not blockers else "NO"),
+        "WARNING: Review tl_settings and preserved asset rows before running any deletion.",
     ]
     output = "\n".join(report) + "\n"
     with open("reset-preview.txt", "w", encoding="utf-8") as file:
