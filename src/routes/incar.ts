@@ -88,21 +88,11 @@ router.post('/channel', async (c) => {
   const existing = await c.env.DB.prepare('SELECT channel_id FROM incar_channels WHERE channel_id=?').bind(channelId).first<any>();
   if (existing) return c.json({ ok: false, error: '이미 사용 중인 채널 ID입니다.' }, 409);
 
-  let fee = 20000;
-  try {
-    const row = await c.env.DB.prepare("SELECT value FROM tl_settings WHERE key='incar_channel_fee'").first<any>();
-    if (row?.value != null) fee = Math.max(0, Number(row.value) || 20000);
-  } catch (_) {}
-
-  const balance = Number(auth.user.tl_balance ?? auth.user.tl ?? 0);
-  if (balance < fee) return c.json({ ok: false, error: `TL 잔액이 부족합니다. (필요: ${fee.toLocaleString()} TL)` }, 402);
+  // V5 policy: in-car registration and listening are free.
+  // Do not debit legacy users.tl balances; promotion is funded by creators separately.
+  const fee = 0;
 
   const now = Date.now();
-  const debit = await c.env.DB.prepare(
-    'UPDATE users SET tl=MAX(0, COALESCE(tl,0)-?), tl_balance=MAX(0, COALESCE(tl_balance,tl,0)-?) WHERE id=? AND COALESCE(tl_balance,tl,0)>=?'
-  ).bind(fee, fee, auth.id, fee).run();
-  if (!Number(debit.meta?.changes || 0)) return c.json({ ok: false, error: 'TL 잔액이 부족합니다.' }, 402);
-
   try {
     await c.env.DB.prepare(
       `INSERT INTO incar_channels
@@ -110,13 +100,12 @@ router.post('/channel', async (c) => {
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(channelId, auth.id, name, String(auth.user.username || auth.user.email || ''), carPlate, carType, driveRegion, description, theme, playlist, schedules, pocIndex, 'active', now, now).run();
   } catch (error: any) {
-    await c.env.DB.prepare('UPDATE users SET tl=COALESCE(tl,0)+?, tl_balance=COALESCE(tl_balance,tl,0)+? WHERE id=?').bind(fee, fee, auth.id).run().catch(() => {});
     const message = String(error?.message || '');
     if (/unique|constraint/i.test(message)) return c.json({ ok: false, error: '이미 사용 중인 채널 ID입니다.' }, 409);
-    return c.json({ ok: false, error: '인카 채널 저장에 실패했습니다. 차감된 TL은 복구 처리했습니다.' }, 500);
+    return c.json({ ok: false, error: '인카 채널 저장에 실패했습니다.' }, 500);
   }
 
-  return c.json({ ok: true, channel_id: channelId, fee, tl_balance: balance - fee });
+  return c.json({ ok: true, channel_id: channelId, fee });
 });
 
 export default router;
