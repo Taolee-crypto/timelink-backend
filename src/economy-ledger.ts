@@ -348,6 +348,45 @@ export async function settleTrackPlayback(
   return {id:posted.id,replayed:posted.replayed,amountAtoms,creatorShareAtoms,platformShareAtoms,used};
 }
 
+/** V5 explicit stop: unplayed portion of one playback is split 50/50.
+ * Refund is always wallet_bonus (TL_B), never wallet_paid (TL_P).
+ * The charge/creator settlement policy is independent of this closing transaction.
+ */
+export async function settleV5EarlyStop(db:D1Database,input:{
+  userId:number;shareId:string;sessionId:string;remainingAtoms:number;
+  atomicStatements?:D1PreparedStatement[];
+}){
+  await assertTLAtomScale(db);
+  const {userId,shareId,sessionId}=input;
+  const balances=await getTrackPoolBalances(db,userId,shareId);
+  const available=balances.ad+balances.bonus+balances.paid;
+  const amount=Math.min(input.remainingAtoms,available);
+  if(!Number.isSafeInteger(amount)||amount<=0) return {refundedAtoms:0,platformAtoms:0,replayed:false};
+  const refund=Math.floor(amount/2),platform=amount-refund;
+  const allocations:{paid:number;ad:number;bonus:number}={paid:0,ad:0,bonus:0};
+  let left=amount;
+  for(const source of ['ad','bonus','paid'] as const){
+    allocations[source]=Math.min(left,balances[source]);left-=allocations[source];
+  }
+  const lines:{accountId:string;assetCode:'TL';amountAtoms:number}[]=[];
+  for(const source of ['ad','bonus','paid'] as const){
+    if(!allocations[source])continue;
+    const account=await ensureLedgerAccount(db,'user',userId,'TL','track_pool:'+shareId+':'+source);
+    lines.push({accountId:account,assetCode:'TL',amountAtoms:-allocations[source]});
+  }
+  if(refund)lines.push({accountId:await ensureLedgerAccount(db,'user',userId,'TL','wallet_bonus'),assetCode:'TL',amountAtoms:refund});
+  if(platform)lines.push({accountId:await ensureLedgerAccount(db,'platform','timelink','TL','early_stop_revenue'),assetCode:'TL',amountAtoms:platform});
+  const posted=await postLedgerTransaction(db,{
+    idempotencyKey:'v5-early-stop:'+sessionId,
+    transactionType:'v5_early_stop',source:'v5_player_stop',
+    referenceType:'track',referenceId:shareId,actorUserId:String(userId),
+    description:'V5 중도 종료: 미재생분 50% TL_B 반환, 50% 플랫폼 귀속',
+    metadata:{session_id:sessionId,amount_atoms:amount,refund_atoms:refund,platform_atoms:platform,allocation:allocations},
+    lines,atomicStatements:input.atomicStatements
+  });
+  return {refundedAtoms:posted.replayed?0:refund,platformAtoms:posted.replayed?0:platform,replayed:posted.replayed};
+}
+
 export async function getLedgerHistory(db: D1Database, userId: number, limit = 50, offset = 0) {
   const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
   const safeOffset = Math.max(0, Math.floor(offset));
