@@ -3,7 +3,7 @@ import type { Env } from '../types';
 
 const router = new Hono<{ Bindings: Env }>();
 
-const PUBLIC_KEYS = ['footer_settings', 'site_settings', 'notice_active'];
+const PUBLIC_KEYS = ['footer_settings', 'site_settings', 'notice_active', 'signup_hero'];
 
 router.get('/:key', async (c) => {
   const key = c.req.param('key');
