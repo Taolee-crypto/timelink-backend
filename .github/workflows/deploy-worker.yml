@@ -58,6 +58,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy
 
+      - name: Smoke-test asset registration route (no charge)
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/assets-response.json -w '%{http_code}' -X POST 'https://api.timelink.digital/api/v1/assets' -H 'Content-Type: application/json' --data '{}')
+          cat /tmp/assets-response.json
+          test "$code" = "401" || (echo "Asset registration route unavailable or auth guard missing: HTTP $code" && exit 1)
+          grep -q '로그인' /tmp/assets-response.json
+
       - name: Smoke-test TL3 Spine v4 route
         run: |
           set -euo pipefail
