@@ -118,7 +118,12 @@ eco.post('/migrate', async (c) => {
  */
 export async function reconcilePristineSignupBonus(db: D1Database, user: any): Promise<void> {
   const expected=Number(user.tl_balance);
-  if(expected!==42500 || Number(user.tl)!==42500 ||
+  // Legacy signup bonus may have been stored in tl_balance only or tl only.
+  // Require matching documented 42,500 TL and zero lifetime spending/purchases;
+  // the transaction and account checks below still prevent duplicate issuance.
+  const legacyTl=Number(user.tl);
+  if(!((expected===42500 && (legacyTl===0 || legacyTl===42500)) ||
+       (legacyTl===42500 && (expected===0 || !Number.isFinite(expected)))) ||
      Number(user.total_tl_spent||0)!==0 || Number(user.tl_p_lifetime||0)!==0 ||
      Number(user.tl_p_exchanged||0)!==0) return;
   const owner=String(user.id);
