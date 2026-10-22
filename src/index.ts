@@ -9,7 +9,7 @@ import { cors } from 'hono/cors';
 import type { Env } from './types';
 import { verifyToken, makeAccessToken, hashPassword, verifyPassword } from './auth';
 import { CREATOR_SHARE_RATE } from './economy-policy';
-import { getTrackPoolBalances, getLedgerWallet, chargeTrackPool, settleTrackPlayback, atomsToTl, tlToAtoms, TL_ATOMS_PER_TL } from './economy-ledger';
+import { getTrackPoolBalances, getLedgerWallet, chargeTrackPool, settleTrackPlayback, settleV5EarlyStop, atomsToTl, tlToAtoms, TL_ATOMS_PER_TL } from './economy-ledger';
 
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
@@ -2056,6 +2056,51 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
   }
 });
 
+// Explicit V5 user stop. Never treat pause, buffering or a network failure as a stop.
+app.post('/api/v1/tl3/play/stop/:id', async (c) => {
+  try {
+    const auth=c.req.header('Authorization')?.replace(/^Bearer /,'').trim()||'';
+    const payload=auth?await verifyToken(auth,c.env.JWT_SECRET):null;
+    if(!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const userId=Number(payload.sub);
+    const fileId=Number(c.req.param('id'));
+    const body=await c.req.json<any>().catch(()=>({}));
+    const sessionId=String(body.session_id||'');
+    if(!Number.isSafeInteger(fileId)||fileId<=0||!/^[A-Za-z0-9_-]{8,100}$/.test(sessionId))
+      return c.json({ok:false,error:'재생 세션 정보가 올바르지 않습니다.'},400);
+    const session=await c.env.DB.prepare('SELECT billed_seconds FROM tl3_play_meter_sessions WHERE session_id=? AND user_id=? AND file_id=?')
+      .bind(sessionId,userId,fileId).first<any>();
+    const authorized=await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=?')
+      .bind(sessionId,userId,fileId).first<any>();
+    if(!authorized||!session) return c.json({ok:false,error:'인증된 재생 세션이 없습니다.'},403);
+    const release=await c.env.DB.prepare("SELECT share_id,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed'")
+      .bind(fileId).first<any>();
+    if(!release) return c.json({ok:false,error:'V5 자산을 찾을 수 없습니다.'},404);
+    const prior=await c.env.DB.prepare("SELECT id,metadata_json FROM v3_economy_transactions WHERE idempotency_key=?")
+      .bind('v5-early-stop:'+sessionId).first<any>();
+    if(prior){
+      const meta=JSON.parse(String(prior.metadata_json||'{}'));
+      return c.json({ok:true,replayed:true,refunded_tl:atomsToTl(Number(meta.refund_atoms||0)),platform_tl:atomsToTl(Number(meta.platform_atoms||0))});
+    }
+    const required=Math.ceil(Number(release.duration_ms)/1000-1e-9);
+    const billed=Number(session.billed_seconds||0);
+    if(billed>=required) return c.json({ok:true,refunded_tl:0,platform_tl:0,complete:true});
+    const remainingAtoms=tlToAtoms(Number(Math.max(0,required-billed).toFixed(4)));
+    const posted=await settleV5EarlyStop(c.env.DB,{
+      userId,shareId:String(release.share_id),sessionId,remainingAtoms,
+      atomicStatements:[
+        c.env.DB.prepare("UPDATE tl3_play_meter_sessions SET played_ms=-1,updated_at=datetime('now') WHERE session_id=? AND user_id=? AND file_id=? AND billed_seconds=? AND played_ms>=0")
+          .bind(sessionId,userId,fileId,billed),
+        c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
+        c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
+      ]
+    });
+    return c.json({ok:true,refunded_tl:atomsToTl(posted.refundedAtoms),platform_tl:atomsToTl(posted.platformAtoms),replayed:posted.replayed});
+  }catch(e:any){
+    return c.json({ok:false,error:String(e?.message||'중도 종료 정산 실패')},500);
+  }
+});
+
 // 실제 재생 시간 누적 정산: 완전히 재생된 1초마다 1 TL 차감
 app.post('/api/v1/tl3/play/meter/:id', async (c) => {
   try {
@@ -2106,6 +2151,7 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const prior=await c.env.DB.prepare('SELECT user_id,file_id,billed_seconds,played_ms FROM tl3_play_meter_sessions WHERE session_id=?').bind(sessionId).first<any>();
     if(!prior||Number(prior.user_id)!==Number(user.id)||Number(prior.file_id)!==fileId)
       return c.json({ok:false,error:'재생 세션이 다른 사용자 또는 자산에 연결되어 있습니다.'},409);
+    if(Number(prior.played_ms)<0) return c.json({ok:false,error:'종료된 재생 세션입니다.',stop:true},409);
     const already=Number(prior.billed_seconds||0);
     if(targetSeconds<=already+1e-9){
       const accounts:any[]=await getLedgerWallet(c.env.DB,user.id) as any[];
