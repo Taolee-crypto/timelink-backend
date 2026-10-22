@@ -11,7 +11,7 @@ async function authUser(c: Context<{ Bindings: Env }>): Promise<{ id: number; us
   const payload = await verifyToken(token, c.env.JWT_SECRET).catch(() => null);
   const id = Number(payload?.sub || 0);
   if (!id) return null;
-  const user = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance FROM users WHERE id=?').bind(id).first<any>();
+  const user = await c.env.DB.prepare('SELECT id, email, username FROM users WHERE id=?').bind(id).first<any>();
   return user ? { id, user } : null;
 }
 
@@ -84,12 +84,17 @@ router.post('/channel', async (c) => {
   if (!/^[a-z0-9_]{3,20}$/.test(channelId)) return c.json({ ok: false, error: '채널 ID는 영문 소문자·숫자·언더스코어 3~20자여야 합니다.' }, 400);
   if (!name || !carPlate || !carType) return c.json({ ok: false, error: '채널명, 차량번호, 차종은 필수입니다.' }, 400);
 
-  await ensureIncarTables(c.env.DB);
-  const existing = await c.env.DB.prepare('SELECT channel_id FROM incar_channels WHERE channel_id=?').bind(channelId).first<any>();
-  if (existing) return c.json({ ok: false, error: '이미 사용 중인 채널 ID입니다.' }, 409);
+  try {
+    await ensureIncarTables(c.env.DB);
+    const existing = await c.env.DB.prepare('SELECT channel_id FROM incar_channels WHERE channel_id=?').bind(channelId).first<any>();
+    if (existing) return c.json({ ok: false, error: '이미 사용 중인 채널 ID입니다.' }, 409);
+  } catch (error: any) {
+    console.error('[INCAR] channel preflight failed', error);
+    return c.json({ ok: false, error: '인카 채널 데이터베이스 준비에 실패했습니다. 관리자에게 문의해 주세요.' }, 500);
+  }
 
-  // V5 policy: in-car registration and listening are free.
-  // Do not debit legacy users.tl balances; promotion is funded by creators separately.
+  // V5 policy: channel registration is free; actual listening is charged separately.
+  // Do not debit legacy users.tl balances during registration.
   const fee = 0;
 
   const now = Date.now();
@@ -100,6 +105,7 @@ router.post('/channel', async (c) => {
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(channelId, auth.id, name, String(auth.user.username || auth.user.email || ''), carPlate, carType, driveRegion, description, theme, playlist, schedules, pocIndex, 'active', now, now).run();
   } catch (error: any) {
+    console.error('[INCAR] channel insert failed', error);
     const message = String(error?.message || '');
     if (/unique|constraint/i.test(message)) return c.json({ ok: false, error: '이미 사용 중인 채널 ID입니다.' }, 409);
     return c.json({ ok: false, error: '인카 채널 저장에 실패했습니다.' }, 500);
