@@ -243,7 +243,17 @@ router.post('/manufacture', async (c) => {
       duration_ms:durationMs, tl_required:Math.ceil(durationMs / 1000),
       source_sha256:sourceHash, rights_confirmed:true,
       rights:{ confirmed:true, confirmation_type:'creator_declaration', declared_role:String(rightsDeclaration.rights_role), declared_scope:String(rightsDeclaration.rights_scope), declaration_status:'declared', owner_user_id:userId },
-      lp_meta:metadata.lp_license || null,
+      lp_meta:metadata.lp_license && typeof metadata.lp_license==='object' ? {
+        enabled:metadata.lp_license.lp_enabled===true,
+        seed:Number(metadata.lp_license.lp_seed||0),
+        g:metadata.lp_license.lp_g||null,
+        fs:Number(metadata.lp_license.lp_fs||0),
+        n:Number(metadata.lp_license.lp_n||0),
+        version:String(metadata.lp_license.lp_version||'lp-v1-runtime'),
+        price_tl:Number(metadata.lp_license.lp_price_tl||0),
+        patent:String(metadata.lp_license.lp_patent||''),
+        mode:String(metadata.lp_license.lp_mode||'none')
+      } : null,
       created_at:new Date().toISOString()
     };
     const manifestBytes = te.encode(JSON.stringify(manifest));
