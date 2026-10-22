@@ -1699,6 +1699,16 @@ app.get('/api/v1/tl3/resolve/:shareId', async (c) => {
     const fileId=Number.isSafeInteger(numericFileId)&&numericFileId>0&&String(numericFileId)===shareId
       ? numericFileId : await resolveTL3FileId(c.env.DB,shareId);
     if(!fileId) return c.json({ok:false,error:'해당 SharePlace 항목에 연결된 TL3 자산을 하나로 특정할 수 없습니다.',share_id:shareId},404);
+    // Copyright certificate is mandatory for any TL3 file download.
+    // Do not rely on the frontend button; revoke access when certification is revoked.
+    const authorization=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
+    const requester=authorization?await verifyToken(authorization,c.env.JWT_SECRET):null;
+    if(!requester) return c.json({ok:false,error:'TL3 다운로드는 로그인이 필요합니다.'},401);
+    const activeCert=await c.env.DB.prepare(
+      "SELECT c.cert_no FROM tl_asset_certs c JOIN tl_assets a ON a.asset_id=c.asset_id WHERE a.file_id=? AND c.status='active' ORDER BY c.id DESC LIMIT 1"
+    ).bind(fileId).first<any>();
+    if(!activeCert) return c.json({ok:false,error:'창작권 인증이 완료된 음원만 TL3 다운로드할 수 있습니다.',code:'COPYRIGHT_CERT_REQUIRED'},403);
+
     const v5row = await c.env.DB.prepare("SELECT file_id,share_id,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first<any>().catch(()=>null);
     if(v5row){
       const meta=await c.env.DB.prepare('SELECT title,artist FROM tl_files WHERE id=?').bind(fileId).first<any>();
