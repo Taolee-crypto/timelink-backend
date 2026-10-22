@@ -183,6 +183,13 @@ eco.get('/wallet', async (c) => {
       tlA=Number(user.tl_a ?? 0)||0;
       tlB=Number(user.tl_b ?? 0)||0;
     }
+    let reconciliationStatus='not_eligible';
+    if(ledgerReady && Number(user.tl_balance)===42500 && Number(user.tl)===42500){
+      const owner=String(userId);
+      const tx=await c.env.DB.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').bind('v5-signup-bonus-legacy-user-'+owner).first();
+      const activity=await c.env.DB.prepare("SELECT 1 AS found FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id WHERE a.owner_type='user' AND a.owner_id=? LIMIT 1").bind(owner).first();
+      reconciliationStatus=tx?'already_recorded':activity?'blocked_by_existing_activity':'no_existing_activity';
+    }
     const splitTotal=tlP+tlA+tlB;
     const legacyCandidates=[user.tl_balance,user.tl].map((value:any)=>Number(value));
     const legacyTotal=legacyCandidates.find((value:number)=>Number.isFinite(value)&&value>0)??0;
@@ -201,6 +208,7 @@ eco.get('/wallet', async (c) => {
         // Read-only V5 ledger diagnostic. No balances or transactions are mutated here.
         ledger_diagnostic: {
           ledger_ready: ledgerReady,
+          reconciliation_status: reconciliationStatus,
           ledger_tl_total: splitTotal,
           legacy_tl_balance: Number(user.tl_balance || 0),
           legacy_tl: Number(user.tl || 0),
