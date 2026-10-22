@@ -22,7 +22,7 @@ import disputesRouter from './routes/disputes';
 import chartsRouter from './routes/charts';
 import scoreRouter from './routes/score';
 import paymentRouter from './payment';
-import ecoRouter from './economics';
+import ecoRouter, { reconcilePristineSignupBonus } from './economics';
 import economyV3Router from './routes/economy-v3';
 import musicV3Router from './routes/music-v3';
 import musicV3AdminRouter from './routes/music-v3-admin';
@@ -4002,6 +4002,12 @@ app.post('/api/auth/register', async (c) => {
       'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,?,?,0,?,?,?,?)'
     ).bind(email, username, hashedPw, isAdvertiser?300000:42500, isAdvertiser?300000:42500, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
     const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
+    // V5 경제원장: 신규 일반 회원 가입 보상은 TL_B로도 기록한다.
+    if(!isAdvertiser && user){
+      const bonusUser=await c.env.DB.prepare('SELECT id,tl,tl_balance,total_tl_spent,tl_p_lifetime,tl_p_exchanged FROM users WHERE id=?').bind((user as any).id).first();
+      try { await reconcilePristineSignupBonus(c.env.DB,bonusUser); }
+      catch(e) { console.error('[V5 registration bonus ledger]',e); }
+    }
     const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
     return c.json({ ok: true, token, user });
   } catch (e: any) {
