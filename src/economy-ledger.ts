@@ -36,6 +36,7 @@ export interface LedgerTransactionInput {
   // Extra statements participate in the same D1 batch as the ledger posting.
   // Used for atomic playback-session compare-and-swap updates.
   atomicStatements?: D1PreparedStatement[];
+  issuanceStatements?: D1PreparedStatement[];
 }
 
 export async function ensureLedgerAccount(
@@ -146,7 +147,7 @@ export async function postLedgerTransaction(
 
   const transactionId = crypto.randomUUID();
   const metadata = { ...(input.metadata || {}), _fingerprint: fingerprint };
-  const statements: D1PreparedStatement[] = [
+  const statements: D1PreparedStatement[] = [...(input.issuanceStatements || []),
     db.prepare(`
       INSERT INTO v3_economy_transactions
         (id,idempotency_key,transaction_type,source,reference_type,reference_id,actor_user_id,description,metadata_json)

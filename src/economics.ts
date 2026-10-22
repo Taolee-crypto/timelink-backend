@@ -145,6 +145,9 @@ export async function reconcilePristineSignupBonus(db: D1Database, user: any): P
     referenceType:'user',referenceId:owner,
     description:'기존 회원가입 42,500 TL_B 지급 이력 복구',
     metadata:{non_redeemable:true,legacy_signup_reconciliation:true},
+    issuanceStatements:[db.prepare(
+      "UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?"
+    ).bind(tlToAtoms(42500),source)],
     lines:[
       {accountId:source,assetCode:'TL',amountAtoms:-tlToAtoms(42500)},
       {accountId:destination,assetCode:'TL',amountAtoms:tlToAtoms(42500)}
