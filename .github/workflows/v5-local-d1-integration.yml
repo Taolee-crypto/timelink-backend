@@ -1,0 +1,16 @@
+name: V5 Local D1 Integration
+on:
+  pull_request:
+    paths: ['scripts/test-v5-local-d1.cjs','tests/v5/local-ledger-fixture.sql','wrangler.v5-test.toml','.github/workflows/v5-local-d1-integration.yml']
+  workflow_dispatch:
+jobs:
+  local-d1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: node scripts/test-v5-local-d1.cjs
