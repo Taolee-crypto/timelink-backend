@@ -37,3 +37,61 @@ export function calculateCentralBroadcastAtoms(playedMilliseconds: bigint): {
   const creatorAtoms = (totalAtoms * 7n) / 10n;
   return { totalAtoms, creatorAtoms, platformAtoms: totalAtoms - creatorAtoms };
 }
+
+
+/**
+ * V5 TILO creator solidarity contribution, applied AFTER the 70/30 split.
+ * Rates are marginal, not flat. All amounts are integer TL atoms (10,000/TL).
+ * This pure calculation is deliberately separate from wallet posting:
+ * only an approved, versioned monthly settlement may post ledger entries.
+ */
+export const TILO_CREATOR_CONTRIBUTION_V1 = Object.freeze({
+  atomsPerTl: 10_000n,
+  // Monthly creator TILO gross reward thresholds in TL.
+  thresholdsTl: [100_000n, 500_000n, 2_000_000n, 5_000_000n],
+  // Marginal basis points: 0%, 5%, 10%, 15%, 20%.
+  ratesBps: [0n, 500n, 1_000n, 1_500n, 2_000n],
+  policyVersion: 'tilo-creator-contribution-v1',
+});
+
+/** Never assess per track: aggregate all rights-holder TILO allocations per local calendar month first. */
+export function calculateTiloCreatorMonthlyContribution(grossCreatorAtoms: bigint): {
+  grossCreatorAtoms: bigint;
+  contributionAtoms: bigint;
+  netCreatorAtoms: bigint;
+  effectiveRateBps: bigint;
+  policyVersion: string;
+} {
+  if (grossCreatorAtoms < 0n) throw new RangeError('grossCreatorAtoms must be nonnegative');
+  const { atomsPerTl, thresholdsTl, ratesBps, policyVersion } = TILO_CREATOR_CONTRIBUTION_V1;
+  let previous = 0n;
+  let contributionAtoms = 0n;
+  for (let i = 0; i < ratesBps.length; i++) {
+    const upper = i < thresholdsTl.length ? thresholdsTl[i] * atomsPerTl : grossCreatorAtoms;
+    const taxable = grossCreatorAtoms > previous
+      ? (grossCreatorAtoms < upper ? grossCreatorAtoms : upper) - previous
+      : 0n;
+    // Integer math: round down once per bracket; no floating-point drift.
+    contributionAtoms += (taxable * ratesBps[i]) / 10_000n;
+    previous = upper;
+    if (previous >= grossCreatorAtoms) break;
+  }
+  return {
+    grossCreatorAtoms,
+    contributionAtoms,
+    netCreatorAtoms: grossCreatorAtoms - contributionAtoms,
+    effectiveRateBps: grossCreatorAtoms === 0n ? 0n : (contributionAtoms * 10_000n) / grossCreatorAtoms,
+    policyVersion,
+  };
+}
+
+/**
+ * Initial POC redemption eligibility proposal; distinct from cash/TL exchange price.
+ * Not enabled for payouts until admin-approved, verified POC snapshot and funding checks.
+ */
+export function tiloCreatorRedemptionRateBps(pocIndex: number): number {
+  if (!Number.isFinite(pocIndex) || pocIndex < 0.1 || pocIndex > 5) {
+    throw new RangeError('POC index must be in [0.1, 5]');
+  }
+  return pocIndex >= 4 ? 8000 : pocIndex >= 3 ? 6000 : pocIndex >= 2 ? 4000 : pocIndex >= 1 ? 2000 : 1000;
+}
