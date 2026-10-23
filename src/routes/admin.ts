@@ -20,6 +20,41 @@ async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<number | nul
 
 
 /** Country-scoped TILO station readiness for the admin control room. */
+/** Grant a sealed, rights-cleared SharePlace V5 track to the administrator's TILO station. */
+router.post('/central-broadcast/stations/:country/grants', async c => {
+  const adminId=await requireAdmin(c);
+  if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const country=String(c.req.param('country')||'').toUpperCase();
+  if(!['KR','JP','US','CN','TH','VN'].includes(country))return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+  const body=await c.req.json().catch(()=>null) as {file_id?:number}|null;
+  const fileId=Number(body?.file_id);
+  if(!Number.isSafeInteger(fileId)||fileId<=0)return c.json({ok:false,error:'INVALID_FILE_ID'},400);
+  const serviceId='central-tilo-'+adminId;
+  try{
+    const eligible=await c.env.DB.prepare(`
+      SELECT v.file_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id
+      WHERE v.file_id=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+      AND LOWER(f.file_type)='audio/tl3'
+      AND EXISTS(SELECT 1 FROM tl3_releases r WHERE r.file_id=v.file_id AND r.status='released' AND r.rights_confirmed=1)
+      AND EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
+        WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
+        AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
+      LIMIT 1`).bind(fileId,country).first();
+    if(!eligible)return c.json({ok:false,error:'BROADCAST_RIGHTS_NOT_CLEARED'},403);
+    const service=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?')
+      .bind(serviceId,adminId).first<{status:string}>();
+    if(service?.status!=='active')return c.json({ok:false,error:'TILO_SERVICE_NOT_ACTIVE'},409);
+    await c.env.DB.prepare(`
+      INSERT INTO central_broadcast_service_file_grants
+      (service_id,file_id,country,permission,status,granted_by_admin_user_id)
+      VALUES(?,?,?,'stream','active',?)
+      ON CONFLICT(service_id,file_id,country) DO UPDATE SET status='active',
+        granted_by_admin_user_id=excluded.granted_by_admin_user_id`)
+      .bind(serviceId,fileId,country,adminId).run();
+    return c.json({ok:true,country,file_id:fileId,status:'active'});
+  }catch(e:any){return c.json({ok:false,error:/no such table/i.test(String(e?.message))?'BROADCAST_SCHEMA_NOT_READY':'BROADCAST_GRANT_FAILED'},500)}
+});
+
 router.get('/central-broadcast/stations/:country', async c => {
   const adminId=await requireAdmin(c);
   if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
