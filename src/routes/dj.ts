@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
+import { resolveTiloRegion, tiloEditorialInstruction } from '../tilo-v5-regional-editorial';
 
 const router = new Hono<{ Bindings: Env }>();
 
@@ -118,6 +119,22 @@ router.post('/batch-classify', async (c) => {
   } catch (e: any) {
     return c.json({ ok: false, error: e?.message || '배치 분류 실패' }, 500);
   }
+});
+
+// Public read-only regional configuration. No untrusted news is treated as verified.
+router.get('/regional-profile/:country', (c) => {
+  const country = c.req.param('country').trim().toUpperCase();
+  if (!['KR', 'JP', 'US', 'CN', 'TH', 'VN'].includes(country))
+    return c.json({ ok: false, error: 'Unsupported broadcast country' }, 400);
+  const profile = resolveTiloRegion(country);
+  return c.json({
+    ok: true,
+    station: profile,
+    editorialInstruction: tiloEditorialInstruction(profile),
+    news: [],
+    newsStatus: 'awaiting_verified_provider',
+    voiceStatus: 'not_configured'
+  }, 200, { 'Cache-Control': 'public, max-age=300' });
 });
 
 export default router;
