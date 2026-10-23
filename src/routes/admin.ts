@@ -108,13 +108,13 @@ router.get('/central-broadcast/stations/:country', async c => {
     const grants=await c.env.DB.prepare(`SELECT v.file_id FROM tl3_v5_releases v
       JOIN tl_files f ON f.id=v.file_id
       WHERE v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
-        AND LOWER(f.file_type)='audio/tl3'
+
 
       ORDER BY RANDOM() LIMIT 100`).all<{file_id:number}>();
     return c.json({ok:true,country,locale:languages[country],service_enabled:service?.status==='active',
       granted_file_ids:(grants.results||[]).map(g=>g.file_id),
       stream_ready:(grants.results||[]).length>0,reason:(grants.results||[]).length?'READY_FOR_BROWSER_TEST':'NO_ELIGIBLE_V5_TRACKS',
-      note:'Auto-selected from country-rights-cleared sealed V5 tracks. Browser test only; no listener billing.'});
+      note:'Auto-selected from published sealed V5 SharePlace tracks. Country station remains administrator-controlled; no listener billing.'});
    }catch(e:any){
     const message=String(e?.message||e||'unknown');
     console.error('[TILO_STATION_SCHEMA]',{country,error:message});
