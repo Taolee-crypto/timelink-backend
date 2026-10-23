@@ -18,6 +18,24 @@ async function authUser(c: Context<{ Bindings: Env }>): Promise<{id: number, use
   return { id: userId, user };
 }
 
+
+// V5 DJ station opening is a paid entitlement, separate from a free DJ profile.
+// Only a trusted payment/admin settlement flow may insert an active entitlement.
+// This route deliberately never accepts client-declared payment success.
+async function requirePaidDjStation(db: D1Database, userId: number): Promise<boolean> {
+  await db.prepare(`CREATE TABLE IF NOT EXISTS dj_station_entitlements (
+    user_id INTEGER PRIMARY KEY,
+    payment_reference TEXT NOT NULL,
+    paid_at INTEGER NOT NULL,
+    valid_until INTEGER,
+    status TEXT NOT NULL DEFAULT 'active'
+  )`).run();
+  const row = await db.prepare(
+    "SELECT user_id FROM dj_station_entitlements WHERE user_id=? AND status='active' AND (valid_until IS NULL OR valid_until>?)"
+  ).bind(userId, Date.now()).first<any>();
+  return !!row;
+}
+
 // ── 테이블 보장 ──
 async function ensureDJCafeTables(db: D1Database) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS dj_profiles (
@@ -396,6 +414,7 @@ router.post('/session/start', async (c) => {
   const cafeChannelId = String(body.cafe_channel_id || '').trim();
 
   await ensureDJCafeTables(c.env.DB);
+  if (!(await requirePaidDjStation(c.env.DB, auth.id))) return c.json({ ok: false, code: 'DJ_STATION_PAYMENT_REQUIRED', error: 'DJ 방송국 유료 개설 확인 후 방송할 수 있습니다. 개설비 결제 및 승인 기능은 준비 중입니다.' }, 403);
   const dj = await c.env.DB.prepare('SELECT id FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
   if (!dj) return c.json({ ok: false, error: 'DJ 프로필이 없습니다.' }, 400);
 
@@ -740,6 +759,7 @@ router.post('/broadcast/start', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
   await ensureDJCafeTables(c.env.DB);
+  if (!(await requirePaidDjStation(c.env.DB, auth.id))) return c.json({ ok: false, code: 'DJ_STATION_PAYMENT_REQUIRED', error: 'DJ 방송국 유료 개설 확인 후 방송할 수 있습니다. 개설비 결제 및 승인 기능은 준비 중입니다.' }, 403);
 
   const dj = await c.env.DB.prepare('SELECT id, broadcast_set FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
   if (!dj) return c.json({ ok: false, error: 'DJ 프로필 먼저 등록' }, 400);
