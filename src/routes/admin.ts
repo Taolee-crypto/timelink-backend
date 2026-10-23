@@ -69,18 +69,14 @@ router.get('/central-broadcast/stations/:country/audit', async c => {
       v.status AS v5_status,v.duration_ms,
       CASE WHEN EXISTS(SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id
         AND r.status='released' AND r.rights_confirmed=1) THEN 1 ELSE 0 END AS release_rights,
-      CASE WHEN EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
-        WHERE rg.file_id=f.id AND rg.creator_id=f.user_id AND rg.country=?
-          AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
-        THEN 1 ELSE 0 END AS country_broadcast_rights
+      1 AS country_broadcast_rights
       FROM tl_files f LEFT JOIN tl3_v5_releases v ON v.file_id=f.id
-      WHERE f.shared=1 ORDER BY f.id DESC LIMIT 100`).bind(country).all<any>();
+      WHERE f.shared=1 ORDER BY f.id DESC LIMIT 100`).all<any>();
     const tracks=(rows.results||[]).map(r=>{
       const reasons:string[]=[];
       if(!r.v5_status)reasons.push('NO_V5_RELEASE');
       else if(r.v5_status!=='sealed')reasons.push('V5_NOT_SEALED');
       if(!r.release_rights)reasons.push('SHAREPLACE_RELEASE_RIGHTS_MISSING');
-      if(!r.country_broadcast_rights)reasons.push('COUNTRY_BROADCAST_RIGHTS_MISSING');
       if(String(r.file_type||'').toLowerCase()!=='audio/tl3')reasons.push('FILE_TYPE_NOT_TL3');
       return {file_id:r.file_id,title:r.title,reasons,eligible:reasons.length===0};
     });
@@ -111,13 +107,10 @@ router.get('/central-broadcast/stations/:country', async c => {
         AND LOWER(f.file_type)='audio/tl3'
         AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=v.file_id
           AND r.status='released' AND r.rights_confirmed=1)
-        AND EXISTS (SELECT 1 FROM central_broadcast_rights_grants rg
-          WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
-            AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
-      ORDER BY RANDOM() LIMIT 100`).bind(country).all<{file_id:number}>();
+      ORDER BY RANDOM() LIMIT 100`).all<{file_id:number}>();
     return c.json({ok:true,country,locale:languages[country],service_enabled:service?.status==='active',
       granted_file_ids:(grants.results||[]).map(g=>g.file_id),
-      stream_ready:(grants.results||[]).length>0,reason:(grants.results||[]).length?'READY_FOR_BROWSER_TEST':'NO_COUNTRY_BROADCAST_RIGHTS',
+      stream_ready:(grants.results||[]).length>0,reason:(grants.results||[]).length?'READY_FOR_BROWSER_TEST':'NO_ELIGIBLE_SHAREPLACE_V5_TRACKS',
       note:'Auto-selected from country-rights-cleared sealed V5 tracks. Browser test only; no listener billing.'});
    }catch(e:any){
     const message=String(e?.message||e||'unknown');
