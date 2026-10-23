@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { refreshTiloCountryClocks, tiloLocalSchedule, TILO_COUNTRY_ZONES, type TiloCountryCode } from './tilo-country-clock';
 import { planTiloBroadcast } from './tilo-v5-scheduler';
 import { bodyLimit } from 'hono/body-limit';
 import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
@@ -4934,4 +4935,13 @@ app.get('/api/download/:shareId', async (c) => {
   }
 });
 
-export default app;
+app.get('/api/tilo/server-clock', c => {
+  const now=new Date();
+  return c.json({ok:true,serverTime:now.toISOString(),countries:Object.keys(TILO_COUNTRY_ZONES).map(country=>tiloLocalSchedule(country as TiloCountryCode,now)),audioStreaming:false,note:'Country program clock only. Audio playout is a separate phase.'});
+});
+export default {
+  fetch: app.fetch.bind(app),
+  async scheduled(_event:ScheduledEvent,env:Env,ctx:ExecutionContext) {
+    ctx.waitUntil(refreshTiloCountryClocks(env.DB).catch(error=>console.error('[TILO_CLOCK]',error)));
+  }
+};
