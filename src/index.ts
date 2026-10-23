@@ -3219,6 +3219,8 @@ app.post('/api/creator/metadata', async (c) => {
     }
     const file = await c.env.DB.prepare('SELECT id,user_id FROM tl_files WHERE id=?').bind(fileId).first<any>();
     if (!file || Number(file.user_id) !== userId) return c.json({ok:false,error:'본인 소유 자산만 권리 정보를 등록할 수 있습니다.'},403);
+    const workIdentityType = String(body.work_identity_type || '').trim();
+    if (!['new_work','new_recording','same_recording'].includes(workIdentityType)) return c.json({ok:false,error:'음악 작품 동일성 유형을 선택해주세요.'},400);
     const spotify = body.spotify && typeof body.spotify === 'object' ? body.spotify : null;
     const spotifyId = spotify ? String(spotify.id || '').trim().slice(0,64) : '';
     const spotifyUrl = spotify ? String(spotify.url || '').trim().slice(0,500) : '';
@@ -3232,21 +3234,22 @@ app.post('/api/creator/metadata', async (c) => {
       updated_at TEXT DEFAULT (datetime('now'))
     )`).run();
     await c.env.DB.prepare("ALTER TABLE tl_creator_metadata ADD COLUMN rights_scope TEXT NOT NULL DEFAULT ''").run().catch(()=>{});
+    await c.env.DB.prepare("ALTER TABLE tl_creator_metadata ADD COLUMN work_identity_type TEXT NOT NULL DEFAULT 'unspecified'").run().catch(()=>{});
     await c.env.DB.prepare(`INSERT INTO tl_creator_metadata
-      (file_id,user_id,spotify_track_id,spotify_url,spotify_title,spotify_artist,spotify_album,spotify_release_date,rights_role,rights_scope,rights_declared,declaration_status)
-      VALUES(?,?,?,?,?,?,?,?,?,?,1,'declared')
+      (file_id,user_id,spotify_track_id,spotify_url,spotify_title,spotify_artist,spotify_album,spotify_release_date,rights_role,rights_scope,work_identity_type,rights_declared,declaration_status)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,1,'declared')
       ON CONFLICT(file_id) DO UPDATE SET
       spotify_track_id=excluded.spotify_track_id,spotify_url=excluded.spotify_url,
       spotify_title=excluded.spotify_title,spotify_artist=excluded.spotify_artist,
       spotify_album=excluded.spotify_album,spotify_release_date=excluded.spotify_release_date,
-      rights_role=excluded.rights_role,rights_scope=excluded.rights_scope,rights_declared=1,declaration_status='declared',updated_at=datetime('now')
+      rights_role=excluded.rights_role,rights_scope=excluded.rights_scope,work_identity_type=excluded.work_identity_type,rights_declared=1,declaration_status='declared',updated_at=datetime('now')
       WHERE tl_creator_metadata.user_id=excluded.user_id`
     ).bind(fileId,userId,spotifyId||null,spotifyUrl||null,
       spotify?String(spotify.title||'').slice(0,300):null,
       spotify?String(spotify.artist||'').slice(0,300):null,
       spotify?String(spotify.album||'').slice(0,300):null,
-      spotify?String(spotify.release_date||'').slice(0,32):null,role,scope).run();
-    return c.json({ok:true,file_id:fileId,declaration_status:'declared',spotify_linked:!!spotifyId});
+      spotify?String(spotify.release_date||'').slice(0,32):null,role,scope,workIdentityType).run();
+    return c.json({ok:true,file_id:fileId,declaration_status:'declared',work_identity_type:workIdentityType,spotify_linked:!!spotifyId});
   } catch (e:any) {
     return c.json({ok:false,error:e?.message||'권리 정보 저장에 실패했습니다.'},500);
   }
