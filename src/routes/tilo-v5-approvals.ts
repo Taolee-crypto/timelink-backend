@@ -69,12 +69,20 @@ router.post('/settlements/prepare',async c=>{
  const localDate=String(body?.local_date||'');
  const creatorId=Number(body?.creator_id);
  if(!['KR','JP','US','CN','TH','VN'].includes(country)||
-    !/^\\d{4}-\\d{2}-\\d{2}$/.test(localDate)||
+    !/^\d{4}-\d{2}-\d{2}$/.test(localDate)||
     !Number.isSafeInteger(creatorId)||creatorId<=0)
    return c.json({ok:false,error:'INVALID_CANDIDATE_SCOPE'},400);
  const zone:Record<string,string>={KR:'Asia/Seoul',JP:'Asia/Tokyo',US:'America/New_York',
    CN:'Asia/Shanghai',TH:'Asia/Bangkok',VN:'Asia/Ho_Chi_Minh'};
- const today=new Intl.DateTimeFormat('en-CA',{timeZone:zone[country],year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ const localDay=(date:Date):string=>{
+  const parts=new Intl.DateTimeFormat('en-US',{timeZone:zone[country],year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date);
+  const value=(type:string)=>parts.find(p=>p.type===type)?.value||'';
+  return value('year')+'-'+value('month')+'-'+value('day');
+ };
+ const parsedDate=new Date(localDate+'T00:00:00Z');
+ if(!Number.isFinite(parsedDate.getTime())||parsedDate.toISOString().slice(0,10)!==localDate)
+   return c.json({ok:false,error:'INVALID_LOCAL_DATE'},400);
+ const today=localDay(new Date());
  if(localDate>=today)return c.json({ok:false,error:'LOCAL_DAY_NOT_CLOSED'},409);
  try{
   const rows=await c.env.DB.prepare(`SELECT event_id,started_at,ended_at,audible_ms,
@@ -82,8 +90,8 @@ router.post('/settlements/prepare',async c=>{
    WHERE country=? AND creator_id=? AND local_month=? ORDER BY event_id LIMIT 10001`)
    .bind(country,creatorId,localDate.slice(0,7)).all<any>();
   const events=(rows.results||[]).filter((e:any)=>{
-   const day=new Intl.DateTimeFormat('en-CA',{timeZone:zone[country],year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(e.started_at));
-   const endDay=new Intl.DateTimeFormat('en-CA',{timeZone:zone[country],year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(new Date(e.ended_at).getTime()-1));
+   const day=localDay(new Date(e.started_at));
+   const endDay=localDay(new Date(new Date(e.ended_at).getTime()-1));
    return day===localDate&&endDay===localDate;
   });
   if(events.length===0)return c.json({ok:false,error:'NO_VERIFIED_AIRTIME'},404);
@@ -111,17 +119,24 @@ router.post('/settlements/prepare',async c=>{
   const prior=await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM tilo_v5_settlement_approvals
    WHERE creator_id=? AND local_month=?`).bind(creatorId,localDate.slice(0,7)).first<{n:number}>();
   if(Number(prior?.n||0)>0)return c.json({ok:false,error:'MONTHLY_WATERMARK_NOT_READY'},409);
-  const inserted=await c.env.DB.prepare(`INSERT OR IGNORE INTO tilo_v5_settlement_approvals
+  if(creator>BigInt(Number.MAX_SAFE_INTEGER)||platform>BigInt(Number.MAX_SAFE_INTEGER))
+   return c.json({ok:false,error:'SETTLEMENT_AMOUNT_OVERFLOW'},409);
+  const result=await c.env.DB.batch([
+   c.env.DB.prepare(`INSERT OR IGNORE INTO tilo_v5_settlement_approvals
    (settlement_id,country,local_date,creator_id,local_month,policy_version,
    evidence_digest,evidence_event_count,previous_monthly_creator_gross_atoms,
    new_creator_gross_atoms,new_platform_share_atoms)
    VALUES (?,?,?,?,?,'tilo-creator-contribution-v1',?,?,0,?,?)`)
    .bind(settlementId,country,localDate,creatorId,localDate.slice(0,7),digest,
-     events.length,Number(creator),Number(platform)).run();
-  if(Number(inserted.meta?.changes||0)!==1)return c.json({ok:false,error:'CANDIDATE_CONFLICT'},409);
-  await c.env.DB.prepare(`INSERT INTO tilo_v5_settlement_approval_audit
-   (settlement_id,action,actor_user_id,evidence_digest) VALUES (?,'request',?,?)`)
-   .bind(settlementId,actor,digest).run();
+     events.length,Number(creator),Number(platform)),
+   c.env.DB.prepare(`INSERT INTO tilo_v5_settlement_approval_audit
+   (settlement_id,action,actor_user_id,evidence_digest)
+   SELECT settlement_id,'request',?,evidence_digest FROM tilo_v5_settlement_approvals
+   WHERE settlement_id=? AND state='pending' AND evidence_digest=?`)
+   .bind(actor,settlementId,digest)
+  ]);
+  if(Number(result[0]?.meta?.changes||0)!==1)
+   return c.json({ok:false,error:'CANDIDATE_CONFLICT'},409);
   return c.json({ok:true,settlement_id:settlementId,state:'pending',
    evidence_digest:digest,evidence_event_count:events.length,
    creator_gross_atoms:Number(creator),platform_share_atoms:Number(platform),
