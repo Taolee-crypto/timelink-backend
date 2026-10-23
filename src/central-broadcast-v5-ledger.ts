@@ -14,6 +14,21 @@ export async function settleVerifiedCentralBroadcast(
       !/^[a-zA-Z0-9:_-]{8,128}$/.test(evidence.verifiedBy))
     throw new Error('Missing verified broadcast rights/evidence');
   await assertTLAtomScale(db);
+  // Never trust a caller-provided grant ID or creator ID alone.
+  // A missing rights table/grant deliberately fails closed.
+  const grant=await db.prepare(`
+    SELECT g.grant_id FROM central_broadcast_rights_grants g
+    JOIN tl3_v5_releases v ON v.file_id=g.file_id AND v.status='sealed'
+    JOIN tl_files f ON f.id=v.file_id AND f.shared=1
+      AND COALESCE(f.revenue_held,0)=0
+    WHERE g.grant_id=? AND g.file_id=? AND g.creator_id=?
+      AND v.user_id=? AND g.country=?
+      AND g.status='active'
+      AND (g.expires_at IS NULL OR g.expires_at > datetime('now'))
+    LIMIT 1
+  `).bind(evidence.rightsGrantId,event.fileId,event.creatorId,
+    event.creatorId,event.country).first();
+  if(!grant)throw new Error('BROADCAST_RIGHTS_NOT_VERIFIED');
   const a=validateAndCalculateBroadcastAirtime(event);
   if(a.totalAtoms<=0)throw new Error('No billable broadcast airtime');
   const existing=await db.prepare(
