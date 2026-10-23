@@ -1,0 +1,20 @@
+import { strict as assert } from 'node:assert';
+import { planTiloBroadcast } from '../src/tilo-v5-scheduler';
+
+const tracks = [
+  {fileId:1,artist:'A',durationMs:60000,campaignId:11,eligiblePromotion:true},
+  {fileId:2,artist:'B',durationMs:60000},
+  {fileId:3,artist:'C',durationMs:60000,campaignId:12,eligiblePromotion:true},
+  {fileId:4,artist:'D',durationMs:60000}
+];
+const plan = planTiloBroadcast(tracks,{promotedMs:0,ordinaryMs:0},240000);
+assert.equal(plan.selections.length,4);
+assert.equal(plan.projected.promotedMs,120000);
+assert.equal(plan.projected.ordinaryMs,120000);
+assert.equal(plan.unfilledMs,0);
+assert.equal(new Set(plan.selections.map(s=>s.track.fileId)).size,4);
+const noPromotion = planTiloBroadcast(tracks.map(t=>({...t,eligiblePromotion:false})),{promotedMs:0,ordinaryMs:0},240000);
+assert.equal(noPromotion.projected.promotedMs,0);
+assert.equal(noPromotion.projected.ordinaryMs,240000);
+assert.equal(planTiloBroadcast(tracks,{promotedMs:0,ordinaryMs:0},60000,[1]).selections[0].track.fileId,3);
+assert.throws(()=>planTiloBroadcast(tracks,{promotedMs:-1,ordinaryMs:0},60000));
