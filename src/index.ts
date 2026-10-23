@@ -2105,7 +2105,10 @@ app.post('/api/v1/tl3/play/stop/:id', async (c) => {
     const required=Math.ceil(Number(release.duration_ms)/1000-1e-9);
     const billed=Number(session.billed_seconds||0);
     if(billed>=required) return c.json({ok:true,refunded_tl:0,platform_tl:0,complete:true});
-    const remainingAtoms=tlToAtoms(Number(Math.max(0,required-billed).toFixed(4)));
+    // Return the remaining track pool, including unused prepaid replay credits.
+    // Never turn paid TL_P into non-convertible TL_B on stop.
+    const pool=await getTrackPoolBalances(c.env.DB,userId,String(release.share_id));
+    const remainingAtoms=pool.paid+pool.ad+pool.bonus;
     const posted=await settleV5EarlyStop(c.env.DB,{
       userId,shareId:String(release.share_id),sessionId,remainingAtoms,
       atomicStatements:[
