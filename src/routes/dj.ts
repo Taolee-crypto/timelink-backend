@@ -122,6 +122,36 @@ router.post('/batch-classify', async (c) => {
 });
 
 
+// Country-local weather from Open-Meteo; no API key or browser-side credentials.
+// Weather is observational context, not a substitute for verified news.
+const tiloWeatherCities:Record<string,{lat:number;lon:number;city:string}>={
+ KR:{lat:37.5665,lon:126.9780,city:'Seoul'},
+ JP:{lat:35.6762,lon:139.6503,city:'Tokyo'},
+ US:{lat:38.9072,lon:-77.0369,city:'Washington DC'},
+ CN:{lat:39.9042,lon:116.4074,city:'Beijing'},
+ TH:{lat:13.7563,lon:100.5018,city:'Bangkok'},
+ VN:{lat:21.0285,lon:105.8542,city:'Hanoi'}
+};
+router.get('/tilo/weather/:country',async c=>{
+ const country=String(c.req.param('country')||'').toUpperCase();
+ const city=tiloWeatherCities[country];
+ if(!city)return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+ try{
+   const url='https://api.open-meteo.com/v1/forecast?latitude='+city.lat+'&longitude='+city.lon+
+     '&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m&timezone=auto';
+   const response=await fetch(url,{signal:AbortSignal.timeout(5000)});
+   if(!response.ok)throw Error('WEATHER_PROVIDER_HTTP_'+response.status);
+   const data:any=await response.json();
+   if(!data.current||!Number.isFinite(data.current.temperature_2m))throw Error('WEATHER_DATA_INVALID');
+   return c.json({ok:true,country,city:city.city,observed_at:data.current.time,
+     temperature_c:data.current.temperature_2m,humidity_percent:data.current.relative_humidity_2m,
+     precipitation_mm:data.current.precipitation,weather_code:data.current.weather_code,
+     wind_kmh:data.current.wind_speed_10m,source:'Open-Meteo',
+     source_url:'https://open-meteo.com/',note:'Representative city conditions, not entire country.'},
+     200,{'Cache-Control':'public, max-age=600'});
+ }catch(e:any){return c.json({ok:false,error:'WEATHER_UNAVAILABLE'},503);}
+});
+
 // TILO daily editorial judgment. Verified news is provided by the caller; no invented headlines.
 // This is a read-only advisory endpoint and cannot enable a country station or alter playback.
 router.post('/tilo/daily-context/:country', async (c) => {
@@ -139,7 +169,16 @@ router.post('/tilo/daily-context/:country', async (c) => {
     Date.parse(String(x.publishedAt))<=now.getTime() &&
     Date.parse(String(x.publishedAt))>=now.getTime()-36*3600000
   ).slice(0,12).map((x:any)=>({headline:String(x.headline).slice(0,250),source:String(x.source).slice(0,100),sourceUrl:String(x.sourceUrl).slice(0,500)}));
-  const weather=body.weather && body.weather.verified===true ? {
+  // Weather is fetched by the backend from a named provider; client claims are not trusted.
+  let liveWeather:any=null;
+  try{
+    const city=tiloWeatherCities[country];
+    const response=await fetch('https://api.open-meteo.com/v1/forecast?latitude='+city.lat+'&longitude='+city.lon+
+      '&current=temperature_2m,precipitation,weather_code&timezone=auto',{signal:AbortSignal.timeout(3500)});
+    if(response.ok){const result:any=await response.json();if(Number.isFinite(result.current?.temperature_2m))
+      liveWeather={description:city.city+': '+result.current.temperature_2m+'°C, precipitation '+result.current.precipitation+' mm, WMO code '+result.current.weather_code,source:'Open-Meteo'};}
+  }catch(_){/* Continue with no weather. */}
+  const weather=liveWeather || (body.weather && body.weather.verified===true ? {
     description:String(body.weather.description||'').slice(0,180),
     source:String(body.weather.source||'').slice(0,100)
   }:null;
