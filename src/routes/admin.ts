@@ -57,6 +57,40 @@ router.post('/central-broadcast/stations/:country/grants', async c => {
   }catch(e:any){return c.json({ok:false,error:/no such table/i.test(String(e?.message))?'BROADCAST_SCHEMA_NOT_READY':'BROADCAST_GRANT_FAILED'},500)}
 });
 
+/** Read-only candidate audit: reports why published SharePlace V5 files are excluded. */
+router.get('/central-broadcast/stations/:country/audit', async c => {
+  const adminId=await requireAdmin(c);
+  if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const country=String(c.req.param('country')||'').toUpperCase();
+  if(!['KR','JP','US','CN','TH','VN'].includes(country))return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+  try{
+    await ensureCentralBroadcastSchema(c.env.DB);
+    const rows=await c.env.DB.prepare(`SELECT f.id AS file_id,f.title,f.file_type,f.shared,
+      v.status AS v5_status,v.duration_ms,
+      CASE WHEN EXISTS(SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id
+        AND r.status='released' AND r.rights_confirmed=1) THEN 1 ELSE 0 END AS release_rights,
+      CASE WHEN EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
+        WHERE rg.file_id=f.id AND rg.creator_id=f.user_id AND rg.country=?
+          AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
+        THEN 1 ELSE 0 END AS country_broadcast_rights
+      FROM tl_files f LEFT JOIN tl3_v5_releases v ON v.file_id=f.id
+      WHERE f.shared=1 ORDER BY f.id DESC LIMIT 100`).bind(country).all<any>();
+    const tracks=(rows.results||[]).map(r=>{
+      const reasons:string[]=[];
+      if(!r.v5_status)reasons.push('NO_V5_RELEASE');
+      else if(r.v5_status!=='sealed')reasons.push('V5_NOT_SEALED');
+      if(!r.release_rights)reasons.push('SHAREPLACE_RELEASE_RIGHTS_MISSING');
+      if(!r.country_broadcast_rights)reasons.push('COUNTRY_BROADCAST_RIGHTS_MISSING');
+      if(String(r.file_type||'').toLowerCase()!=='audio/tl3')reasons.push('FILE_TYPE_NOT_TL3');
+      return {file_id:r.file_id,title:r.title,reasons,eligible:reasons.length===0};
+    });
+    return c.json({ok:true,country,total:tracks.length,eligible:tracks.filter(x=>x.eligible).length,tracks});
+  }catch(e:any){
+    console.error('[TILO_CANDIDATE_AUDIT]',String(e?.message||e));
+    return c.json({ok:false,error:'BROADCAST_AUDIT_FAILED'},503);
+  }
+});
+
 router.get('/central-broadcast/stations/:country', async c => {
   const adminId=await requireAdmin(c);
   if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
