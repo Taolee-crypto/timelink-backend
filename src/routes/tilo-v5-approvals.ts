@@ -59,4 +59,75 @@ router.post('/settlements/:id/review',async c=>{
  note:'Approval does not issue TL or post to the economic ledger.'});
  }catch(e){console.error('[TILO_APPROVAL_REVIEW]',e);return c.json({ok:false,error:'TILO_REVIEW_UNAVAILABLE'},503);}
 });
+
+/** Prepare a pending candidate from durable verified airtime; never pay TL here. */
+router.post('/settlements/prepare',async c=>{
+ const actor=await adminId(c);
+ if(!actor)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+ const body=await c.req.json().catch(()=>null) as {country?:string;local_date?:string;creator_id?:number}|null;
+ const country=String(body?.country||'').toUpperCase();
+ const localDate=String(body?.local_date||'');
+ const creatorId=Number(body?.creator_id);
+ if(!['KR','JP','US','CN','TH','VN'].includes(country)||
+    !/^\\d{4}-\\d{2}-\\d{2}$/.test(localDate)||
+    !Number.isSafeInteger(creatorId)||creatorId<=0)
+   return c.json({ok:false,error:'INVALID_CANDIDATE_SCOPE'},400);
+ const zone:Record<string,string>={KR:'Asia/Seoul',JP:'Asia/Tokyo',US:'America/New_York',
+   CN:'Asia/Shanghai',TH:'Asia/Bangkok',VN:'Asia/Ho_Chi_Minh'};
+ const today=new Intl.DateTimeFormat('en-CA',{timeZone:zone[country],year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ if(localDate>=today)return c.json({ok:false,error:'LOCAL_DAY_NOT_CLOSED'},409);
+ try{
+  const rows=await c.env.DB.prepare(`SELECT event_id,started_at,ended_at,audible_ms,
+   creator_atoms,platform_atoms,evidence_digest FROM tilo_v5_verified_airtime
+   WHERE country=? AND creator_id=? AND local_month=? ORDER BY event_id LIMIT 10001`)
+   .bind(country,creatorId,localDate.slice(0,7)).all<any>();
+  const events=(rows.results||[]).filter((e:any)=>{
+   const day=new Intl.DateTimeFormat('en-CA',{timeZone:zone[country],year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(e.started_at));
+   const endDay=new Intl.DateTimeFormat('en-CA',{timeZone:zone[country],year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(new Date(e.ended_at).getTime()-1));
+   return day===localDate&&endDay===localDate;
+  });
+  if(events.length===0)return c.json({ok:false,error:'NO_VERIFIED_AIRTIME'},404);
+  if((rows.results||[]).length>10000)return c.json({ok:false,error:'EVIDENCE_LIMIT_EXCEEDED'},409);
+  let creator=0n,platform=0n;
+  const parts:string[]=[];
+  for(const e of events){
+   const ms=BigInt(e.audible_ms);
+   const total=ms*3n,creatorPart=total*7n/10n,platformPart=total-creatorPart;
+   if(BigInt(e.creator_atoms)!==creatorPart||BigInt(e.platform_atoms)!==platformPart)
+     return c.json({ok:false,error:'AIRTIME_AMOUNT_MISMATCH'},409);
+   creator+=creatorPart;platform+=platformPart;
+   parts.push([e.event_id,e.started_at,e.ended_at,e.audible_ms,e.evidence_digest].join('|'));
+  }
+  const encoded=new TextEncoder().encode(parts.join('\\n'));
+  const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',encoded)))
+    .map(b=>b.toString(16).padStart(2,'0')).join('');
+  const settlementId='tilo:'+country+':'+localDate+':'+creatorId;
+  const existing=await c.env.DB.prepare('SELECT settlement_id,state,evidence_digest FROM tilo_v5_settlement_approvals WHERE settlement_id=?')
+   .bind(settlementId).first<{settlement_id:string;state:string;evidence_digest:string}>();
+  if(existing)return c.json({ok:false,error:'CANDIDATE_ALREADY_EXISTS',state:existing.state,
+   evidence_matches:existing.evidence_digest===digest},409);
+  // Monthly gross must be derived from earlier approved/postable days, not browser input.
+  // Until a serialized monthly watermark exists, candidates after the first day are blocked.
+  const prior=await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM tilo_v5_settlement_approvals
+   WHERE creator_id=? AND local_month=?`).bind(creatorId,localDate.slice(0,7)).first<{n:number}>();
+  if(Number(prior?.n||0)>0)return c.json({ok:false,error:'MONTHLY_WATERMARK_NOT_READY'},409);
+  const inserted=await c.env.DB.prepare(`INSERT OR IGNORE INTO tilo_v5_settlement_approvals
+   (settlement_id,country,local_date,creator_id,local_month,policy_version,
+   evidence_digest,evidence_event_count,previous_monthly_creator_gross_atoms,
+   new_creator_gross_atoms,new_platform_share_atoms)
+   VALUES (?,?,?,?,?,'tilo-creator-contribution-v1',?,?,0,?,?)`)
+   .bind(settlementId,country,localDate,creatorId,localDate.slice(0,7),digest,
+     events.length,Number(creator),Number(platform)).run();
+  if(Number(inserted.meta?.changes||0)!==1)return c.json({ok:false,error:'CANDIDATE_CONFLICT'},409);
+  await c.env.DB.prepare(`INSERT INTO tilo_v5_settlement_approval_audit
+   (settlement_id,action,actor_user_id,evidence_digest) VALUES (?,'request',?,?)`)
+   .bind(settlementId,actor,digest).run();
+  return c.json({ok:true,settlement_id:settlementId,state:'pending',
+   evidence_digest:digest,evidence_event_count:events.length,
+   creator_gross_atoms:Number(creator),platform_share_atoms:Number(platform),
+   posted:false});
+ }catch(e){console.error('[TILO_CANDIDATE_PREPARE]',e);
+  return c.json({ok:false,error:'TILO_CANDIDATE_PREPARE_FAILED'},503);}
+});
+
 export default router;
