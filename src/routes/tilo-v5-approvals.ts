@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
+import { planTiloV5LedgerPosting } from '../tilo-v5-ledger-posting-plan';
 const router=new Hono<{Bindings:Env}>();
 async function adminId(c:Context<{Bindings:Env}>):Promise<number|null>{
  const token=String(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
@@ -164,6 +165,51 @@ router.post('/settlements/prepare',async c=>{
    posted:false});
  }catch(e){console.error('[TILO_CANDIDATE_PREPARE]',e);
   return c.json({ok:false,error:'TILO_CANDIDATE_PREPARE_FAILED'},503);}
+});
+
+
+/** Admin-only, read-only funding readiness. Never posts ledger entries. */
+router.get('/settlements/:id/posting-readiness',async c=>{
+ const actor=await adminId(c);
+ if(!actor)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+ const id=String(c.req.param('id')||'');
+ if(!/^[a-zA-Z0-9:_-]{12,160}$/.test(id))
+  return c.json({ok:false,error:'INVALID_SETTLEMENT_ID'},400);
+ try{
+  const row=await c.env.DB.prepare(`SELECT state,evidence_digest,policy_version,
+   previous_monthly_creator_gross_atoms,new_creator_gross_atoms,new_platform_share_atoms,
+   posted_transaction_id FROM tilo_v5_settlement_approvals WHERE settlement_id=?`)
+   .bind(id).first<{
+    state:string;evidence_digest:string;policy_version:string;
+    previous_monthly_creator_gross_atoms:number;new_creator_gross_atoms:number;
+    new_platform_share_atoms:number;posted_transaction_id:string|null;
+   }>();
+  if(!row)return c.json({ok:false,error:'SETTLEMENT_NOT_FOUND'},404);
+  if(row.state!=='approved')return c.json({ok:true,ready:false,
+   blockers:['SETTLEMENT_NOT_APPROVED'],state:row.state,posted:false});
+  const plan=planTiloV5LedgerPosting(
+   BigInt(row.previous_monthly_creator_gross_atoms),
+   BigInt(row.new_creator_gross_atoms),BigInt(row.new_platform_share_atoms));
+  const funding=await c.env.DB.prepare(`SELECT b.available_atoms FROM v3_economy_accounts a
+   JOIN v3_economy_balances b ON b.account_id=a.id
+   WHERE a.owner_type='platform' AND a.owner_id='timelink' AND a.asset_code='TL'
+   AND a.bucket='tilo_broadcast_funding' AND a.status='active'`)
+   .first<{available_atoms:number}>();
+  const available=BigInt(funding?.available_atoms||0);
+  const blockers:string[]=[];
+  if(row.policy_version!==plan.policyVersion)blockers.push('POLICY_VERSION_MISMATCH');
+  if(available<plan.platformFundingAtoms)blockers.push('INSUFFICIENT_PLATFORM_FUNDING');
+  // A separate atomic funding guard and evidence/rights recheck are mandatory.
+  blockers.push('ATOMIC_FUNDING_GUARD_NOT_ENABLED','EVIDENCE_RECHECK_NOT_ENABLED');
+  return c.json({ok:true,ready:false,state:row.state,posted:false,
+   evidence_digest:row.evidence_digest,policy_version:plan.policyVersion,
+   required_funding_atoms:Number(plan.platformFundingAtoms),
+   available_funding_atoms:Number(available),
+   creator_net_atoms:Number(plan.creatorNetAtoms),
+   development_contribution_atoms:Number(plan.developmentContributionAtoms),
+   blockers});
+ }catch(e){console.error('[TILO_POSTING_READINESS]',e);
+  return c.json({ok:false,error:'POSTING_READINESS_UNAVAILABLE'},503);}
 });
 
 export default router;
