@@ -199,8 +199,63 @@ router.get('/settlements/:id/posting-readiness',async c=>{
   const blockers:string[]=[];
   if(row.policy_version!==plan.policyVersion)blockers.push('POLICY_VERSION_MISMATCH');
   if(available<plan.platformFundingAtoms)blockers.push('INSUFFICIENT_PLATFORM_FUNDING');
-  // A separate atomic funding guard and evidence/rights recheck are mandatory.
-  blockers.push('ATOMIC_FUNDING_GUARD_NOT_ENABLED','EVIDENCE_RECHECK_NOT_ENABLED');
+  // Recompute the exact candidate snapshot from stored verified events.
+  // Fail closed if evidence changed, intervals cross local midnight or the
+  // country/month event set is too large for this bounded audit.
+  const scope=await c.env.DB.prepare(`SELECT country,local_date,creator_id,evidence_event_count,
+   new_creator_gross_atoms,new_platform_share_atoms FROM tilo_v5_settlement_approvals
+   WHERE settlement_id=?`).bind(id).first<{
+    country:string;local_date:string;creator_id:number;evidence_event_count:number;
+    new_creator_gross_atoms:number;new_platform_share_atoms:number;
+   }>();
+  if(!scope)throw new Error('SETTLEMENT_SCOPE_MISSING');
+  const zones:Record<string,string>={KR:'Asia/Seoul',JP:'Asia/Tokyo',
+   US:'America/New_York',CN:'Asia/Shanghai',TH:'Asia/Bangkok',VN:'Asia/Ho_Chi_Minh'};
+  const formatter=new Intl.DateTimeFormat('en-US',{timeZone:zones[scope.country],
+   year:'numeric',month:'2-digit',day:'2-digit'});
+  const day=(d:Date)=>{
+   const parts=formatter.formatToParts(d);
+   const v=(k:string)=>parts.find(p=>p.type===k)?.value||'';
+   return v('year')+'-'+v('month')+'-'+v('day');
+  };
+  const evidence=await c.env.DB.prepare(`SELECT event_id,started_at,ended_at,audible_ms,
+   creator_atoms,platform_atoms,evidence_digest FROM tilo_v5_verified_airtime
+   WHERE country=? AND creator_id=? AND local_month=? ORDER BY event_id LIMIT 10001`)
+   .bind(scope.country,scope.creator_id,scope.local_date.slice(0,7)).all<{
+    event_id:string;started_at:string;ended_at:string;audible_ms:number;
+    creator_atoms:number;platform_atoms:number;evidence_digest:string;
+   }>();
+  let count=0,gross=0n,platform=0n;
+  const pieces:string[]=[];
+  if((evidence.results||[]).length>10000)blockers.push('EVIDENCE_LIMIT_EXCEEDED');
+  else for(const e of evidence.results||[]){
+   const start=new Date(e.started_at).getTime(),end=new Date(e.ended_at).getTime();
+   if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start){
+    blockers.push('INVALID_EVIDENCE_INTERVAL');break;
+   }
+   const startDay=day(new Date(start)),endDay=day(new Date(end-1));
+   if(startDay!==scope.local_date&&endDay!==scope.local_date)continue;
+   if(startDay!==scope.local_date||endDay!==scope.local_date){
+    blockers.push('CROSSES_LOCAL_DAY');break;
+   }
+   const ms=BigInt(e.audible_ms);
+   const total=ms*3n,creatorPart=total*7n/10n,platformPart=total-creatorPart;
+   if(BigInt(e.creator_atoms)!==creatorPart||BigInt(e.platform_atoms)!==platformPart){
+    blockers.push('AIRTIME_AMOUNT_MISMATCH');break;
+   }
+   count++;gross+=creatorPart;platform+=platformPart;
+   pieces.push([e.event_id,e.started_at,e.ended_at,e.audible_ms,e.evidence_digest].join('|'));
+  }
+  const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
+   new TextEncoder().encode(pieces.join('\\n')))))
+   .map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(hash!==row.evidence_digest||count!==scope.evidence_event_count||
+     gross!==BigInt(scope.new_creator_gross_atoms)||
+     platform!==BigInt(scope.new_platform_share_atoms))
+   blockers.push('EVIDENCE_SNAPSHOT_CHANGED');
+  // Migration presence must be verified on the actual production D1.
+  blockers.push('ATOMIC_GUARD_DEPLOYMENT_UNVERIFIED','RIGHTS_RECHECK_NOT_ENABLED',
+   'ATOMIC_POSTING_NOT_ENABLED');
   return c.json({ok:true,ready:false,state:row.state,posted:false,
    evidence_digest:row.evidence_digest,policy_version:plan.policyVersion,
    required_funding_atoms:Number(plan.platformFundingAtoms),
