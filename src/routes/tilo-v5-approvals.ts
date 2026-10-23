@@ -159,7 +159,8 @@ router.post('/settlements/prepare',async c=>{
    return c.json({ok:false,error:'CANDIDATE_CONFLICT'},409);
   return c.json({ok:true,settlement_id:settlementId,state:'pending',
    evidence_digest:digest,evidence_event_count:events.length,
-   previous_monthly_creator_gross_atoms:Number(previousGross),\n   creator_gross_atoms:Number(creator),platform_share_atoms:Number(platform),
+   previous_monthly_creator_gross_atoms:Number(previousGross),
+   creator_gross_atoms:Number(creator),platform_share_atoms:Number(platform),
    posted:false});
  }catch(e){console.error('[TILO_CANDIDATE_PREPARE]',e);
   return c.json({ok:false,error:'TILO_CANDIDATE_PREPARE_FAILED'},503);}
