@@ -181,7 +181,7 @@ router.post('/tilo/daily-context/:country', async (c) => {
   const weather=liveWeather || (body.weather && body.weather.verified===true ? {
     description:String(body.weather.description||'').slice(0,180),
     source:String(body.weather.source||'').slice(0,100)
-  }:null;
+  }:null);
   const prompt=[
     'Local time: '+localTime,
     'Verified headlines: '+JSON.stringify(headlines),
