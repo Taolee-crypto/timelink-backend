@@ -114,11 +114,31 @@ router.post('/settlements/prepare',async c=>{
    .bind(settlementId).first<{settlement_id:string;state:string;evidence_digest:string}>();
   if(existing)return c.json({ok:false,error:'CANDIDATE_ALREADY_EXISTS',state:existing.state,
    evidence_matches:existing.evidence_digest===digest},409);
-  // Monthly gross must be derived from earlier approved/postable days, not browser input.
-  // Until a serialized monthly watermark exists, candidates after the first day are blocked.
-  const prior=await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM tilo_v5_settlement_approvals
-   WHERE creator_id=? AND local_month=?`).bind(creatorId,localDate.slice(0,7)).first<{n:number}>();
-  if(Number(prior?.n||0)>0)return c.json({ok:false,error:'MONTHLY_WATERMARK_NOT_READY'},409);
+  // Only POSTED settlements are recognized as paid monthly gross.
+  // Reject gaps, out-of-order days and any unsettled prior candidate.
+  // The monthly progression is creator-wide, across all TILO countries.
+  const priorRows=await c.env.DB.prepare(`SELECT settlement_id,country,local_date,state,
+   previous_monthly_creator_gross_atoms,new_creator_gross_atoms
+   FROM tilo_v5_settlement_approvals WHERE creator_id=? AND local_month=?
+   ORDER BY local_date,country LIMIT 10001`)
+   .bind(creatorId,localDate.slice(0,7)).all<{
+    settlement_id:string;country:string;local_date:string;state:string;
+    previous_monthly_creator_gross_atoms:number;new_creator_gross_atoms:number;
+   }>();
+  if((priorRows.results||[]).length>10000)
+   return c.json({ok:false,error:'MONTHLY_HISTORY_LIMIT_EXCEEDED'},409);
+  let previousGross=0n;
+  for(const p of priorRows.results||[]){
+   if(p.local_date>=localDate)
+    return c.json({ok:false,error:'MONTHLY_SETTLEMENT_OUT_OF_ORDER'},409);
+   if(p.state!=='posted')
+    return c.json({ok:false,error:'PRIOR_SETTLEMENT_NOT_POSTED'},409);
+   if(BigInt(p.previous_monthly_creator_gross_atoms)!==previousGross)
+    return c.json({ok:false,error:'MONTHLY_WATERMARK_MISMATCH'},409);
+   previousGross+=BigInt(p.new_creator_gross_atoms);
+  }
+  if(previousGross+creator>BigInt(Number.MAX_SAFE_INTEGER))
+   return c.json({ok:false,error:'MONTHLY_GROSS_OVERFLOW'},409);
   if(creator>BigInt(Number.MAX_SAFE_INTEGER)||platform>BigInt(Number.MAX_SAFE_INTEGER))
    return c.json({ok:false,error:'SETTLEMENT_AMOUNT_OVERFLOW'},409);
   const result=await c.env.DB.batch([
@@ -126,9 +146,9 @@ router.post('/settlements/prepare',async c=>{
    (settlement_id,country,local_date,creator_id,local_month,policy_version,
    evidence_digest,evidence_event_count,previous_monthly_creator_gross_atoms,
    new_creator_gross_atoms,new_platform_share_atoms)
-   VALUES (?,?,?,?,?,'tilo-creator-contribution-v1',?,?,0,?,?)`)
+   VALUES (?,?,?,?,?,'tilo-creator-contribution-v1',?,?,?,?,?)`)
    .bind(settlementId,country,localDate,creatorId,localDate.slice(0,7),digest,
-     events.length,Number(creator),Number(platform)),
+     events.length,Number(previousGross),Number(creator),Number(platform)),
    c.env.DB.prepare(`INSERT INTO tilo_v5_settlement_approval_audit
    (settlement_id,action,actor_user_id,evidence_digest)
    SELECT settlement_id,'request',?,evidence_digest FROM tilo_v5_settlement_approvals
@@ -139,7 +159,7 @@ router.post('/settlements/prepare',async c=>{
    return c.json({ok:false,error:'CANDIDATE_CONFLICT'},409);
   return c.json({ok:true,settlement_id:settlementId,state:'pending',
    evidence_digest:digest,evidence_event_count:events.length,
-   creator_gross_atoms:Number(creator),platform_share_atoms:Number(platform),
+   previous_monthly_creator_gross_atoms:Number(previousGross),\n   creator_gross_atoms:Number(creator),platform_share_atoms:Number(platform),
    posted:false});
  }catch(e){console.error('[TILO_CANDIDATE_PREPARE]',e);
   return c.json({ok:false,error:'TILO_CANDIDATE_PREPARE_FAILED'},503);}
