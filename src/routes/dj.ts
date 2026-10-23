@@ -154,6 +154,41 @@ router.get('/tilo/weather/:country',async c=>{
 
 // TILO daily editorial judgment. Verified news is provided by the caller; no invented headlines.
 // This is a read-only advisory endpoint and cannot enable a country station or alter playback.
+// Approved news is ingested only from operator-configured JSON endpoints.
+// TILO_NEWS_FEEDS_JSON: {"KR":{"url":"https://licensed-provider.example/api/kr","source":"Publisher","broadcastPermitted":true},...}
+// Endpoint returns {items:[{headline,sourceUrl,publishedAt},...]}; feed URLs must be HTTPS.
+// No configuration means no news: public headlines cannot self-certify broadcast rights.
+const tiloNewsCache=new Map<string,{expires:number;items:any[]}>();
+async function getTiloApprovedNews(country:string,env:any,now:Date):Promise<any[]>{
+  let feeds:any={};
+  try{feeds=JSON.parse(String(env?.TILO_NEWS_FEEDS_JSON||'{}'));}catch(_){return [];}
+  const feed=feeds?.[country];
+  if(!feed||feed.broadcastPermitted!==true||typeof feed.url!=='string'||typeof feed.source!=='string')return [];
+  let url:URL;
+  try{url=new URL(feed.url);}catch(_){return [];}
+  if(url.protocol!=='https:'||!url.hostname||url.username||url.password)return [];
+  const cached=tiloNewsCache.get(country);
+  if(cached&&cached.expires>now.getTime())return cached.items;
+  try{
+    const response=await fetch(url.toString(),{signal:AbortSignal.timeout(4500),headers:{Accept:'application/json'}});
+    if(!response.ok)return cached?.items||[];
+    const json:any=await response.json();
+    const items=(Array.isArray(json?.items)?json.items:[]).filter((x:any)=>{
+      const published=Date.parse(String(x?.publishedAt||''));
+      if(!Number.isFinite(published)||published>now.getTime()||published<now.getTime()-36*3600000)return false;
+      if(typeof x.headline!=='string'||!x.headline.trim()||typeof x.sourceUrl!=='string')return false;
+      try{return new URL(x.sourceUrl).protocol==='https:';}catch(_){return false;}
+    }).slice(0,12).map((x:any)=>({
+      headline:String(x.headline).slice(0,250),
+      source:String(feed.source).slice(0,100),
+      sourceUrl:String(x.sourceUrl).slice(0,500),
+      publishedAt:String(x.publishedAt)
+    }));
+    tiloNewsCache.set(country,{expires:now.getTime()+10*60000,items});
+    return items;
+  }catch(_){return cached?.items?.filter((x:any)=>Date.parse(x.publishedAt)>=now.getTime()-36*3600000)||[];}
+}
+
 router.post('/tilo/daily-context/:country', async (c) => {
   const country=String(c.req.param('country')||'').toUpperCase();
   if(!['KR','JP','US','CN','TH','VN'].includes(country))return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
@@ -161,14 +196,7 @@ router.post('/tilo/daily-context/:country', async (c) => {
   const body=await c.req.json<any>().catch(()=>({}));
   const now=new Date();
   const localTime=new Intl.DateTimeFormat(profile.locale,{timeZone:profile.timeZone,dateStyle:'full',timeStyle:'short'}).format(now);
-  const headlines=(Array.isArray(body.headlines)?body.headlines:[]).filter((x:any)=>
-    x && x.verified===true && x.permittedForBroadcast===true &&
-    typeof x.headline==='string' && typeof x.source==='string' &&
-    /^https:\/\//.test(String(x.sourceUrl||'')) &&
-    Number.isFinite(Date.parse(String(x.publishedAt||''))) &&
-    Date.parse(String(x.publishedAt))<=now.getTime() &&
-    Date.parse(String(x.publishedAt))>=now.getTime()-36*3600000
-  ).slice(0,12).map((x:any)=>({headline:String(x.headline).slice(0,250),source:String(x.source).slice(0,100),sourceUrl:String(x.sourceUrl).slice(0,500)}));
+  const headlines=await getTiloApprovedNews(country,c.env,now);
   // Weather is fetched by the backend from a named provider; client claims are not trusted.
   let liveWeather:any=null;
   try{
@@ -178,10 +206,7 @@ router.post('/tilo/daily-context/:country', async (c) => {
     if(response.ok){const result:any=await response.json();if(Number.isFinite(result.current?.temperature_2m))
       liveWeather={description:city.city+': '+result.current.temperature_2m+'°C, precipitation '+result.current.precipitation+' mm, WMO code '+result.current.weather_code,source:'Open-Meteo'};}
   }catch(_){/* Continue with no weather. */}
-  const weather=liveWeather || (body.weather && body.weather.verified===true ? {
-    description:String(body.weather.description||'').slice(0,180),
-    source:String(body.weather.source||'').slice(0,100)
-  }:null);
+  const weather=liveWeather;
   const prompt=[
     'Local time: '+localTime,
     'Verified headlines: '+JSON.stringify(headlines),
