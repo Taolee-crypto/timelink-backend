@@ -19,6 +19,28 @@ async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<number | nul
 }
 
 
+/** Country-scoped TILO station readiness for the admin control room. */
+router.get('/central-broadcast/stations/:country', async c => {
+  const adminId=await requireAdmin(c);
+  if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const country=String(c.req.param('country')||'').toUpperCase();
+  const languages:Record<string,string>={KR:'ko-KR',JP:'ja-JP',US:'en-US',CN:'zh-CN',TH:'th-TH',VN:'vi-VN'};
+  if(!languages[country])return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+  const serviceId='central-tilo-'+adminId;
+  try {
+    const service=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?')
+      .bind(serviceId,adminId).first<{status:string}>();
+    const grants=await c.env.DB.prepare(`SELECT file_id FROM central_broadcast_service_file_grants
+      WHERE service_id=? AND country=? AND status='active'
+        AND (expires_at IS NULL OR expires_at>datetime('now'))
+      ORDER BY file_id DESC LIMIT 100`).bind(serviceId,country).all<{file_id:number}>();
+    return c.json({ok:true,country,locale:languages[country],service_enabled:service?.status==='active',
+      granted_file_ids:(grants.results||[]).map(g=>g.file_id),
+      stream_ready:false,reason:'BROADCAST_AUDIO_ENGINE_NOT_CONNECTED',
+      note:'A file grant alone does not prove copyright broadcast rights. No listener billing.'});
+  }catch(_){return c.json({ok:false,error:'BROADCAST_SCHEMA_NOT_READY'},503)}
+});
+
 /** Admin-owned TILO service switch; never bills listeners or grants audio downloads. */
 router.get('/central-broadcast/tilo', async c => {
   const adminId=await requireAdmin(c);
