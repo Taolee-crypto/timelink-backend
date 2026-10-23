@@ -507,6 +507,38 @@ app.get('/api/v1/tilo/schedule/preview', async (c) => {
     return c.json({ok:false,error:'TILO schedule unavailable; verify D1 migration 0099'},503)}
 });
 
+// Session observability is read-only until a trusted broadcast worker can
+// issue V5 playback licences and attest audible output. No client-side
+// heartbeat is accepted as proof of playback or entitlement to TL settlement.
+app.get('/api/v1/tilo/sessions/status', async (c) => {
+  c.header('Cache-Control','no-store');
+  const country=String(c.req.query('country')||'').trim().toUpperCase();
+  const language=String(c.req.query('language')||'').trim().toLowerCase();
+  if(!/^[A-Z]{2}$/.test(country)||!/^[a-z]{2,3}(-[a-z]{2,4})?$/.test(language))
+    return c.json({ok:false,error:'Valid country and language required'},400);
+  try {
+    const row=await c.env.DB.prepare(`
+      SELECT id,state,current_file_id,current_campaign_id,started_at,ended_at,
+        last_verified_at,playback_license_reference,updated_at
+      FROM tilo_broadcast_sessions
+      WHERE channel_country=? AND channel_language=?
+      ORDER BY updated_at DESC LIMIT 1
+    `).bind(country,language).first<any>();
+    if(!row)return c.json({ok:true,country,language,state:'not_connected',live:false,session:null});
+    // Explicit fail-closed: state='broadcasting' alone does not prove that
+    // a V5 audio licence exists or that audio was verified recently.
+    const verified=!!row.playback_license_reference && !!row.last_verified_at &&
+      (Date.now()-Date.parse(row.last_verified_at+'Z') < 30000) &&
+      (Date.now()-Date.parse(row.last_verified_at+'Z') >= 0);
+    const live=row.state==='broadcasting' && verified && !!row.current_file_id;
+    return c.json({ok:true,country,language,state:row.state,live,
+      session:{id:row.id,current_file_id:row.current_file_id,
+        started_at:row.started_at,updated_at:row.updated_at},
+      verified_audio:verified,settlement_enabled:false});
+  }catch(e){console.error('[TILO] session status unavailable',e);
+    return c.json({ok:false,error:'TILO sessions unavailable or migration 0100 pending'},503)}
+});
+
 // TILO studio status contract. Never claim an active broadcast without a
 // verified V5 broadcast session source of truth. The scheduler/stream
 // integration will replace this conservative inactive state in a later change.
