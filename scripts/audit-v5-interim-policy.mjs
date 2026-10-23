@@ -13,10 +13,10 @@ check('70/30 policy constants',()=>{assert.match(policy,/CREATOR_SHARE_RATE\s*=\
 check('settlement consumes track pool',()=>assert.match(ledger,/export async function settleTrackPlayback[\s\S]*?add\(pool,-consumed\)/));
 check('settlement records creator and platform separately',()=>{assert.match(ledger,/creatorShareAtoms\+=creatorPart/);assert.match(ledger,/platformShareAtoms\+=platformPart/)});
 check('settlement transaction idempotency',()=>assert.match(ledger,/idempotencyKey,transactionType:'track_playback_settlement'/));
-check('stop uses bonus refund and platform 50 percent',()=>{assert.match(ledger,/const refund=Math\.floor\(amount\/2\),platform=amount-refund/);assert.match(ledger,/wallet_bonus/);assert.match(ledger,/idempotencyKey:'v5-early-stop:'\+sessionId/)});
+check('stop refunds 100 percent to original TL buckets',()=>{assert.match(ledger,/const refund=amount,platform=0/);assert.match(ledger,/walletBucket=source==='paid'\?'wallet_paid':source==='ad'\?'wallet_ad':'wallet_bonus'/);assert.match(ledger,/idempotencyKey:'v5-early-stop:'\+sessionId/)});
 check('test D1 is separate',()=>{const id=x=>x.match(/database_id\s*=\s*"([^"]+)"/)?.[1];assert(id(prod)&&id(test)&&id(prod)!==id(test));assert.match(test,/ENVIRONMENT\s*=\s*"test"/)});
 check('local SQL fixture is repeatable',()=>{assert.match(sql,/INSERT OR IGNORE INTO v5_test_transactions/);assert.match(sql,/INSERT INTO v5_test_once\(applied\) SELECT changes\(\)/);assert.match(sql,/\(SELECT applied FROM v5_test_once\)=1/);assert.match(sql,/CREATE TABLE IF NOT EXISTS v5_test_once/)});
-check('model matches actual early-stop refund policy',()=>{assert.match(fixtures,/stopRefund=unplayed\/2n/);assert.match(fixtures,/stopPlatform=unplayed-stopRefund/)});
+check('model matches actual early-stop refund policy',()=>{assert.match(fixtures,/stopRefund=unplayed/);assert.match(fixtures,/stopPlatform=0n/)});
 console.log(JSON.stringify({passed:8-failures,failed:failures,classification:'interim source-policy audit; runtime Worker/D1 not executed'},null,2));
 if(failures)process.exitCode=1;
 

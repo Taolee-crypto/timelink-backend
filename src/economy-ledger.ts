@@ -348,8 +348,8 @@ export async function settleTrackPlayback(
   return {id:posted.id,replayed:posted.replayed,amountAtoms,creatorShareAtoms,platformShareAtoms,used};
 }
 
-/** V5 explicit stop: unplayed portion of one playback is split 50/50.
- * Refund is always wallet_bonus (TL_B), never wallet_paid (TL_P).
+/** V5 explicit stop: unplayed track-pool TL is returned to its original wallet bucket.
+ * Paid, ad, and bonus balances retain their original TL_P, TL_A, TL_B categories.
  * The charge/creator settlement policy is independent of this closing transaction.
  */
 export async function settleV5EarlyStop(db:D1Database,input:{
@@ -362,7 +362,7 @@ export async function settleV5EarlyStop(db:D1Database,input:{
   const available=balances.ad+balances.bonus+balances.paid;
   const amount=Math.min(input.remainingAtoms,available);
   if(!Number.isSafeInteger(amount)||amount<=0) return {refundedAtoms:0,platformAtoms:0,replayed:false};
-  const refund=Math.floor(amount/2),platform=amount-refund;
+  const refund=amount,platform=0;
   const allocations:{paid:number;ad:number;bonus:number}={paid:0,ad:0,bonus:0};
   let left=amount;
   for(const source of ['ad','bonus','paid'] as const){
@@ -374,13 +374,16 @@ export async function settleV5EarlyStop(db:D1Database,input:{
     const account=await ensureLedgerAccount(db,'user',userId,'TL','track_pool:'+shareId+':'+source);
     lines.push({accountId:account,assetCode:'TL',amountAtoms:-allocations[source]});
   }
-  if(refund)lines.push({accountId:await ensureLedgerAccount(db,'user',userId,'TL','wallet_bonus'),assetCode:'TL',amountAtoms:refund});
-  if(platform)lines.push({accountId:await ensureLedgerAccount(db,'platform','timelink','TL','early_stop_revenue'),assetCode:'TL',amountAtoms:platform});
+  for(const source of ['ad','bonus','paid'] as const){
+    if(!allocations[source])continue;
+    const walletBucket=source==='paid'?'wallet_paid':source==='ad'?'wallet_ad':'wallet_bonus';
+    lines.push({accountId:await ensureLedgerAccount(db,'user',userId,'TL',walletBucket),assetCode:'TL',amountAtoms:allocations[source]});
+  }
   const posted=await postLedgerTransaction(db,{
     idempotencyKey:'v5-early-stop:'+sessionId,
     transactionType:'v5_early_stop',source:'v5_player_stop',
     referenceType:'track',referenceId:shareId,actorUserId:String(userId),
-    description:'V5 중도 종료: 미재생분 50% TL_B 반환, 50% 플랫폼 귀속',
+    description:'V5 중도 종료: 미재생 TL 전액 원래 지갑 유형으로 반환',
     metadata:{session_id:sessionId,amount_atoms:amount,refund_atoms:refund,platform_atoms:platform,allocation:allocations},
     lines,atomicStatements:input.atomicStatements
   });
