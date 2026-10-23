@@ -159,13 +159,42 @@ async function getDJBonuses(db: D1Database): Promise<any> {
   return DEFAULT_DJ_BONUSES;
 }
 
+// Shared member profile. DJ profile retains separate broadcast-specific fields.
+async function ensureMemberProfile(db: D1Database) {
+  await db.prepare(`CREATE TABLE IF NOT EXISTS member_profiles (
+    user_id INTEGER PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '',
+    bio TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+  )`).run();
+}
+router.get('/member-profile', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ok:false,error:'인증 필요'},401);
+  await ensureMemberProfile(c.env.DB);
+  const row = await c.env.DB.prepare('SELECT display_name,bio,avatar_url,updated_at FROM member_profiles WHERE user_id=?').bind(auth.id).first<any>();
+  return c.json({ok:true,profile:{display_name:row?.display_name||auth.user.username||'',bio:row?.bio||'',avatar_url:row?.avatar_url||'',email:auth.user.email,updated_at:row?.updated_at||null}});
+});
+router.post('/member-profile', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ok:false,error:'인증 필요'},401);
+  const body = await c.req.json<any>().catch(()=>({}));
+  const name = String(body.display_name||'').trim();
+  const bio = String(body.bio||'').trim();
+  if(!name || name.length>80 || bio.length>1000) return c.json({ok:false,error:'이름 또는 소개 길이를 확인하세요.'},400);
+  await ensureMemberProfile(c.env.DB);
+  await c.env.DB.prepare('INSERT INTO member_profiles(user_id,display_name,bio,avatar_url,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name,bio=excluded.bio,updated_at=excluded.updated_at').bind(auth.id,name,bio,'',Date.now()).run();
+  return c.json({ok:true});
+});
+
 // ── GET /api/dj/profile — 내 DJ 프로필 ──
 router.get('/profile', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
   await ensureDJCafeTables(c.env.DB);
   const row = await c.env.DB.prepare('SELECT * FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
-  return c.json({ ok: true, profile: row || null });
+  await ensureMemberProfile(c.env.DB);
+  const member = await c.env.DB.prepare('SELECT display_name,bio,avatar_url FROM member_profiles WHERE user_id=?').bind(auth.id).first<any>();
+  return c.json({ ok: true, profile: row ? {...row, avatar_url:row.avatar_url||member?.avatar_url||''} : null, member_profile:member||null });
 });
 
 // ── POST /api/dj/profile — DJ 프로필 생성/수정 ──
