@@ -542,18 +542,38 @@ app.get('/api/v1/tilo/sessions/status', async (c) => {
 // TILO studio status contract. Never claim an active broadcast without a
 // verified V5 broadcast session source of truth. The scheduler/stream
 // integration will replace this conservative inactive state in a later change.
-app.get('/api/v1/tilo/studio/status', (c) => {
+app.get('/api/v1/tilo/studio/status', async (c) => {
   c.header('Cache-Control', 'no-store');
-  return c.json({
-    ok: true,
-    studio: 'tilo-central',
-    live: false,
-    state: 'not_connected',
-    current_track: null,
-    presenter_speaking: false,
-    source: 'v5_broadcast_session_unavailable',
-    updated_at: new Date().toISOString()
-  });
+  const country=String(c.req.query('country')||'KR').trim().toUpperCase();
+  const language=String(c.req.query('language')||'ko').trim().toLowerCase();
+  if(!/^[A-Z]{2}$/.test(country)||!/^[a-z]{2,3}(-[a-z]{2,4})?$/.test(language))
+    return c.json({ok:false,error:'Valid country and language required'},400);
+  try {
+    const row=await c.env.DB.prepare(`
+      SELECT s.id,s.state,s.current_file_id,s.playback_license_reference,
+             s.last_verified_at,f.title,f.artist
+      FROM tilo_broadcast_sessions s
+      LEFT JOIN tl_files f ON f.id=s.current_file_id
+      WHERE s.channel_country=? AND s.channel_language=?
+      ORDER BY s.updated_at DESC LIMIT 1
+    `).bind(country,language).first<any>();
+    const verifiedAt=row?.last_verified_at ? Date.parse(String(row.last_verified_at).replace(' ','T')+'Z') : NaN;
+    const age=Date.now()-verifiedAt;
+    const recent=Number.isFinite(age)&&age>=0&&age<30000;
+    const live=!!row && row.state==='broadcasting' && !!row.current_file_id &&
+      !!row.playback_license_reference && recent;
+    return c.json({
+      ok:true,studio:'tilo-central',country,language,live,
+      state:row?.state||'not_connected',
+      current_track:live?{file_id:row.current_file_id,title:row.title||'',artist:row.artist||''}:null,
+      presenter_speaking:false,
+      source:live?'verified_v5_broadcast_session':'v5_broadcast_not_verified',
+      updated_at:new Date().toISOString()
+    });
+  }catch(e){
+    console.error('[TILO] studio session status unavailable',e);
+    return c.json({ok:false,error:'Studio session status unavailable; check migration 0100'},503);
+  }
 });
 
 app.route('/api/upload-pdf', uploadPdfRouter);
