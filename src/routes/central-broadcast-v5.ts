@@ -59,4 +59,49 @@ router.get('/service-state', async c => {
   }catch(_){return c.json({ok:false,error:'BROADCAST_SCHEMA_NOT_READY'},503)}
 });
 
+
+/**
+ * A country-specific broadcast playlist, restricted to a service identity and
+ * explicit copyright-holder grants. No audio, decrypt keys or wallet charges.
+ */
+router.get('/country/:country/playlist', async c => {
+  const country=String(c.req.param('country')||'').toUpperCase();
+  if(!['KR','JP','US','CN','TH','VN'].includes(country))
+    return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+  const adminId=Number(c.req.query('admin_id')||0);
+  if(!Number.isSafeInteger(adminId)||adminId<=0)
+    return c.json({ok:false,error:'INVALID_ADMIN_ID'},400);
+  const configured=c.env.CENTRAL_BROADCAST_WORKER_SECRET;
+  const provided=c.req.header('X-Central-Broadcast-Secret')||'';
+  if(!configured||!provided||provided!==configured)
+    return c.json({ok:false,error:'UNAUTHORIZED'},403);
+  const serviceId='central-tilo-'+adminId;
+  try {
+    const service=await c.env.DB.prepare(`SELECT status FROM central_broadcast_service_accounts
+      WHERE service_id=? AND parent_admin_user_id=?`).bind(serviceId,adminId).first<{status:string}>();
+    if(service?.status!=='active')return c.json({ok:true,country,enabled:false,tracks:[]});
+    const rows=await c.env.DB.prepare(`
+      SELECT v.file_id,v.share_id,v.duration_ms,v.user_id AS creator_id,
+        f.title,f.artist,f.genre
+      FROM central_broadcast_service_file_grants sg
+      JOIN tl3_v5_releases v ON v.file_id=sg.file_id
+      JOIN tl_files f ON f.id=v.file_id
+      WHERE sg.service_id=? AND sg.country=? AND sg.status='active'
+        AND (sg.expires_at IS NULL OR sg.expires_at>datetime('now'))
+        AND v.status='sealed' AND f.shared=1
+        AND COALESCE(f.revenue_held,0)=0
+        AND LOWER(f.file_type)='audio/tl3'
+        AND EXISTS (SELECT 1 FROM central_broadcast_rights_grants rg
+          WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id
+            AND rg.country=? AND rg.status='active'
+            AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
+        AND EXISTS (SELECT 1 FROM tl3_releases r
+          WHERE r.file_id=v.file_id AND r.status='released' AND r.rights_confirmed=1)
+      ORDER BY v.file_id DESC LIMIT 200`
+    ).bind(serviceId,country,country).all<Song>();
+    return c.json({ok:true,country,enabled:true,tracks:rows.results||[],
+      note:'Playlist metadata only; broadcaster must obtain an independent, authorized V5 audio session.'});
+  }catch(_){return c.json({ok:false,error:'BROADCAST_PLAYLIST_SCHEMA_NOT_READY'},503)}
+});
+
 export default router;
