@@ -399,16 +399,13 @@ async function authorizedTiloBroadcast(db:D1Database,userId:number,fileId:number
   const serviceId='central-tilo-'+userId;
   const row=await db.prepare(`
     SELECT 1 AS permitted FROM central_broadcast_service_accounts sa
-    JOIN tl3_v5_releases v ON 1=1
+    JOIN tl3_v5_releases v ON v.file_id=?
     JOIN tl_files f ON f.id=v.file_id
-    JOIN central_broadcast_rights_grants rg ON rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
     WHERE sa.service_id=? AND sa.parent_admin_user_id=? AND sa.status='active'
-      AND v.file_id=?
-      AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now'))
       AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
       AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=v.file_id
         AND r.status='released' AND r.rights_confirmed=1)
-    LIMIT 1`).bind(country,serviceId,userId,fileId).first();
+    LIMIT 1`).bind(fileId,serviceId,userId).first();
   return !!row;
 }
 
