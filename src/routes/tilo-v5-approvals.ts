@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 const router=new Hono<{Bindings:Env}>();
-async function adminId(c:any):Promise<number|null>{
+async function adminId(c:Context<{Bindings:Env}>):Promise<number|null>{
  const token=String(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
  if(!token)return null;
  const payload=await verifyToken(token,c.env.JWT_SECRET).catch(()=>null);
