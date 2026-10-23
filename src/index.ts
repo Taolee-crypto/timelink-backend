@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { planTiloBroadcast } from './tilo-v5-scheduler';
 import { bodyLimit } from 'hono/body-limit';
 import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
 import { buildTL3SpineV4, verifyTL3SpineV4Container } from './tl3spine';
@@ -457,6 +458,53 @@ app.get('/api/v1/tilo/promotion/availability', async (c) => {
       scheduling_active:false,promotion_airtime_target_percent:50});
   }catch(e){console.error('[TILO] promotion inventory unavailable',e);
     return c.json({ok:false,error:'Promotion inventory unavailable or migration pending'},503)}
+});
+
+// Read-only planning preview. No licence, TL debit, or broadcast session is issued.
+// Language is based on verified/creator vocal-language rows, never origin country.
+app.get('/api/v1/tilo/schedule/preview', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const country=String(c.req.query('country')||'').trim().toUpperCase();
+  const language=String(c.req.query('language')||'').trim().toLowerCase();
+  const windowMinutes=Number(c.req.query('minutes')||30);
+  if(!/^[A-Z]{2}$/.test(country)||!/^[a-z]{2,3}(-[a-z]{2,4})?$/.test(language))
+    return c.json({ok:false,error:'Valid country and language required'},400);
+  if(!Number.isSafeInteger(windowMinutes)||windowMinutes<1||windowMinutes>180)
+    return c.json({ok:false,error:'minutes must be 1..180'},400);
+  try {
+    // One active campaign per file is selected deterministically, avoiding
+    // duplicated inventory and double attribution.
+    const rows=await c.env.DB.prepare(`
+      SELECT v.file_id, v.duration_ms, f.artist, f.title,
+        (SELECT p.id FROM tilo_promotion_campaigns p
+         WHERE p.file_id=v.file_id AND p.target_country=? AND p.target_language=?
+           AND p.status='active' AND p.starts_at<=datetime('now')
+           AND p.ends_at>datetime('now') AND p.spent_atoms<p.budget_atoms
+         ORDER BY p.ends_at ASC,p.id ASC LIMIT 1) AS campaign_id
+      FROM tl3_v5_releases v
+      JOIN tl_files f ON f.id=v.file_id
+      JOIN tilo_track_languages l ON l.file_id=v.file_id AND l.language_code=?
+      WHERE v.status='sealed' AND LOWER(f.file_type)='audio/tl3'
+        AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+      ORDER BY v.updated_at DESC LIMIT 500
+    `).bind(country,language,language).all<any>();
+    const inventory=(rows.results||[]).map((r:any)=>({
+      fileId:Number(r.file_id),durationMs:Number(r.duration_ms),
+      artist:String(r.artist||''),campaignId:r.campaign_id==null?null:Number(r.campaign_id),
+      eligiblePromotion:r.campaign_id!=null
+    }));
+    const plan=planTiloBroadcast(inventory,{promotedMs:0,ordinaryMs:0},windowMinutes*60000);
+    const titles=new Map((rows.results||[]).map((r:any)=>[Number(r.file_id),String(r.title||'')]));
+    return c.json({ok:true,mode:'preview_only',country,language,minutes:windowMinutes,
+      selections:plan.selections.map(s=>({
+        file_id:s.track.fileId,title:titles.get(s.track.fileId)||'',
+        duration_ms:s.track.durationMs,kind:s.kind,
+        campaign_id:s.kind==='promoted'?s.track.campaignId:null
+      })),projected:plan.projected,promotion_share:plan.promotionShare,
+      unfilled_ms:plan.unfilledMs,live:false,settlement_performed:false,
+      note:'Projected airtime only; no rights license, broadcast or TL settlement'});
+  }catch(e){console.error('[TILO] schedule preview unavailable',e);
+    return c.json({ok:false,error:'TILO schedule unavailable; verify D1 migration 0099'},503)}
 });
 
 // TILO studio status contract. Never claim an active broadcast without a
