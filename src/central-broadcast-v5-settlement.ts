@@ -95,3 +95,38 @@ export function tiloCreatorRedemptionRateBps(pocIndex: number): number {
   }
   return pocIndex >= 4 ? 8000 : pocIndex >= 3 ? 6000 : pocIndex >= 2 ? 4000 : pocIndex >= 1 ? 2000 : 1000;
 }
+
+
+/**
+ * Daily local-midnight TILO settlement may cross a monthly progressive bracket.
+ * Charge only the difference between the cumulative monthly assessments.
+ * Caller MUST serialize settlements for each rights-holder + settlement month,
+ * verify airtime and rights, and atomically persist the resulting delta with
+ * an idempotency key in the V5 ledger before advancing the monthly watermark.
+ */
+export function calculateTiloCreatorContributionDelta(
+  previousMonthlyGrossAtoms: bigint,
+  newlySettledGrossAtoms: bigint,
+): {
+  nextMonthlyGrossAtoms: bigint;
+  additionalContributionAtoms: bigint;
+  newlySettledNetAtoms: bigint;
+  cumulativeContributionAtoms: bigint;
+  policyVersion: string;
+} {
+  if (previousMonthlyGrossAtoms < 0n || newlySettledGrossAtoms < 0n)
+    throw new RangeError('Monthly gross and settlement increment must be nonnegative');
+  const nextMonthlyGrossAtoms = previousMonthlyGrossAtoms + newlySettledGrossAtoms;
+  const before = calculateTiloCreatorMonthlyContribution(previousMonthlyGrossAtoms);
+  const after = calculateTiloCreatorMonthlyContribution(nextMonthlyGrossAtoms);
+  const additionalContributionAtoms = after.contributionAtoms - before.contributionAtoms;
+  if (additionalContributionAtoms < 0n || additionalContributionAtoms > newlySettledGrossAtoms)
+    throw new RangeError('Invalid incremental contribution');
+  return {
+    nextMonthlyGrossAtoms,
+    additionalContributionAtoms,
+    newlySettledNetAtoms: newlySettledGrossAtoms - additionalContributionAtoms,
+    cumulativeContributionAtoms: after.contributionAtoms,
+    policyVersion: after.policyVersion,
+  };
+}
