@@ -65,10 +65,16 @@ router.get('/central-broadcast/stations/:country', async c => {
   try {
     const service=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?')
       .bind(serviceId,adminId).first<{status:string}>();
-    const grants=await c.env.DB.prepare(`SELECT file_id FROM central_broadcast_service_file_grants
-      WHERE service_id=? AND country=? AND status='active'
-        AND (expires_at IS NULL OR expires_at>datetime('now'))
-      ORDER BY file_id DESC LIMIT 100`).bind(serviceId,country).all<{file_id:number}>();
+    const grants=await c.env.DB.prepare(`SELECT v.file_id FROM tl3_v5_releases v
+      JOIN tl_files f ON f.id=v.file_id
+      WHERE v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+        AND LOWER(f.file_type)='audio/tl3'
+        AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=v.file_id
+          AND r.status='released' AND r.rights_confirmed=1)
+        AND EXISTS (SELECT 1 FROM central_broadcast_rights_grants rg
+          WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
+            AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
+      ORDER BY RANDOM() LIMIT 100`).bind(country).all<{file_id:number}>();
     return c.json({ok:true,country,locale:languages[country],service_enabled:service?.status==='active',
       granted_file_ids:(grants.results||[]).map(g=>g.file_id),
       stream_ready:false,reason:'BROADCAST_AUDIO_ENGINE_NOT_CONNECTED',
