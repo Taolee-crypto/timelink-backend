@@ -185,7 +185,8 @@ router.post('/opening-agreement', async (c) => {
   const now = Date.now();
   await c.env.DB.prepare('INSERT INTO dj_opening_agreements(user_id,terms_version,accepted_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET terms_version=excluded.terms_version, accepted_at=excluded.accepted_at').bind(auth.id, DJ_OPENING_TERMS_VERSION, now).run();
   return c.json({ ok: true, agreed: true, terms_version: DJ_OPENING_TERMS_VERSION, accepted_at: now, payment_confirmed: false, station_activated: false });
-=======
+});
+
 // Shared member profile. DJ profile retains separate broadcast-specific fields.
 async function ensureMemberProfile(db: D1Database) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS member_profiles (
