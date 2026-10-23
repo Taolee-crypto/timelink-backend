@@ -11,8 +11,8 @@ function settle({durationSeconds,playedSeconds,paid,ad,bonus}){
  const balance=atoms(paid+ad+bonus);
  assert(balance>=total,'track must be funded for full play');
  const unplayed=total-spent;
- const stopRefund=unplayed/2n;
- const stopPlatform=unplayed-stopRefund;
+ const stopRefund=unplayed;
+ const stopPlatform=0n;
  const refunded=stopRefund;
  const creator=spent*70n/100n;
  const platform=spent-creator;
@@ -21,29 +21,29 @@ function settle({durationSeconds,playedSeconds,paid,ad,bonus}){
  return {spent,refunded,stopPlatform,creator,platform,remaining:balance-spent};
 }
 function test(name,fn){try{fn();console.log('PASS '+name)}catch(e){console.error('FAIL '+name,e);process.exitCode=1}}
-test('30 seconds audible: 30 TL spent',()=>{let x=settle({durationSeconds:180,playedSeconds:30,paid:180,ad:0,bonus:0});assert.equal(x.spent,atoms(30));assert.equal(x.refunded,atoms(75));assert.equal(x.stopPlatform,atoms(75))});
+test('30 seconds audible: 30 TL spent',()=>{let x=settle({durationSeconds:180,playedSeconds:30,paid:180,ad:0,bonus:0});assert.equal(x.spent,atoms(30));assert.equal(x.refunded,atoms(150));assert.equal(x.stopPlatform,0n)});
 test('pause: no additional TL charged',()=>{let a=settle({durationSeconds:180,playedSeconds:30,paid:180,ad:0,bonus:0});let b=settle({durationSeconds:180,playedSeconds:30,paid:180,ad:0,bonus:0});assert.equal(a.spent,b.spent)});
 test('70:30 allocation for 100 TL',()=>{let x=settle({durationSeconds:100,playedSeconds:100,paid:100,ad:0,bonus:0});assert.equal(x.creator,atoms(70));assert.equal(x.platform,atoms(30))});
 test('ledger conservation on early stop',()=>{let x=settle({durationSeconds:180,playedSeconds:27,paid:180,ad:0,bonus:0});assert.equal(x.spent+x.refunded+x.stopPlatform,atoms(180))});
 test('underfunded track rejected',()=>assert.throws(()=>settle({durationSeconds:180,playedSeconds:30,paid:100,ad:0,bonus:0})));
 test('idempotency key duplicate not applied twice',()=>{const seen=new Set();let charged=0n;function post(k,v){if(seen.has(k))return;seen.add(k);charged+=v}post('v5-session-a',atoms(30));post('v5-session-a',atoms(30));assert.equal(charged,atoms(30))});
 // V5 early-stop regression cases: only an explicit stop closes the unplayed pool.
-test('early stop: 180 TL track, 30 TL played, 75 TL returned as TL_B and 75 TL to platform',()=>{
+test('early stop: 180 TL track, 30 TL played, all 150 TL returned to original bucket',()=>{
  const x=settle({durationSeconds:180,playedSeconds:30,paid:180,ad:0,bonus:0});
  assert.equal(x.spent,atoms(30));
  assert.equal(x.creator,atoms(21));
  assert.equal(x.platform,atoms(9));
- assert.equal(x.refunded,atoms(75));
- assert.equal(x.stopPlatform,atoms(75));
- assert.equal(x.platform+x.stopPlatform,atoms(84));
+ assert.equal(x.refunded,atoms(150));
+ assert.equal(x.stopPlatform,0n);
+ assert.equal(x.platform+x.stopPlatform,atoms(9));
  assert.equal(x.creator+x.platform+x.refunded+x.stopPlatform,atoms(180));
 });
 test('early stop: zero audible seconds sends no playback revenue to creator',()=>{
  const x=settle({durationSeconds:180,playedSeconds:0,paid:180,ad:0,bonus:0});
  assert.equal(x.creator,0n);
  assert.equal(x.platform,0n);
- assert.equal(x.refunded,atoms(90));
- assert.equal(x.stopPlatform,atoms(90));
+ assert.equal(x.refunded,atoms(180));
+ assert.equal(x.stopPlatform,0n);
 });
 test('completed playback: no early-stop refund or recovery',()=>{
  const x=settle({durationSeconds:180,playedSeconds:180,paid:180,ad:0,bonus:0});
@@ -52,12 +52,12 @@ test('completed playback: no early-stop refund or recovery',()=>{
  assert.equal(x.creator,atoms(126));
  assert.equal(x.platform,atoms(54));
 });
-test('early-stop atom rounding conserves TL when remaining amount is odd',()=>{
+test('early-stop atom rounding returns every atom',()=>{
  const unplayed=5n;
- const refund=unplayed/2n;
- const platform=unplayed-refund;
- assert.equal(refund,2n);
- assert.equal(platform,3n);
+ const refund=unplayed;
+ const platform=0n;
+ assert.equal(refund,5n);
+ assert.equal(platform,0n);
  assert.equal(refund+platform,unplayed);
 });
 test('repeated explicit stop must not distribute the same unplayed TL twice',()=>{
@@ -67,12 +67,11 @@ test('repeated explicit stop must not distribute the same unplayed TL twice',()=
    const key='v5-early-stop:'+session;
    if(posted.has(key))return;
    posted.add(key);
-   refunded+=remaining/2n;
-   platform+=remaining-remaining/2n;
+   refunded+=remaining;
  }
  stop('v5-session-a',atoms(150));
  stop('v5-session-a',atoms(150));
- assert.equal(refunded,atoms(75));
- assert.equal(platform,atoms(75));
+ assert.equal(refunded,atoms(150));
+ assert.equal(platform,0n);
 });
 console.log('NOTE: These are independent model fixtures, NOT actual Worker/D1 or audio playback integration tests.');
