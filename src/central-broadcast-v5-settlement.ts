@@ -130,3 +130,78 @@ export function calculateTiloCreatorContributionDelta(
     policyVersion: after.policyVersion,
   };
 }
+
+
+/**
+ * Verified broadcaster evidence, NOT a listener play event or scheduled slot.
+ * The trusted ingestion layer must authenticate the service, confirm broadcast
+ * rights for the country/time, and deduplicate eventId in durable storage.
+ */
+export type TiloVerifiedAirtimeEvent = {
+  eventId: string;
+  country: 'KR'|'JP'|'US'|'CN'|'TH'|'VN';
+  creatorId: number;
+  fileId: number;
+  startedAt: string;
+  endedAt: string;
+  audibleMs: number;
+};
+
+const TILO_SETTLEMENT_TIME_ZONES: Record<TiloVerifiedAirtimeEvent['country'],string> = {
+  KR:'Asia/Seoul', JP:'Asia/Tokyo', US:'America/New_York',
+  CN:'Asia/Shanghai', TH:'Asia/Bangkok', VN:'Asia/Ho_Chi_Minh',
+};
+
+/** Determine a local calendar month; never use UTC month for a country's settlement. */
+export function tiloLocalSettlementMonth(country:TiloVerifiedAirtimeEvent['country'], isoTime:string):string {
+  const time = new Date(isoTime);
+  if(!Number.isFinite(time.getTime()) || !/Z$|[+-]\\d{2}:\\d{2}$/.test(isoTime))
+    throw new RangeError('Timestamp must be valid ISO-8601 with timezone');
+  const parts = new Intl.DateTimeFormat('en-US',{
+    timeZone:TILO_SETTLEMENT_TIME_ZONES[country],year:'numeric',month:'2-digit'
+  }).formatToParts(time);
+  const year=parts.find(p=>p.type==='year')?.value;
+  const month=parts.find(p=>p.type==='month')?.value;
+  if(!year||!month)throw new RangeError('Invalid local month');
+  return year+'-'+month;
+}
+
+/**
+ * Pure pre-ledger aggregation of already authenticated, unique audible events.
+ * Reject duplicate IDs and events spanning local months. Split such events
+ * upstream at local midnight, then persist each verified fragment separately.
+ * Do not trust client-submitted playback duration or the /now station clock.
+ */
+export function aggregateVerifiedTiloMonthlyAirtime(events:readonly TiloVerifiedAirtimeEvent[]) {
+  const seen=new Set<string>();
+  const grouped=new Map<string,{country:string;month:string;creatorId:number;audibleMs:bigint;creatorAtoms:bigint;platformAtoms:bigint}>();
+  for(const event of events){
+    if(!event.eventId||event.eventId.length>200||seen.has(event.eventId))
+      throw new RangeError('Missing or duplicate broadcast event ID');
+    seen.add(event.eventId);
+    if(!(event.country in TILO_SETTLEMENT_TIME_ZONES)||
+       !Number.isSafeInteger(event.creatorId)||event.creatorId<=0||
+       !Number.isSafeInteger(event.fileId)||event.fileId<=0||
+       !Number.isSafeInteger(event.audibleMs)||event.audibleMs<=0)
+      throw new RangeError('Invalid broadcast evidence');
+    const start=new Date(event.startedAt).getTime(),end=new Date(event.endedAt).getTime();
+    if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||
+       end-start>3_600_000||event.audibleMs>end-start)
+      throw new RangeError('Audible duration exceeds verified broadcast interval');
+    const month=tiloLocalSettlementMonth(event.country,event.startedAt);
+    // end-1ms belongs to the same month for half-open intervals.
+    if(month!==tiloLocalSettlementMonth(event.country,new Date(end-1).toISOString()))
+      throw new RangeError('Broadcast interval crosses local month boundary');
+    const key=event.country+':'+month+':'+event.creatorId;
+    const allocation=calculateCentralBroadcastAtoms(BigInt(event.audibleMs));
+    const previous=grouped.get(key);
+    grouped.set(key,{
+      country:event.country,month,creatorId:event.creatorId,
+      audibleMs:(previous?.audibleMs||0n)+BigInt(event.audibleMs),
+      creatorAtoms:(previous?.creatorAtoms||0n)+allocation.creatorAtoms,
+      platformAtoms:(previous?.platformAtoms||0n)+allocation.platformAtoms,
+    });
+  }
+  return [...grouped.values()].sort((a,b)=>
+    (a.country+':'+a.month+':'+a.creatorId).localeCompare(b.country+':'+b.month+':'+b.creatorId));
+}
