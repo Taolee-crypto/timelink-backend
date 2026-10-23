@@ -1,0 +1,17 @@
+name: V5 Playback Ledger Contract
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', 'scripts/audit-v5-playback-ledger.mjs', '.github/workflows/v5-playback-ledger-contract.yml']
+  pull_request:
+    paths: ['src/**', 'scripts/audit-v5-playback-ledger.mjs', '.github/workflows/v5-playback-ledger-contract.yml']
+  workflow_dispatch:
+jobs:
+  playback-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/audit-v5-playback-ledger.mjs
