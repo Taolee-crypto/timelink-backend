@@ -121,6 +121,53 @@ router.post('/batch-classify', async (c) => {
   }
 });
 
+
+// TILO daily editorial judgment. Verified news is provided by the caller; no invented headlines.
+// This is a read-only advisory endpoint and cannot enable a country station or alter playback.
+router.post('/tilo/daily-context/:country', async (c) => {
+  const country=String(c.req.param('country')||'').toUpperCase();
+  if(!['KR','JP','US','CN','TH','VN'].includes(country))return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+  const profile=resolveTiloRegion(country);
+  const body=await c.req.json<any>().catch(()=>({}));
+  const now=new Date();
+  const localTime=new Intl.DateTimeFormat(profile.locale,{timeZone:profile.timeZone,dateStyle:'full',timeStyle:'short'}).format(now);
+  const headlines=(Array.isArray(body.headlines)?body.headlines:[]).filter((x:any)=>
+    x && x.verified===true && x.permittedForBroadcast===true &&
+    typeof x.headline==='string' && typeof x.source==='string' &&
+    /^https:\/\//.test(String(x.sourceUrl||'')) &&
+    Number.isFinite(Date.parse(String(x.publishedAt||''))) &&
+    Date.parse(String(x.publishedAt))<=now.getTime() &&
+    Date.parse(String(x.publishedAt))>=now.getTime()-36*3600000
+  ).slice(0,12).map((x:any)=>({headline:String(x.headline).slice(0,250),source:String(x.source).slice(0,100),sourceUrl:String(x.sourceUrl).slice(0,500)}));
+  const weather=body.weather && body.weather.verified===true ? {
+    description:String(body.weather.description||'').slice(0,180),
+    source:String(body.weather.source||'').slice(0,100)
+  }:null;
+  const prompt=[
+    'Local time: '+localTime,
+    'Verified headlines: '+JSON.stringify(headlines),
+    'Verified weather: '+JSON.stringify(weather),
+    'Create an editorial plan for the current radio day, not a news article.',
+    'Return only JSON with keys: day_mood (calm|neutral|bright|solemn), music_moods (array of 2-4 from acoustic,pop,jazz,indie,ballad,lofi,ambient,classical), speak_now (boolean), commentary (short natural DJ sentence in locale), rationale (short explanation), confidence (low|medium|high).',
+    'Decide whether silence between songs is more appropriate than commentary.',
+    'No claims about real-world events unless included in verified headlines. If there are no verified headlines, do not mention news or make event-specific claims.',
+    'A verified headline does not automatically imply national mourning. Avoid unsupported inferences, political endorsements and sensationalism.'
+  ].join('\n');
+  try{
+    const reply=await callGemini(c,tiloEditorialInstruction(profile),prompt,600);
+    const match=reply.match(/\{[\s\S]*\}/);
+    if(!match)throw Error('AI_JSON_INVALID');
+    const plan=JSON.parse(match[0]);
+    const moods=['acoustic','pop','jazz','indie','ballad','lofi','ambient','classical'];
+    const dayMood=['calm','neutral','bright','solemn'].includes(plan.day_mood)?plan.day_mood:'neutral';
+    return c.json({ok:true,country,locale:profile.locale,local_time:localTime,news_count:headlines.length,
+      plan:{day_mood:dayMood,music_moods:(Array.isArray(plan.music_moods)?plan.music_moods:[]).filter((x:any)=>moods.includes(x)).slice(0,4),
+      speak_now:plan.speak_now===true,commentary:String(plan.commentary||'').slice(0,600),
+      rationale:String(plan.rationale||'').slice(0,400),confidence:['low','medium','high'].includes(plan.confidence)?plan.confidence:'low'},
+      broadcast_started:false,station_approval_unchanged:true});
+  }catch(e:any){return c.json({ok:false,error:'DAILY_CONTEXT_UNAVAILABLE',detail:String(e?.message||e).slice(0,180)},503);}
+});
+
 // Public read-only regional configuration. No untrusted news is treated as verified.
 router.get('/regional-profile/:country', (c) => {
   const country = c.req.param('country').trim().toUpperCase();
