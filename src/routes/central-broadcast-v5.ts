@@ -52,7 +52,7 @@ router.get('/contribution-delta-preview', c => {
     return c.json({ok:false,error:'UNAUTHORIZED'},403);
   const previous=String(c.req.query('previous_monthly_gross_atoms')||'');
   const current=String(c.req.query('newly_settled_gross_atoms')||'');
-  if(!/^\\d{1,15}$/.test(previous)||!/^\\d{1,15}$/.test(current))
+  if(!/^\d{1,15}$/.test(previous)||!/^\d{1,15}$/.test(current))
     return c.json({ok:false,error:'INVALID_ATOMS'},400);
   const before=BigInt(previous),delta=BigInt(current);
   if(before+delta>BigInt(Number.MAX_SAFE_INTEGER))
