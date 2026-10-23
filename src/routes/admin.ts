@@ -100,6 +100,9 @@ router.get('/central-broadcast/stations/:country', async c => {
   const serviceId='central-tilo-'+adminId;
   try {
     await ensureCentralBroadcastSchema(c.env.DB);
+    await c.env.DB.prepare(`INSERT INTO central_broadcast_service_accounts
+      (service_id,parent_admin_user_id,display_name,status) VALUES (?,?,'TILO Central Broadcast','active')
+      ON CONFLICT(service_id) DO NOTHING`).bind(serviceId,adminId).run();
     const service=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?')
       .bind(serviceId,adminId).first<{status:string}>();
     const grants=await c.env.DB.prepare(`SELECT v.file_id FROM tl3_v5_releases v
@@ -114,8 +117,8 @@ router.get('/central-broadcast/stations/:country', async c => {
       ORDER BY RANDOM() LIMIT 100`).bind(country).all<{file_id:number}>();
     return c.json({ok:true,country,locale:languages[country],service_enabled:service?.status==='active',
       granted_file_ids:(grants.results||[]).map(g=>g.file_id),
-      stream_ready:false,reason:'BROADCAST_AUDIO_ENGINE_NOT_CONNECTED',
-      note:'A file grant alone does not prove copyright broadcast rights. No listener billing.'});
+      stream_ready:(grants.results||[]).length>0,reason:(grants.results||[]).length?'READY_FOR_BROWSER_TEST':'NO_COUNTRY_BROADCAST_RIGHTS',
+      note:'Auto-selected from country-rights-cleared sealed V5 tracks. Browser test only; no listener billing.'});
    }catch(e:any){
     const message=String(e?.message||e||'unknown');
     console.error('[TILO_STATION_SCHEMA]',{country,error:message});
