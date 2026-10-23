@@ -159,6 +159,34 @@ async function getDJBonuses(db: D1Database): Promise<any> {
   return DEFAULT_DJ_BONUSES;
 }
 
+// DJ opening agreement is a recorded application step, NOT payment or activation.
+const DJ_OPENING_TERMS_VERSION = 'dj-opening-v1-20261023';
+async function ensureDjOpeningAgreements(db: D1Database) {
+  await db.prepare(`CREATE TABLE IF NOT EXISTS dj_opening_agreements (
+    user_id INTEGER PRIMARY KEY,
+    terms_version TEXT NOT NULL,
+    accepted_at INTEGER NOT NULL
+  )`).run();
+}
+router.get('/opening-agreement', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
+  await ensureDjOpeningAgreements(c.env.DB);
+  const agreement = await c.env.DB.prepare('SELECT terms_version, accepted_at FROM dj_opening_agreements WHERE user_id=?').bind(auth.id).first<any>();
+  return c.json({ ok: true, terms_version: DJ_OPENING_TERMS_VERSION, agreed: agreement?.terms_version === DJ_OPENING_TERMS_VERSION, accepted_at: agreement?.accepted_at || null });
+});
+router.post('/opening-agreement', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
+  const body = await c.req.json<any>().catch(() => ({}));
+  if (body.terms_version !== DJ_OPENING_TERMS_VERSION || body.accept_terms !== true || body.accept_paid_opening !== true || body.accept_revenue_share !== true)
+    return c.json({ ok: false, error: '유료 개설 조건 및 수익배분 약관에 모두 동의해야 합니다.' }, 400);
+  await ensureDjOpeningAgreements(c.env.DB);
+  const now = Date.now();
+  await c.env.DB.prepare('INSERT INTO dj_opening_agreements(user_id,terms_version,accepted_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET terms_version=excluded.terms_version, accepted_at=excluded.accepted_at').bind(auth.id, DJ_OPENING_TERMS_VERSION, now).run();
+  return c.json({ ok: true, agreed: true, terms_version: DJ_OPENING_TERMS_VERSION, accepted_at: now, payment_confirmed: false, station_activated: false });
+});
+
 // ── GET /api/dj/profile — 내 DJ 프로필 ──
 router.get('/profile', async (c) => {
   const auth = await authUser(c);
