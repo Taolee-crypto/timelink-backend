@@ -38,4 +38,25 @@ router.get('/settlement-preview', c => {
     total_atoms:Number(r.totalAtoms),creator_atoms:Number(r.creatorAtoms),
     platform_atoms:Number(r.platformAtoms),atoms_per_tl:10000,posted:false});
 });
+
+/**
+ * Internal broadcaster state gate. Requires a server-side secret; no browser
+ * can use this to impersonate a broadcast worker. No audio is exposed here.
+ */
+router.get('/service-state', async c => {
+  const configured=c.env.CENTRAL_BROADCAST_WORKER_SECRET;
+  const provided=c.req.header('X-Central-Broadcast-Secret')||'';
+  if(!configured||!provided||provided!==configured)return c.json({ok:false,error:'UNAUTHORIZED'},403);
+  const raw=c.req.query('admin_id')||'';
+  if(!/^[1-9]\\d{0,14}$/.test(raw))return c.json({ok:false,error:'INVALID_ADMIN_ID'},400);
+  const adminId=Number(raw);
+  try{
+    const serviceId='central-tilo-'+adminId;
+    const row=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?')
+      .bind(serviceId,adminId).first<{status:string}>();
+    return c.json({ok:true,service_id:serviceId,enabled:row?.status==='active',
+      note:'A trusted broadcaster must check file grants and separate broadcast rights before streaming.'});
+  }catch(_){return c.json({ok:false,error:'BROADCAST_SCHEMA_NOT_READY'},503)}
+});
+
 export default router;
