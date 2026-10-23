@@ -111,10 +111,7 @@ router.get('/central-broadcast/stations/:country', async c => {
         AND LOWER(f.file_type)='audio/tl3'
         AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=v.file_id
           AND r.status='released' AND r.rights_confirmed=1)
-        AND EXISTS (SELECT 1 FROM central_broadcast_rights_grants rg
-          WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
-            AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
-      ORDER BY RANDOM() LIMIT 100`).bind(country).all<{file_id:number}>();
+      ORDER BY RANDOM() LIMIT 100`).all<{file_id:number}>();
     return c.json({ok:true,country,locale:languages[country],service_enabled:service?.status==='active',
       granted_file_ids:(grants.results||[]).map(g=>g.file_id),
       stream_ready:(grants.results||[]).length>0,reason:(grants.results||[]).length?'READY_FOR_BROWSER_TEST':'NO_COUNTRY_BROADCAST_RIGHTS',
