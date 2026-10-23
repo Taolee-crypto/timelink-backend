@@ -185,6 +185,71 @@ router.post('/opening-agreement', async (c) => {
   const now = Date.now();
   await c.env.DB.prepare('INSERT INTO dj_opening_agreements(user_id,terms_version,accepted_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET terms_version=excluded.terms_version, accepted_at=excluded.accepted_at').bind(auth.id, DJ_OPENING_TERMS_VERSION, now).run();
   return c.json({ ok: true, agreed: true, terms_version: DJ_OPENING_TERMS_VERSION, accepted_at: now, payment_confirmed: false, station_activated: false });
+=======
+// Shared member profile. DJ profile retains separate broadcast-specific fields.
+async function ensureMemberProfile(db: D1Database) {
+  await db.prepare(`CREATE TABLE IF NOT EXISTS member_profiles (
+    user_id INTEGER PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '',
+    bio TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+  )`).run();
+}
+router.get('/member-profile', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ok:false,error:'인증 필요'},401);
+  await ensureMemberProfile(c.env.DB);
+  const row = await c.env.DB.prepare('SELECT display_name,bio,avatar_url,updated_at FROM member_profiles WHERE user_id=?').bind(auth.id).first<any>();
+  return c.json({ok:true,profile:{display_name:row?.display_name||auth.user.username||'',bio:row?.bio||'',avatar_url:row?.avatar_url||'',email:auth.user.email,updated_at:row?.updated_at||null}});
+});
+router.post('/member-profile', async (c) => {
+  const auth = await authUser(c);
+  if (!auth) return c.json({ok:false,error:'인증 필요'},401);
+  const body = await c.req.json<any>().catch(()=>({}));
+  const name = String(body.display_name||'').trim();
+  const bio = String(body.bio||'').trim();
+  if(!name || name.length>80 || bio.length>1000) return c.json({ok:false,error:'이름 또는 소개 길이를 확인하세요.'},400);
+  await ensureMemberProfile(c.env.DB);
+  await c.env.DB.prepare('INSERT INTO member_profiles(user_id,display_name,bio,avatar_url,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name,bio=excluded.bio,updated_at=excluded.updated_at').bind(auth.id,name,bio,'',Date.now()).run();
+  return c.json({ok:true});
+});
+
+// DJ-only photo storage: 256 KiB limit, MIME signature verified, not tied to member profile.
+async function ensureDjAvatars(db:D1Database) {
+  await db.prepare(`CREATE TABLE IF NOT EXISTS dj_avatar_images (
+    dj_id INTEGER PRIMARY KEY, mime TEXT NOT NULL, base64_data TEXT NOT NULL, updated_at INTEGER NOT NULL
+  )`).run();
+}
+router.post('/profile/avatar', async (c) => {
+  const auth=await authUser(c);
+  if(!auth)return c.json({ok:false,error:'인증 필요'},401);
+  await ensureDJCafeTables(c.env.DB);
+  const dj=await c.env.DB.prepare('SELECT id FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
+  if(!dj)return c.json({ok:false,error:'먼저 DJ 활동명과 프로필을 저장하세요.'},400);
+  const raw=await c.req.arrayBuffer();
+  if(raw.byteLength<12||raw.byteLength>262144)return c.json({ok:false,error:'이미지는 256KB 이하로 업로드하세요.'},413);
+  const bytes=new Uint8Array(raw);
+  const png=bytes[0]===137&&bytes[1]===80&&bytes[2]===78&&bytes[3]===71&&bytes[4]===13&&bytes[5]===10;
+  const jpg=bytes[0]===255&&bytes[1]===216&&bytes[2]===255;
+  const webp=String.fromCharCode(...bytes.slice(0,4))==='RIFF'&&String.fromCharCode(...bytes.slice(8,12))==='WEBP';
+  const mime=png?'image/png':jpg?'image/jpeg':webp?'image/webp':null;
+  if(!mime)return c.json({ok:false,error:'PNG, JPG, WEBP 이미지만 업로드할 수 있습니다.'},415);
+  let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+  const encoded=btoa(binary);
+  await ensureDjAvatars(c.env.DB);
+  await c.env.DB.prepare('INSERT INTO dj_avatar_images(dj_id,mime,base64_data,updated_at) VALUES(?,?,?,?) ON CONFLICT(dj_id) DO UPDATE SET mime=excluded.mime,base64_data=excluded.base64_data,updated_at=excluded.updated_at').bind(dj.id,mime,encoded,Date.now()).run();
+  const url='/api/dj-cafe/profile/avatar/'+dj.id;
+  await c.env.DB.prepare('UPDATE dj_profiles SET avatar_url=?,updated_at=? WHERE id=?').bind(url,Date.now(),dj.id).run();
+  return c.json({ok:true,avatar_url:url});
+});
+router.get('/profile/avatar/:id',async(c)=>{
+  const id=Number(c.req.param('id'));
+  if(!Number.isSafeInteger(id)||id<1)return c.text('Not found',404);
+  await ensureDjAvatars(c.env.DB);
+  const row=await c.env.DB.prepare('SELECT mime,base64_data FROM dj_avatar_images WHERE dj_id=?').bind(id).first<any>();
+  if(!row)return c.text('Not found',404);
+  const bin=atob(row.base64_data);const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+  return new Response(bytes,{headers:{'Content-Type':row.mime,'Cache-Control':'public,max-age=60','X-Content-Type-Options':'nosniff'}});
 });
 
 // ── GET /api/dj/profile — 내 DJ 프로필 ──
@@ -193,7 +258,9 @@ router.get('/profile', async (c) => {
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
   await ensureDJCafeTables(c.env.DB);
   const row = await c.env.DB.prepare('SELECT * FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
-  return c.json({ ok: true, profile: row || null });
+  await ensureMemberProfile(c.env.DB);
+  const member = await c.env.DB.prepare('SELECT display_name,bio,avatar_url FROM member_profiles WHERE user_id=?').bind(auth.id).first<any>();
+  return c.json({ ok: true, profile: row ? {...row, avatar_url:row.avatar_url||member?.avatar_url||''} : null, member_profile:member||null });
 });
 
 // ── POST /api/dj/profile — DJ 프로필 생성/수정 ──
