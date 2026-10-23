@@ -146,9 +146,9 @@ async function getKmaSeoulWeather(env:any):Promise<any|null>{
    const raw=await response.text();
    // ASOS tm2 layout: TM STN WD WS GST_WD GST_WS GST_TM PA PS PT PR TA TD HM PV RN ...
    // Use the official field indices; reject missing (-9/-99) or malformed readings.
-   const line=raw.split(/\\r?\\n/).find(x=>/^\\d{12}\\s+108\\s/.test(x.trim()));
+   const line=raw.split(/\r?\n/).find(x=>/^\d{12}\s+108\s/.test(x.trim()));
    if(!line)return null;
-   const values=line.trim().split(/\\s+/);
+   const values=line.trim().split(/\s+/);
    const numeric=(i:number)=>{
      const v=Number(values[i]);
      return values[i]!==undefined&&Number.isFinite(v)&&v>-8.9?v:null;
