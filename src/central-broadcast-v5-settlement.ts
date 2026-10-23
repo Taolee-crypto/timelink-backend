@@ -21,3 +21,19 @@ export function calculateCentralBroadcastAllocation(playedSeconds: bigint): Broa
   const platformHundredths = totalHundredths - creatorHundredths;
   return { totalHundredths, creatorHundredths, platformHundredths };
 }
+
+/**
+ * Calculate with the V5 ledger's 10,000 atoms per TL.
+ * Fractional played seconds are supported at millisecond resolution.
+ * Call only with verified audible music milliseconds (not DJ/news/buffering).
+ * Rounding occurs once per event; no ledger posting is performed here.
+ */
+export function calculateCentralBroadcastAtoms(playedMilliseconds: bigint): {
+  totalAtoms: bigint; creatorAtoms: bigint; platformAtoms: bigint;
+} {
+  if (playedMilliseconds < 0n) throw new RangeError('playedMilliseconds must be nonnegative');
+  // 1,000 ms => 0.3 TL => 3,000 TL atoms; creator 2,100, platform 900.
+  const totalAtoms = (playedMilliseconds * 3n + 0n) / 1n;
+  const creatorAtoms = (totalAtoms * 7n) / 10n;
+  return { totalAtoms, creatorAtoms, platformAtoms: totalAtoms - creatorAtoms };
+}
