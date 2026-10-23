@@ -392,6 +392,26 @@ router.post('/player/revoke', async (c) => {
   }
 });
 
+async function authorizedTiloBroadcast(db:D1Database,userId:number,fileId:number,country:string):Promise<boolean>{
+  if(!['KR','JP','US','CN','TH','VN'].includes(country))return false;
+  const serviceId='central-tilo-'+userId;
+  const row=await db.prepare(`
+    SELECT 1 AS permitted FROM central_broadcast_service_accounts sa
+    JOIN central_broadcast_service_file_grants sg ON sg.service_id=sa.service_id
+    JOIN tl3_v5_releases v ON v.file_id=sg.file_id
+    JOIN tl_files f ON f.id=v.file_id
+    JOIN central_broadcast_rights_grants rg ON rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
+    WHERE sa.service_id=? AND sa.parent_admin_user_id=? AND sa.status='active'
+      AND sg.file_id=? AND sg.country=? AND sg.status='active'
+      AND (sg.expires_at IS NULL OR sg.expires_at>datetime('now'))
+      AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now'))
+      AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+      AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=v.file_id
+        AND r.status='released' AND r.rights_confirmed=1)
+    LIMIT 1`).bind(country,serviceId,userId,fileId,country).first();
+  return !!row;
+}
+
 router.post('/session-license/:id', async (c) => {
   try {
     const userId = await userFromRequest(c);
@@ -408,12 +428,16 @@ router.post('/session-license/:id', async (c) => {
     ]);
     if (!player) return c.json({ok:false,code:'PLAYER_KEY_REQUIRED',error:'이 기기에 등록된 TimeLink Player 키가 없습니다.'},403);
     if (!release) return c.json({ok:false,error:'봉인된 TL3 V5 자산을 찾을 수 없습니다.'},404);
+    const broadcastCountry=String(body?.broadcast_country||'').toUpperCase();
+    const isBroadcast=!!broadcastCountry;
+    if(isBroadcast && !(await authorizedTiloBroadcast(c.env.DB,userId,fileId,broadcastCountry)))
+      return c.json({ok:false,code:'BROADCAST_RIGHTS_REQUIRED',error:'TILO 계정·국가별 파일 권한·방송권 확인이 필요합니다.'},403);
     // V3 track pools are the canonical source for newly charged playback TL.
     // Do not gate V5 licenses against the legacy tl_user_files cache.
     const trackPools = await getTrackPoolBalances(c.env.DB,userId,String(release.share_id));
     const trackBalanceAtoms = trackPools.ad + trackPools.bonus + trackPools.paid;
     const trackBalanceTl = atomsToTl(trackBalanceAtoms);
-    if (trackBalanceAtoms <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:trackBalanceTl},402);
+    if (!isBroadcast && trackBalanceAtoms <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:trackBalanceTl},402);
     const masterKeys = resolveMasterKeyring(c.env);
     const releaseKeyId = String(release.key_id || 'legacy');
     const releaseMasterKey = masterKeys.keys[releaseKeyId];
@@ -435,6 +459,13 @@ router.post('/session-license/:id', async (c) => {
       wrapKey,bytes(contentKey)
     ));
     const ephemeralPublic = await crypto.subtle.exportKey('jwk',ephemeral.publicKey) as JsonWebKey;
+    if(isBroadcast){
+      await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_v5_broadcast_sessions
+        (session_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,file_id INTEGER NOT NULL,
+         country TEXT NOT NULL,expires_at INTEGER NOT NULL)`).run();
+      await c.env.DB.prepare('INSERT OR REPLACE INTO tl3_v5_broadcast_sessions(session_id,user_id,file_id,country,expires_at) VALUES(?,?,?,?,?)')
+        .bind(sessionId,userId,fileId,broadcastCountry,expiresAt).run();
+    }
     await c.env.DB.prepare('INSERT OR REPLACE INTO tl3_v5_sessions(session_id,user_id,file_id,player_id,expires_at) VALUES(?,?,?,?,?)')
       .bind(sessionId,userId,fileId,playerId,expiresAt).run();
     await c.env.DB.prepare("UPDATE tl3_player_keys SET last_used_at=datetime('now') WHERE user_id=? AND player_id=?").bind(userId,playerId).run();
@@ -442,7 +473,7 @@ router.post('/session-license/:id', async (c) => {
       player_id:playerId,user_id:userId,file_id:fileId,share_id:String(release.share_id),session_id:sessionId,
       expires_at:expiresAt,salt:b64u(salt),nonce:b64u(nonce),
       ephemeral_public_key:{kty:'EC',crv:'P-256',x:ephemeralPublic.x,y:ephemeralPublic.y},
-      wrapped_license:b64u(wrapped),aad_thumbprint:thumb});
+      wrapped_license:b64u(wrapped),aad_thumbprint:thumb,broadcast:isBroadcast,broadcast_country:isBroadcast?broadcastCountry:null});
   } catch(e:any) {
     const message=String(e?.message||'TL3 V5 세션 라이선스 발급 실패');
     if(message.includes('V3_TL_ATOM_SCALE_NOT_READY')||/no such table|no such column/i.test(message))
