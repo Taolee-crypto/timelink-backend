@@ -1,7 +1,7 @@
 import { currentTiloSlot, tiloLocalShow, TILO_ZONES, type TiloCountry } from '../tilo-server-timeline';
 import { Hono } from 'hono';
 import type { Env } from '../types';
-import { calculateCentralBroadcastAtoms } from '../central-broadcast-v5-settlement';
+import { calculateCentralBroadcastAtoms, calculateTiloCreatorContributionDelta } from '../central-broadcast-v5-settlement';
 
 const router = new Hono<{ Bindings: Env }>();
 type Song = {file_id:number;share_id:string;title:string;artist:string;genre:string;duration_ms:number;creator_id:number};
@@ -38,6 +38,34 @@ router.get('/settlement-preview', c => {
   return c.json({ok:true,played_ms:Number(ms),weight:0.3,creator_share:0.7,platform_share:0.3,
     total_atoms:Number(r.totalAtoms),creator_atoms:Number(r.creatorAtoms),
     platform_atoms:Number(r.platformAtoms),atoms_per_tl:10000,posted:false});
+});
+
+/**
+ * Internal cumulative-settlement preview for a verified monthly rights-holder
+ * aggregate. Does not write to the economic ledger or accept public airtime.
+ * A server-side broadcaster secret is mandatory.
+ */
+router.get('/contribution-delta-preview', c => {
+  const configured=c.env.CENTRAL_BROADCAST_WORKER_SECRET;
+  const provided=c.req.header('X-Central-Broadcast-Secret')||'';
+  if(!configured||!provided||provided!==configured)
+    return c.json({ok:false,error:'UNAUTHORIZED'},403);
+  const previous=String(c.req.query('previous_monthly_gross_atoms')||'');
+  const current=String(c.req.query('newly_settled_gross_atoms')||'');
+  if(!/^\\d{1,15}$/.test(previous)||!/^\\d{1,15}$/.test(current))
+    return c.json({ok:false,error:'INVALID_ATOMS'},400);
+  const before=BigInt(previous),delta=BigInt(current);
+  if(before+delta>BigInt(Number.MAX_SAFE_INTEGER))
+    return c.json({ok:false,error:'AMOUNT_TOO_LARGE'},400);
+  const result=calculateTiloCreatorContributionDelta(before,delta);
+  return c.json({
+    ok:true,posted:false,policy_version:result.policyVersion,
+    next_monthly_gross_atoms:Number(result.nextMonthlyGrossAtoms),
+    additional_contribution_atoms:Number(result.additionalContributionAtoms),
+    newly_settled_net_atoms:Number(result.newlySettledNetAtoms),
+    cumulative_contribution_atoms:Number(result.cumulativeContributionAtoms),
+    note:'Read-only preview; caller must independently verify broadcast evidence, rights, local month and ledger watermark.',
+  });
 });
 
 /**
