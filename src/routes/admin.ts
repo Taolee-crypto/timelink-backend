@@ -1,3 +1,4 @@
+import { currentTiloSlot,tiloLocalShow,TILO_ZONES,type TiloCountry } from '../tilo-server-timeline';
 import { ensureCentralBroadcastSchema } from '../central-broadcast-schema';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -643,6 +644,41 @@ router.get('/finance/ledger-integrity',async c=>{
       financial_totals_verified:false,
       note:'거래 유형은 원장 기록의 분류이며 매출·정산 금액을 뜻하지 않습니다.'});
   }catch(e:any){return c.json({ok:false,error:'원장 무결성 조회 실패',detail:String(e?.message||'')},503);}
+});
+
+
+// Browser-safe admin timeline: JWT authorization, never expose broadcaster secret.
+router.get('/central-broadcast/stations/:country/now', async c => {
+  const adminId=await requireAdmin(c);
+  if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const country=String(c.req.param('country')||'').toUpperCase();
+  if(!(country in TILO_ZONES))return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+  const serviceId='central-tilo-'+adminId;
+  try{
+    const service=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?').bind(serviceId,adminId).first<{status:string}>();
+    if(service?.status!=='active')return c.json({ok:true,country,enabled:false,slot:null});
+    const result=await c.env.DB.prepare(`
+      SELECT v.file_id,v.duration_ms,f.title,f.artist
+      FROM central_broadcast_service_file_grants sg
+      JOIN tl3_v5_releases v ON v.file_id=sg.file_id
+      JOIN tl_files f ON f.id=v.file_id
+      WHERE sg.service_id=? AND sg.country=? AND sg.status='active'
+      AND (sg.expires_at IS NULL OR sg.expires_at>datetime('now'))
+      AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+      AND LOWER(f.file_type)='audio/tl3'
+      AND EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
+        WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
+        AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
+      AND EXISTS(SELECT 1 FROM tl3_releases r
+        WHERE r.file_id=v.file_id AND r.status='released' AND r.rights_confirmed=1)
+      ORDER BY v.file_id ASC LIMIT 200
+    `).bind(serviceId,country,country).all<{file_id:number;duration_ms:number;title:string;artist:string}>();
+    const now=new Date();
+    return c.json({ok:true,country,enabled:true,serverTime:now.toISOString(),
+      timeZone:TILO_ZONES[country as TiloCountry],show:tiloLocalShow(country as TiloCountry,now),
+      slot:currentTiloSlot(result.results||[],now.getTime(),Date.UTC(2026,0,1)),
+      note:'Clock metadata only; not proof of actual playback.'});
+  }catch(error){console.error('[TILO_ADMIN_NOW]',error);return c.json({ok:false,error:'TIMELINE_UNAVAILABLE'},503);}
 });
 
 export default router;
