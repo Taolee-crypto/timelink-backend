@@ -134,6 +134,27 @@ const tiloWeatherCities:Record<string,{lat:number;lon:number;city:string}>={
 };
 // Optional OpenWeatherMap global provider. Configure OPENWEATHER_API_KEY as a Worker secret.
 // The existing Open-Meteo source remains a fallback until licensing is finalized.
+// Diagnostics expose only safe status categories, never the API key or upstream URL.
+router.get('/tilo/weather-status/:country',async c=>{
+ const country=String(c.req.param('country')||'').toUpperCase();
+ if(!tiloWeatherCities[country])return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+ const key=String((c.env as any)?.OPENWEATHER_API_KEY||'').trim();
+ if(!key)return c.json({ok:false,provider:'OpenWeatherMap',status:'KEY_NOT_CONFIGURED',hint:'Add OPENWEATHER_API_KEY as a Secret to the deployed API Worker.'});
+ const city=tiloWeatherCities[country];
+ const url=new URL('https://api.openweathermap.org/data/2.5/weather');
+ url.searchParams.set('lat',String(city.lat));url.searchParams.set('lon',String(city.lon));
+ url.searchParams.set('appid',key);url.searchParams.set('units','metric');
+ try{
+   const response=await fetch(url.toString(),{signal:AbortSignal.timeout(4500)});
+   if(response.status===401)return c.json({ok:false,provider:'OpenWeatherMap',status:'AUTH_FAILED',hint:'Verify key activation and value in the production Worker Secret.'});
+   if(response.status===429)return c.json({ok:false,provider:'OpenWeatherMap',status:'RATE_LIMITED'});
+   if(!response.ok)return c.json({ok:false,provider:'OpenWeatherMap',status:'UPSTREAM_HTTP_ERROR',http_status:response.status});
+   const data:any=await response.json();
+   if(!Number.isFinite(data?.main?.temp))return c.json({ok:false,provider:'OpenWeatherMap',status:'INVALID_WEATHER_RESPONSE'});
+   return c.json({ok:true,provider:'OpenWeatherMap',status:'READY',country,city:city.city});
+ }catch(_){return c.json({ok:false,provider:'OpenWeatherMap',status:'NETWORK_OR_TIMEOUT'});}
+});
+
 async function getOpenWeather(country:string,env:any,forecast=false):Promise<any|null>{
  const key=String(env?.OPENWEATHER_API_KEY||'').trim();
  const city=tiloWeatherCities[country];
