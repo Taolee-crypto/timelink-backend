@@ -433,6 +433,32 @@ app.get('/api/v1/tilo/catalogue', async (c) => {
   }catch(e){console.error('[TILO] catalogue query failed',e);return c.json({ok:false,error:'Broadcast catalogue unavailable'},503)}
 });
 
+// Targeted promotional inventory. Requires migration 0099; read-only until
+// authenticated creator campaign workflow and ledger settlement are implemented.
+app.get('/api/v1/tilo/promotion/availability', async (c) => {
+  c.header('Cache-Control','no-store');
+  const country=String(c.req.query('country')||'').trim().toUpperCase();
+  const language=String(c.req.query('language')||'').trim().toLowerCase();
+  if(!/^[A-Z]{2}$/.test(country)||!/^[a-z]{2,3}(-[a-z]{2,4})?$/.test(language))
+    return c.json({ok:false,error:'Valid country and language are required'},400);
+  try {
+    const data=await c.env.DB.prepare(`
+      SELECT COUNT(DISTINCT p.file_id) AS eligible_campaign_tracks
+      FROM tilo_promotion_campaigns p
+      JOIN tilo_track_languages l ON l.file_id=p.file_id AND l.language_code=p.target_language
+      JOIN tl3_v5_releases v ON v.file_id=p.file_id AND v.status='sealed'
+      JOIN tl_files f ON f.id=p.file_id
+      WHERE p.target_country=? AND p.target_language=?
+        AND p.status='active' AND p.starts_at<=datetime('now') AND p.ends_at>datetime('now')
+        AND p.spent_atoms<p.budget_atoms AND f.shared=1
+        AND LOWER(f.file_type)='audio/tl3' AND COALESCE(f.revenue_held,0)=0
+    `).bind(country,language).first<any>();
+    return c.json({ok:true,country,language,eligible_campaign_tracks:Number(data?.eligible_campaign_tracks||0),
+      scheduling_active:false,promotion_airtime_target_percent:50});
+  }catch(e){console.error('[TILO] promotion inventory unavailable',e);
+    return c.json({ok:false,error:'Promotion inventory unavailable or migration pending'},503)}
+});
+
 // TILO studio status contract. Never claim an active broadcast without a
 // verified V5 broadcast session source of truth. The scheduler/stream
 // integration will replace this conservative inactive state in a later change.
