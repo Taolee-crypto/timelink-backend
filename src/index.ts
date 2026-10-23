@@ -539,6 +539,57 @@ app.get('/api/v1/tilo/sessions/status', async (c) => {
     return c.json({ok:false,error:'TILO sessions unavailable or migration 0100 pending'},503)}
 });
 
+// TILO V5 server-to-server session control. Requires a separately provisioned
+// TILO_BROADCAST_SERVICE_TOKEN secret; never expose it in frontend code.
+// Intentionally cannot enter broadcasting or assert verified audio here.
+app.post('/api/v1/tilo/internal/sessions', async (c) => {
+  c.header('Cache-Control','no-store');
+  const expected=(c.env as typeof c.env & {TILO_BROADCAST_SERVICE_TOKEN?:string}).TILO_BROADCAST_SERVICE_TOKEN;
+  const provided=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  if(!expected || !provided || provided.length!==expected.length) return c.json({ok:false,error:'Unauthorized'},401);
+  let difference=0;
+  for(let i=0;i<expected.length;i++) difference|=expected.charCodeAt(i)^provided.charCodeAt(i);
+  if(difference!==0) return c.json({ok:false,error:'Unauthorized'},401);
+  let body:any;
+  try{body=await c.req.json()}catch{return c.json({ok:false,error:'Invalid JSON'},400)}
+  const action=String(body?.action||'');
+  const country=String(body?.country||'').trim().toUpperCase();
+  const language=String(body?.language||'').trim().toLowerCase();
+  const sessionId=String(body?.session_id||'').trim();
+  if(!/^[A-Z]{2}$/.test(country)||!/^[a-z]{2,3}(-[a-z]{2,4})?$/.test(language)||
+     !/^[a-zA-Z0-9_-]{12,100}$/.test(sessionId)||
+     !['create','ready','stop','fail'].includes(action))
+    return c.json({ok:false,error:'Invalid session command'},400);
+  try{
+    if(action==='create'){
+      // Session is planned only; no file, licence, airtime or monetary effect.
+      const result=await c.env.DB.prepare(`
+        INSERT OR IGNORE INTO tilo_broadcast_sessions
+          (id,channel_country,channel_language,state) VALUES (?,?,?,'planned')
+      `).bind(sessionId,country,language).run();
+      if(!result.meta?.changes) return c.json({ok:false,error:'Session already exists'},409);
+      await c.env.DB.prepare(`
+        INSERT INTO tilo_broadcast_events(session_id,event_type) VALUES (?,'created')
+      `).bind(sessionId).run();
+      return c.json({ok:true,session_id:sessionId,state:'planned'},201);
+    }
+    const next=action==='ready'?'ready':action==='stop'?'stopped':'failed';
+    const expectedState=action==='ready'?'planned':action==='stop'?'ready':'planned';
+    const result=await c.env.DB.prepare(`
+      UPDATE tilo_broadcast_sessions
+      SET state=?,updated_at=datetime('now'),
+          ended_at=CASE WHEN ? IN ('stopped','failed') THEN datetime('now') ELSE ended_at END
+      WHERE id=? AND channel_country=? AND channel_language=? AND state=?
+    `).bind(next,next,sessionId,country,language,expectedState).run();
+    if(!result.meta?.changes)return c.json({ok:false,error:'Invalid session state transition'},409);
+    await c.env.DB.prepare(`
+      INSERT INTO tilo_broadcast_events(session_id,event_type) VALUES (?,?)
+    `).bind(sessionId,action==='stop'?'stopped':action==='fail'?'failed':'ready').run();
+    return c.json({ok:true,session_id:sessionId,state:next});
+  }catch(e){console.error('[TILO] internal session command failed',e);
+    return c.json({ok:false,error:'Session storage unavailable; check migration 0100'},503)}
+});
+
 // TILO studio status contract. Never claim an active broadcast without a
 // verified V5 broadcast session source of truth. The scheduler/stream
 // integration will replace this conservative inactive state in a later change.
