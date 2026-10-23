@@ -14,7 +14,7 @@ JETTON_MINTER = "EQBliopwW-3NYXWW7bKO5oW2CGiyYJ4EDxke6KwqZs9cNy_h"
 TON_NETWORK = "testnet"
 
 [triggers]
-crons = ["0 0 * * *"]
+crons = ["* * * * *"]
 
 
 
