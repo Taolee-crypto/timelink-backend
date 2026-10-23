@@ -79,7 +79,14 @@ router.get('/central-broadcast/stations/:country', async c => {
       granted_file_ids:(grants.results||[]).map(g=>g.file_id),
       stream_ready:false,reason:'BROADCAST_AUDIO_ENGINE_NOT_CONNECTED',
       note:'A file grant alone does not prove copyright broadcast rights. No listener billing.'});
-  }catch(_){return c.json({ok:false,error:'BROADCAST_SCHEMA_NOT_READY'},503)}
+   }catch(e:any){
+    const message=String(e?.message||e||'unknown');
+    console.error('[TILO_STATION_SCHEMA]',{country,error:message});
+    const missing=message.match(/no such (?:table|column):\\s*([A-Za-z0-9_.]+)/i);
+    return c.json({ok:false,error:'BROADCAST_SCHEMA_NOT_READY',
+      detail:missing?'MISSING_SCHEMA_OBJECT: '+missing[1]:'Database query failed; inspect Worker logs',
+      migration_hint:'Apply pending central_broadcast_rights_grants.sql and central_broadcast_service_identity_v5.sql migrations to the configured remote D1 database.'},503);
+  }
 });
 
 /** Admin-owned TILO service switch; never bills listeners or grants audio downloads. */
