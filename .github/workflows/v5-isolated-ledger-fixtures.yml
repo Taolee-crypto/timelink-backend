@@ -1,0 +1,18 @@
+name: V5 Isolated Ledger Fixtures
+on:
+  pull_request:
+    paths: ['src/**', 'scripts/test-v5-ledger-fixtures.mjs', '.github/workflows/v5-isolated-ledger-fixtures.yml']
+  push:
+    branches: [main]
+    paths: ['src/**', 'scripts/test-v5-ledger-fixtures.mjs', '.github/workflows/v5-isolated-ledger-fixtures.yml']
+  workflow_dispatch:
+jobs:
+  isolated-ledger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/audit-v5-playback-ledger.mjs
+      - run: node scripts/test-v5-ledger-fixtures.mjs
