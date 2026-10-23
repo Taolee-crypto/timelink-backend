@@ -2,6 +2,7 @@ export interface Env {
   DB: D1Database;
   R2?: R2Bucket;
   JWT_SECRET: string;
+  CENTRAL_BROADCAST_WORKER_SECRET?: string;
   RESEND_API_KEY: string;
   ENVIRONMENT: string;
   GOOGLE_CLIENT_ID?: string;
