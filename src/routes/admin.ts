@@ -18,6 +18,35 @@ async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<number | nul
   return userId;
 }
 
+
+/** Admin-owned TILO service switch; never bills listeners or grants audio downloads. */
+router.get('/central-broadcast/tilo', async c => {
+  const adminId=await requireAdmin(c);
+  if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  try {
+    const row=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?')
+      .bind('central-tilo-'+adminId,adminId).first<{status:string}>();
+    return c.json({ok:true,enabled:row?.status==='active',service_id:'central-tilo-'+adminId});
+  }catch(_){return c.json({ok:false,error:'BROADCAST_SCHEMA_NOT_READY'},503)}
+});
+router.post('/central-broadcast/tilo', async c => {
+  const adminId=await requireAdmin(c);
+  if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const body=await c.req.json().catch(()=>null) as {enabled?:unknown}|null;
+  if(typeof body?.enabled!=='boolean')return c.json({ok:false,error:'INVALID_ENABLED'},400);
+  const serviceId='central-tilo-'+adminId;
+  const status=body.enabled?'active':'disabled';
+  try {
+    await c.env.DB.prepare(`INSERT INTO central_broadcast_service_accounts
+      (service_id,parent_admin_user_id,display_name,status)
+      VALUES (?,?,'TILO Central Broadcast',?)
+      ON CONFLICT(service_id) DO UPDATE SET status=excluded.status,updated_at=datetime('now')
+      WHERE parent_admin_user_id=excluded.parent_admin_user_id`)
+      .bind(serviceId,adminId,status).run();
+    return c.json({ok:true,enabled:body.enabled,service_id:serviceId,broadcast_connected:false});
+  }catch(_){return c.json({ok:false,error:'BROADCAST_SCHEMA_NOT_READY'},503)}
+});
+
 // Dedicated, read-only admin session verification.
 router.get('/session', async (c) => {
   const userId = await requireAdmin(c);
