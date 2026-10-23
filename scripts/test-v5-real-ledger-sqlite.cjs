@@ -51,11 +51,11 @@ try {
   const stopped=await settleV5EarlyStop(db,{userId:1,shareId:'fixture',sessionId:'fixture-session-001',remainingAtoms:1500000});
   assert.equal(stopped.refundedAtoms,1500000);assert.equal(stopped.platformAtoms,0);
   assert.equal(await balance(pool),0);
-  const walletPaid=await ensureLedgerAccount(db,'user',1,'TL','wallet_paid');
-  assert.equal(await balance(walletPaid),1500000);
+  const walletBonus=await ensureLedgerAccount(db,'user',1,'TL','wallet_bonus');
+  assert.equal(await balance(walletBonus),1500000);
   const stoppedAgain=await settleV5EarlyStop(db,{userId:1,shareId:'fixture',sessionId:'fixture-session-001',remainingAtoms:1500000});
-  assert.equal(stoppedAgain.refundedAtoms,0);assert.equal(await balance(walletPaid),1500000);
-  console.log('PASS actual settleV5EarlyStop: unused 150 TL => original TL_P 150, platform 0');
+  assert.equal(stoppedAgain.refundedAtoms,0);assert.equal(await balance(walletBonus),1500000);
+  console.log('PASS actual settleV5EarlyStop: unused 150 TL => TL_B 150, platform 0');
   const total=await db.prepare('SELECT SUM(available_atoms) AS total FROM v3_economy_balances').first();
   assert.equal(Number(total.total),1800000);
   console.log('PASS total ledger conservation: 180 TL');
