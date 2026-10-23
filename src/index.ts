@@ -6,6 +6,7 @@ import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
 import { buildTL3SpineV4, verifyTL3SpineV4Container } from './tl3spine';
 import tl3V5Router from './routes/tl3-v5';
 import centralBroadcastV5Router from './routes/central-broadcast-v5';
+import tiloV5ApprovalsRouter from './routes/tilo-v5-approvals';
 import tl3PlayerSessionRouter from './tl3-player-session';
 
 import { cors } from 'hono/cors';
@@ -384,6 +385,8 @@ app.get('/api/v1/health', async (c) => {
 app.route('/api/v1/auth', authRouter);
 app.route('/api/v1/tl3/v5', tl3V5Router);
 app.route('/api/v5/central-broadcast', centralBroadcastV5Router);
+// Admin review only; no TL payouts are triggered by these routes.
+app.route('/api/admin/tilo-v5', tiloV5ApprovalsRouter);
 app.route('/api/v1/users', usersRouter);
 app.route('/api/v3/economy', economyV3Router);
 app.route('/api/v3/music', musicV3Router);
