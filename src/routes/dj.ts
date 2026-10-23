@@ -184,13 +184,91 @@ async function getTiloWeather(country:string,env:any,timeoutMs=5000):Promise<any
    source_url:'https://open-meteo.com/',note:'Representative city conditions, not entire country.'};
 }
 
+// Optional OpenWeatherMap global provider. Configure OPENWEATHER_API_KEY as a Worker secret.
+// The existing Open-Meteo source remains a fallback until licensing is finalized.
+// Diagnostics expose only safe status categories, never the API key or upstream URL.
+router.get('/tilo/weather-status/:country',async c=>{
+ const country=String(c.req.param('country')||'').toUpperCase();
+ if(!tiloWeatherCities[country])return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+ const key=String((c.env as any)?.OPENWEATHER_API_KEY||'').trim();
+ if(!key)return c.json({ok:false,provider:'OpenWeatherMap',status:'KEY_NOT_CONFIGURED',hint:'Add OPENWEATHER_API_KEY as a Secret to the deployed API Worker.'});
+ const city=tiloWeatherCities[country];
+ const url=new URL('https://api.openweathermap.org/data/2.5/weather');
+ url.searchParams.set('lat',String(city.lat));url.searchParams.set('lon',String(city.lon));
+ url.searchParams.set('appid',key);url.searchParams.set('units','metric');
+ try{
+   const response=await fetch(url.toString(),{signal:AbortSignal.timeout(4500)});
+   if(response.status===401)return c.json({ok:false,provider:'OpenWeatherMap',status:'AUTH_FAILED',hint:'Verify key activation and value in the production Worker Secret.'});
+   if(response.status===429)return c.json({ok:false,provider:'OpenWeatherMap',status:'RATE_LIMITED'});
+   if(!response.ok)return c.json({ok:false,provider:'OpenWeatherMap',status:'UPSTREAM_HTTP_ERROR',http_status:response.status});
+   const data:any=await response.json();
+   if(!Number.isFinite(data?.main?.temp))return c.json({ok:false,provider:'OpenWeatherMap',status:'INVALID_WEATHER_RESPONSE'});
+   return c.json({ok:true,provider:'OpenWeatherMap',status:'READY',country,city:city.city});
+ }catch(_){return c.json({ok:false,provider:'OpenWeatherMap',status:'NETWORK_OR_TIMEOUT'});}
+});
+
+async function getOpenWeather(country:string,env:any,forecast=false):Promise<any|null>{
+ const key=String(env?.OPENWEATHER_API_KEY||'').trim();
+ const city=tiloWeatherCities[country];
+ if(!key||!city)return null;
+ const endpoint=forecast?'forecast':'weather';
+ const url=new URL('https://api.openweathermap.org/data/2.5/'+endpoint);
+ url.searchParams.set('lat',String(city.lat));url.searchParams.set('lon',String(city.lon));
+ url.searchParams.set('appid',key);url.searchParams.set('units','metric');
+ url.searchParams.set('lang',country==='KR'?'kr':country==='JP'?'ja':country==='CN'?'zh_cn':country==='TH'?'th':country==='VN'?'vi':'en');
+ try{
+   const response=await fetch(url.toString(),{signal:AbortSignal.timeout(4500)});
+   if(!response.ok)return null;
+   const data:any=await response.json();
+   if(forecast){
+     if(!Array.isArray(data.list))return null;
+     const entries=data.list.slice(0,40).filter((x:any)=>Number.isFinite(x?.main?.temp)&&Number.isFinite(x?.dt)).map((x:any)=>({
+       forecast_at:new Date(x.dt*1000).toISOString(),temperature_c:x.main.temp,
+       description:String(x.weather?.[0]?.description||'').slice(0,100),
+       humidity_percent:x.main.humidity,wind_kmh:Number.isFinite(x.wind?.speed)?Math.round(x.wind.speed*36)/10:null,
+       rain_3h_mm:x.rain?.['3h']??0,snow_3h_mm:x.snow?.['3h']??0
+     }));
+     return {ok:true,country,city:city.city,source:'OpenWeatherMap',source_url:'https://openweathermap.org/',forecasts:entries};
+   }
+   if(!Number.isFinite(data.main?.temp)||!Number.isFinite(data.dt))return null;
+   return {ok:true,country,city:city.city,observed_at:new Date(data.dt*1000).toISOString(),
+     temperature_c:data.main.temp,feels_like_c:data.main.feels_like,humidity_percent:data.main.humidity,
+     precipitation_mm:data.rain?.['1h']??0,snow_1h_mm:data.snow?.['1h']??0,
+     weather_code:data.weather?.[0]?.id??null,description:String(data.weather?.[0]?.description||'').slice(0,100),
+     wind_kmh:Number.isFinite(data.wind?.speed)?Math.round(data.wind.speed*36)/10:null,
+     source:'OpenWeatherMap',source_url:'https://openweathermap.org/',note:'Representative city conditions, not entire country.'};
+ }catch(_){return null;}
+}
+router.get('/tilo/forecast/:country',async c=>{
+ const country=String(c.req.param('country')||'').toUpperCase();
+ if(!tiloWeatherCities[country])return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+ const forecast=await getOpenWeather(country,c.env,true);
+ return forecast?c.json(forecast,200,{'Cache-Control':'public, max-age=1800'}):c.json({ok:false,error:'FORECAST_PROVIDER_NOT_CONFIGURED_OR_UNAVAILABLE'},503);
+});
+
+
 router.get('/tilo/weather/:country',async c=>{
  const country=String(c.req.param('country')||'').toUpperCase();
  const city=tiloWeatherCities[country];
  if(!city)return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
  try{
+
    const weather=await getTiloWeather(country,c.env);
    return c.json(weather,200,{'Cache-Control':'public, max-age=600'});
+   const openWeather=await getOpenWeather(country,c.env);
+   if(openWeather)return c.json(openWeather,200,{'Cache-Control':'public, max-age=600'});
+   const url='https://api.open-meteo.com/v1/forecast?latitude='+city.lat+'&longitude='+city.lon+
+     '&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m&timezone=auto';
+   const response=await fetch(url,{signal:AbortSignal.timeout(5000)});
+   if(!response.ok)throw Error('WEATHER_PROVIDER_HTTP_'+response.status);
+   const data:any=await response.json();
+   if(!data.current||!Number.isFinite(data.current.temperature_2m))throw Error('WEATHER_DATA_INVALID');
+   return c.json({ok:true,country,city:city.city,observed_at:data.current.time,
+     temperature_c:data.current.temperature_2m,humidity_percent:data.current.relative_humidity_2m,
+     precipitation_mm:data.current.precipitation,weather_code:data.current.weather_code,
+     wind_kmh:data.current.wind_speed_10m,source:'Open-Meteo',
+     source_url:'https://open-meteo.com/',note:'Representative city conditions, not entire country.'},
+     200,{'Cache-Control':'public, max-age=600'});
  }catch(e:any){return c.json({ok:false,error:'WEATHER_UNAVAILABLE'},503);}
 });
 
@@ -248,6 +326,21 @@ router.post('/tilo/daily-context/:country', async (c) => {
       (observation.weather_code===null?'':', WMO code '+observation.weather_code),
       source:observation.source,observed_at:observation.observed_at};
   }catch(_){/* AI can make a non-weather editorial plan. */}
+
+    const current=await getOpenWeather(country,c.env);
+    if(current)liveWeather={description:current.city+': '+current.temperature_c+'°C, '+current.description+', rain last hour '+current.precipitation_mm+' mm',source:current.source};
+  }catch(_){/* Fall back to existing weather source. */}
+  try{
+    if(!liveWeather){
+    const city=tiloWeatherCities[country];
+    const response=await fetch('https://api.open-meteo.com/v1/forecast?latitude='+city.lat+'&longitude='+city.lon+
+      '&current=temperature_2m,precipitation,weather_code&timezone=auto',{signal:AbortSignal.timeout(3500)});
+    if(response.ok){const result:any=await response.json();if(Number.isFinite(result.current?.temperature_2m))
+      liveWeather={description:city.city+': '+result.current.temperature_2m+'°C, precipitation '+result.current.precipitation+' mm, WMO code '+result.current.weather_code,source:'Open-Meteo'};}
+    }
+  }catch(_){/* Continue with no weather. */}
+  const weather=liveWeather;
+
   const prompt=[
     'Local time: '+localTime,
     'Verified headlines: '+JSON.stringify(headlines),
