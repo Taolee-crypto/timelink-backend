@@ -253,6 +253,38 @@ router.get('/profile/avatar/:id',async(c)=>{
   return new Response(bytes,{headers:{'Content-Type':row.mime,'Cache-Control':'public,max-age=60','X-Content-Type-Options':'nosniff'}});
 });
 
+// Creator Connect is a self-declared external artist profile, not verified ownership.
+async function ensureCreatorConnect(db:D1Database){
+  await db.prepare(`CREATE TABLE IF NOT EXISTS creator_connect_profiles (
+    user_id INTEGER PRIMARY KEY, platform TEXT NOT NULL, profile_url TEXT NOT NULL, updated_at INTEGER NOT NULL
+  )`).run();
+}
+router.get('/creator-connect',async(c)=>{
+  const auth=await authUser(c);
+  if(!auth)return c.json({ok:false,error:'인증 필요'},401);
+  await ensureCreatorConnect(c.env.DB);
+  const row=await c.env.DB.prepare('SELECT platform,profile_url,updated_at FROM creator_connect_profiles WHERE user_id=?').bind(auth.id).first<any>();
+  return c.json({ok:true,profile:row||null,verified:false});
+});
+router.post('/creator-connect',async(c)=>{
+  const auth=await authUser(c);
+  if(!auth)return c.json({ok:false,error:'인증 필요'},401);
+  const body=await c.req.json<any>().catch(()=>({}));
+  const platform=String(body.platform||'').trim().toLowerCase();
+  const profileUrl=String(body.profile_url||'').trim();
+  const allowed=['spotify','soundcloud','audius','bandcamp','other'];
+  if(!allowed.includes(platform)||profileUrl.length>500)return c.json({ok:false,error:'플랫폼 또는 주소가 올바르지 않습니다.'},400);
+  let url:URL;
+  try{url=new URL(profileUrl);}catch{return c.json({ok:false,error:'HTTPS 주소를 입력하세요.'},400);}
+  if(url.protocol!=='https:'||url.username||url.password)return c.json({ok:false,error:'HTTPS 주소만 허용됩니다.'},400);
+  const hosts:Record<string,string[]>={spotify:['open.spotify.com'],soundcloud:['soundcloud.com','www.soundcloud.com'],audius:['audius.co','www.audius.co'],bandcamp:[]};
+  if(platform==='bandcamp'&&!url.hostname.toLowerCase().endsWith('.bandcamp.com')&&url.hostname.toLowerCase()!=='bandcamp.com')return c.json({ok:false,error:'Bandcamp 프로필 주소를 입력하세요.'},400);
+  if(hosts[platform]?.length&&!hosts[platform].includes(url.hostname.toLowerCase()))return c.json({ok:false,error:'선택한 플랫폼의 주소를 입력하세요.'},400);
+  await ensureCreatorConnect(c.env.DB);
+  await c.env.DB.prepare('INSERT INTO creator_connect_profiles(user_id,platform,profile_url,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET platform=excluded.platform,profile_url=excluded.profile_url,updated_at=excluded.updated_at').bind(auth.id,platform,url.toString(),Date.now()).run();
+  return c.json({ok:true,verified:false});
+});
+
 // ── GET /api/dj/profile — 내 DJ 프로필 ──
 router.get('/profile', async (c) => {
   const auth = await authUser(c);
