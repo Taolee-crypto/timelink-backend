@@ -374,16 +374,12 @@ export async function settleV5EarlyStop(db:D1Database,input:{
     const account=await ensureLedgerAccount(db,'user',userId,'TL','track_pool:'+shareId+':'+source);
     lines.push({accountId:account,assetCode:'TL',amountAtoms:-allocations[source]});
   }
-  for(const source of ['ad','bonus','paid'] as const){
-    if(!allocations[source])continue;
-    const walletBucket=source==='paid'?'wallet_paid':source==='ad'?'wallet_ad':'wallet_bonus';
-    lines.push({accountId:await ensureLedgerAccount(db,'user',userId,'TL',walletBucket),assetCode:'TL',amountAtoms:allocations[source]});
-  }
+  lines.push({accountId:await ensureLedgerAccount(db,'user',userId,'TL','wallet_bonus'),assetCode:'TL',amountAtoms:refund});
   const posted=await postLedgerTransaction(db,{
     idempotencyKey:'v5-early-stop:'+sessionId,
     transactionType:'v5_early_stop',source:'v5_player_stop',
     referenceType:'track',referenceId:shareId,actorUserId:String(userId),
-    description:'V5 중도 종료: 미재생 TL 전액 원래 지갑 유형으로 반환',
+    description:'V5 중도 종료: 미재생 TL 전액 TL_B로 반환',
     metadata:{session_id:sessionId,amount_atoms:amount,refund_atoms:refund,platform_atoms:platform,allocation:allocations},
     lines,atomicStatements:input.atomicStatements
   });
