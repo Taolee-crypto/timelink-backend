@@ -403,6 +403,36 @@ app.route('/api/settings', settingsRouter);
 app.route('/api/cafe-broadcast', cafeBroadcastRouter);
 app.route('/api/contact', contactRouter);
 
+// TILO V5 broadcast eligibility: public, sealed, unheld music only.
+// Read-only catalogue: never grants decryption, session licence or free playback.
+app.get('/api/v1/tilo/catalogue', async (c) => {
+  c.header('Cache-Control','no-store');
+  const lang=String(c.req.query('language')||'').trim().toLowerCase();
+  const country=String(c.req.query('country')||'').trim().toUpperCase();
+  const limit=Math.max(1,Math.min(100,Number(c.req.query('limit'))||50));
+  if(lang && !/^[a-z]{2,3}(-[a-z]{2,4})?$/.test(lang)) return c.json({ok:false,error:'Invalid language filter'},400);
+  if(country && !/^[A-Z]{2}$/.test(country)) return c.json({ok:false,error:'Invalid country filter'},400);
+  try {
+    const rows=await c.env.DB.prepare(`
+      SELECT v.file_id,v.share_id,v.duration_ms,f.title,f.artist,f.genre,f.country,f.cover_image
+      FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id
+      WHERE v.status='sealed' AND LOWER(f.file_type)='audio/tl3'
+        AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
+        AND (?='' OR UPPER(COALESCE(f.country,''))=?)
+      ORDER BY v.updated_at DESC LIMIT ?
+    `).bind(country,country,limit).all();
+    // No reliable vocal-language metadata or country-targeted promotion records yet.
+    // Fail closed instead of incorrectly treating creator country as lyric language.
+    if(lang) return c.json({ok:true,items:[],filter_unavailable:'vocal_language_not_indexed',total_returned:0});
+    return c.json({ok:true,items:(rows.results||[]).map((r:any)=>({
+      file_id:r.file_id,share_id:r.share_id,duration_ms:r.duration_ms,
+      title:r.title,artist:r.artist,genre:r.genre,country:r.country,cover_image:r.cover_image,
+      promotion_status:'unverified'
+    })),total_returned:(rows.results||[]).length,live:false,
+    promotion_policy:{target_airtime_percent:50,status:'not_implemented'}});
+  }catch(e){console.error('[TILO] catalogue query failed',e);return c.json({ok:false,error:'Broadcast catalogue unavailable'},503)}
+});
+
 // TILO studio status contract. Never claim an active broadcast without a
 // verified V5 broadcast session source of truth. The scheduler/stream
 // integration will replace this conservative inactive state in a later change.
