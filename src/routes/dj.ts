@@ -132,23 +132,65 @@ const tiloWeatherCities:Record<string,{lat:number;lon:number;city:string}>={
  TH:{lat:13.7563,lon:100.5018,city:'Bangkok'},
  VN:{lat:21.0285,lon:105.8542,city:'Hanoi'}
 };
+// Korea Meteorological Administration ASOS observation, Seoul station 108.
+// The API Hub key must be configured as a Cloudflare secret: KMA_API_HUB_KEY.
+// ASOS is line-oriented text, not JSON. Never expose authKey in responses.
+async function getKmaSeoulWeather(env:any):Promise<any|null>{
+ const key=String(env?.KMA_API_HUB_KEY||'').trim();
+ if(!key)return null;
+ try{
+   const url=new URL('https://apihub.kma.go.kr/api/typ01/url/kma_sfctm2.php');
+   url.searchParams.set('stn','108');url.searchParams.set('help','0');url.searchParams.set('authKey',key);
+   const response=await fetch(url.toString(),{signal:AbortSignal.timeout(4500)});
+   if(!response.ok)return null;
+   const raw=await response.text();
+   // ASOS tm2 layout: TM STN WD WS GST_WD GST_WS GST_TM PA PS PT PR TA TD HM PV RN ...
+   // Use the official field indices; reject missing (-9/-99) or malformed readings.
+   const line=raw.split(/\\r?\\n/).find(x=>/^\\d{12}\\s+108\\s/.test(x.trim()));
+   if(!line)return null;
+   const values=line.trim().split(/\\s+/);
+   const numeric=(i:number)=>{
+     const v=Number(values[i]);
+     return values[i]!==undefined&&Number.isFinite(v)&&v>-8.9?v:null;
+   };
+   const temperature=numeric(11),humidity=numeric(13),wind=numeric(3),rain=numeric(15);
+   if(temperature===null||temperature < -90||temperature > 65)return null;
+   const observed=values[0];
+   const stamp=Date.parse(observed.slice(0,4)+'-'+observed.slice(4,6)+'-'+observed.slice(6,8)+'T'+observed.slice(8,10)+':'+observed.slice(10,12)+':00+09:00');
+   if(!Number.isFinite(stamp)||stamp>Date.now()+600000||Date.now()-stamp>3*3600000)return null;
+   return {ok:true,country:'KR',city:'Seoul',observed_at:observed.slice(0,4)+'-'+observed.slice(4,6)+'-'+observed.slice(6,8)+'T'+observed.slice(8,10)+':'+observed.slice(10,12),
+     temperature_c:temperature,humidity_percent:humidity,precipitation_mm:rain,weather_code:null,
+     wind_kmh:wind===null?null:Math.round(wind*36)/10,
+     source:'KMA ASOS',source_url:'https://apihub.kma.go.kr/',note:'Seoul ASOS observation, not a national forecast.'};
+ }catch(_){return null;}
+}
+async function getTiloWeather(country:string,env:any,timeoutMs=5000):Promise<any>{
+ if(country==='KR'){
+   const kma=await getKmaSeoulWeather(env);
+   if(kma)return kma;
+ }
+ const city=tiloWeatherCities[country];
+ if(!city)return null;
+ const url='https://api.open-meteo.com/v1/forecast?latitude='+city.lat+'&longitude='+city.lon+
+   '&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m&timezone=auto';
+ const response=await fetch(url,{signal:AbortSignal.timeout(timeoutMs)});
+ if(!response.ok)throw Error('WEATHER_PROVIDER_HTTP_'+response.status);
+ const data:any=await response.json();
+ if(!data.current||!Number.isFinite(data.current.temperature_2m))throw Error('WEATHER_DATA_INVALID');
+ return {ok:true,country,city:city.city,observed_at:data.current.time,
+   temperature_c:data.current.temperature_2m,humidity_percent:data.current.relative_humidity_2m,
+   precipitation_mm:data.current.precipitation,weather_code:data.current.weather_code,
+   wind_kmh:data.current.wind_speed_10m,source:'Open-Meteo',
+   source_url:'https://open-meteo.com/',note:'Representative city conditions, not entire country.'};
+}
+
 router.get('/tilo/weather/:country',async c=>{
  const country=String(c.req.param('country')||'').toUpperCase();
  const city=tiloWeatherCities[country];
  if(!city)return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
  try{
-   const url='https://api.open-meteo.com/v1/forecast?latitude='+city.lat+'&longitude='+city.lon+
-     '&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m&timezone=auto';
-   const response=await fetch(url,{signal:AbortSignal.timeout(5000)});
-   if(!response.ok)throw Error('WEATHER_PROVIDER_HTTP_'+response.status);
-   const data:any=await response.json();
-   if(!data.current||!Number.isFinite(data.current.temperature_2m))throw Error('WEATHER_DATA_INVALID');
-   return c.json({ok:true,country,city:city.city,observed_at:data.current.time,
-     temperature_c:data.current.temperature_2m,humidity_percent:data.current.relative_humidity_2m,
-     precipitation_mm:data.current.precipitation,weather_code:data.current.weather_code,
-     wind_kmh:data.current.wind_speed_10m,source:'Open-Meteo',
-     source_url:'https://open-meteo.com/',note:'Representative city conditions, not entire country.'},
-     200,{'Cache-Control':'public, max-age=600'});
+   const weather=await getTiloWeather(country,c.env);
+   return c.json(weather,200,{'Cache-Control':'public, max-age=600'});
  }catch(e:any){return c.json({ok:false,error:'WEATHER_UNAVAILABLE'},503);}
 });
 
@@ -198,15 +240,14 @@ router.post('/tilo/daily-context/:country', async (c) => {
   const localTime=new Intl.DateTimeFormat(profile.locale,{timeZone:profile.timeZone,dateStyle:'full',timeStyle:'short'}).format(now);
   const headlines=await getTiloApprovedNews(country,c.env,now);
   // Weather is fetched by the backend from a named provider; client claims are not trusted.
-  let liveWeather:any=null;
+  let weather:any=null;
   try{
-    const city=tiloWeatherCities[country];
-    const response=await fetch('https://api.open-meteo.com/v1/forecast?latitude='+city.lat+'&longitude='+city.lon+
-      '&current=temperature_2m,precipitation,weather_code&timezone=auto',{signal:AbortSignal.timeout(3500)});
-    if(response.ok){const result:any=await response.json();if(Number.isFinite(result.current?.temperature_2m))
-      liveWeather={description:city.city+': '+result.current.temperature_2m+'°C, precipitation '+result.current.precipitation+' mm, WMO code '+result.current.weather_code,source:'Open-Meteo'};}
-  }catch(_){/* Continue with no weather. */}
-  const weather=liveWeather;
+    const observation=await getTiloWeather(country,c.env,3500);
+    if(observation)weather={description:observation.city+': '+observation.temperature_c+'°C'+
+      (observation.precipitation_mm===null?'':', precipitation '+observation.precipitation_mm+' mm')+
+      (observation.weather_code===null?'':', WMO code '+observation.weather_code),
+      source:observation.source,observed_at:observation.observed_at};
+  }catch(_){/* AI can make a non-weather editorial plan. */}
   const prompt=[
     'Local time: '+localTime,
     'Verified headlines: '+JSON.stringify(headlines),
