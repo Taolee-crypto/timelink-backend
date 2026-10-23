@@ -1,3 +1,4 @@
+import { ensureCentralBroadcastSchema } from '../central-broadcast-schema';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../types';
@@ -31,6 +32,7 @@ router.post('/central-broadcast/stations/:country/grants', async c => {
   if(!Number.isSafeInteger(fileId)||fileId<=0)return c.json({ok:false,error:'INVALID_FILE_ID'},400);
   const serviceId='central-tilo-'+adminId;
   try{
+    await ensureCentralBroadcastSchema(c.env.DB);
     const eligible=await c.env.DB.prepare(`
       SELECT v.file_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id
       WHERE v.file_id=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
@@ -63,6 +65,7 @@ router.get('/central-broadcast/stations/:country', async c => {
   if(!languages[country])return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
   const serviceId='central-tilo-'+adminId;
   try {
+    await ensureCentralBroadcastSchema(c.env.DB);
     const service=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?')
       .bind(serviceId,adminId).first<{status:string}>();
     const grants=await c.env.DB.prepare(`SELECT v.file_id FROM tl3_v5_releases v
