@@ -402,6 +402,24 @@ app.route('/api/cafe-subscriptions', cafeSubscriptionsRouter);
 app.route('/api/settings', settingsRouter);
 app.route('/api/cafe-broadcast', cafeBroadcastRouter);
 app.route('/api/contact', contactRouter);
+
+// TILO studio status contract. Never claim an active broadcast without a
+// verified V5 broadcast session source of truth. The scheduler/stream
+// integration will replace this conservative inactive state in a later change.
+app.get('/api/v1/tilo/studio/status', (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json({
+    ok: true,
+    studio: 'tilo-central',
+    live: false,
+    state: 'not_connected',
+    current_track: null,
+    presenter_speaking: false,
+    source: 'v5_broadcast_session_unavailable',
+    updated_at: new Date().toISOString()
+  });
+});
+
 app.route('/api/upload-pdf', uploadPdfRouter);
 
 // ── Track Page Social / Playlist ─────────────────────────────
