@@ -1,0 +1,13 @@
+# Local-only test Worker config. No production database_id, routes, or secrets.
+name = "timelink-v5-ledger-test"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "timelink-v5-ledger-test"
+database_id = "00000000-0000-4000-8000-000000000001"
+
+[vars]
+ENVIRONMENT = "test"
+TON_NETWORK = "testnet"
