@@ -43,3 +43,27 @@
 - 이중 발행, 출금 재시도, 중복 정산, 수수료 누락에 대한 테스트 미통과
 
 이 문서는 구현 계약이며 사용자 잔액·환전 권리를 자동 변경하지 않는다.
+
+
+## 2026-10-23 TLC 채굴 공식 재설계 감사 결과
+현재 `src/economics.ts`의 `/calc-poc`는 POC = clamp(10 × (0.35 content + 0.25 spend + 0.18 listen + 0.10 upload + 0.12 score), 0.1, 5)로 계산하고, `/mine-tlc`는 월 TL_P 소비액 × 0.08 × POC × 플랜 배율 / 30을 일일 발행 상한으로 사용한다. 기존 공식은 새 TL_A/TL_B 보상 전환 정책과 별개이므로 그대로 병행하면 같은 기여에 대한 중복 발행 위험이 있다.
+
+### 확인된 결함 및 수정 요구
+- `/mine-tlc`는 클라이언트가 보낸 `tlc_amount`를 사용한다. 서버가 유효 기여 이벤트와 보상 전환 기록을 직접 검증하고 지급액을 계산하도록 변경한다.
+- `users.tlc_balance` 증가와 `tlc_mining_v2` 기록이 별도 DB 요청이며 동시 호출의 중복 채굴 방지가 원자적이지 않다. 원장 트랜잭션 + 유니크 이벤트 키 + 원자적 차감/발행으로 수정한다.
+- `/calc-poc`는 로그 삽입 직후 `monthly_tl_p + tl_p_spent`, `total_seconds + seconds`를 사용하므로 같은 요청이 이중 합산될 여지가 있다. 실적 집계는 승인된 이벤트 원장에서 한 번만 한다.
+- V5 재생 중도 종료 시 `wallet_bonus`로 돌려주는 금액은 **환불/잔액 반환**이지 신규 기여 보상이 아니다. TLC 전환 적격 TL_B와 반환 TL_B를 반드시 세부 출처로 분리한다.
+- 기존 `poc_logs` 및 `users.tlc_balance`와 V5 경제원장 사이 데이터 동기화가 확인되지 않았으므로 과거 TLC 재발행 또는 자동 소각 금지.
+
+### V5 새 공식(정책 설계안, 수치 미확정)
+1. `eligible_event_points(user,period)=Σ(verified_event_units × admin_weight × anti_abuse_factor)`; 각 이벤트는 단일 고유 ID와 보상 출처를 가진다.
+2. `eligible_reward_atoms = earned_TL_A_atoms + earned_TL_B_atoms - already_converted_atoms - ineligible_refund_atoms`; 잔액 총액이 아니라 보상 원천 로트별 미전환분만 인정한다. 실제 차감은 보상 로트와 잔액 양쪽에서 원자적으로 일치해야 한다.
+3. `conversion_rate = admin_base_rate × poc_eligibility_factor`; POC는 **별도 TLC 발행량을 중복 생성하지 않고** 검증·자격·전환 한도에 반영한다.
+4. `mintable_TLC = min(floor(eligible_reward_atoms × conversion_rate), user_period_remaining, global_period_remaining, emission_supply_remaining)`. 자산 정밀도는 승인된 TLC Jetton decimals 및 V5 원장 정수 단위에 맞춘다.
+5. `TLC issued`와 `TL_A/TL_B burned_or_reserved`를 동일한 전환 이벤트에 연결하며, 중복 청구 시 동일 결과를 재현한다. 실제 온체인 발행/출금은 별도 확정 상태 머신을 거친다.
+6. 운영 초기 관리자 수동 설정: 활동별 가중치, 검증 임계값, POC 계수, 전환율, 사용자·전체 발행 한도, 정지 스위치, 정책 버전, 변경 감사 로그. 값 미확정 시 발행 비활성.
+7. 기존 TLC 채굴 잔액은 스냅샷 및 정합성 확인 후 별도 레거시 자산으로 보호한다. 마이그레이션은 사용자 권리를 변경하지 않는 승인된 절차로만 수행한다.
+
+### 필수 테스트
+- 동일 광고·청취·댓글 이벤트 중복 보고, 병렬 전환 10건, 전환 후 재시도, 취소·반환, TL_P 기원 TL_B 반환, POC 변경, 정책 버전 변경, 월경계, 채굴 한도, D1 부분 실패, 온체인 전송 재시도.
+- `issued_TLC <= configured_global_budget`; 동일 이벤트에서 중복 TLC 발행 0; 환불 TL_B의 TLC 전환 0; 발행 전후 V5 TL 원장 대차 합계 0.
