@@ -46,3 +46,27 @@ export function decideMusicGateAutomation(
   if (evidence.registrationMode==='existing_release_share'||evidence.catalogVerified) return 'human_review';
   return 'auto_technical_clearance';
 }
+
+/** Initial launch: AI triages only genuinely sensitive cases for manual review.
+ * Technical clearance never grants copyright ownership or authorizes TL payouts.
+ */
+export type SocialRiskSignal =
+  | 'credible_threat'|'targeted_harassment'|'hate_incitation'
+  | 'child_sexual_exploitation'|'nonconsensual_intimate_content'
+  | 'private_personal_data'|'fraudulent_impersonation'
+  | 'unlawful_instructions'|'uncertain_context';
+export interface InitialGateEvidence {
+  audioDecoded:boolean;
+  validMusicOrSpokenAudio:boolean;
+  socialRiskSignals:SocialRiskSignal[];
+  analysisComplete:boolean;
+  rightsClaimConflict:boolean;
+}
+export type InitialGateOutcome='technical_reject'|'await_analysis'|'manual_exception_review'|'auto_clear_for_registration';
+export function decideInitialGate(e:InitialGateEvidence):InitialGateOutcome {
+  if(!e.analysisComplete)return 'await_analysis';
+  if(!e.audioDecoded)return 'technical_reject';
+  if(!e.validMusicOrSpokenAudio)return 'manual_exception_review';
+  if(e.rightsClaimConflict||e.socialRiskSignals.length>0)return 'manual_exception_review';
+  return 'auto_clear_for_registration';
+}
