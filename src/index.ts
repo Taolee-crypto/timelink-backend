@@ -1101,6 +1101,20 @@ app.post('/api/upload/mp3', async (c) => {
     if(file.size>D1_MAX_FILE_SIZE) return c.json({ok:false,error:'파일당 100MB까지 지원합니다.'},413);
     if(mime!=='audio/mpeg' && !/\\.mp3$/i.test(name)) return c.json({ok:false,error:'MP3 파일만 업로드할 수 있습니다.'},400);
     const raw=new Uint8Array(await file.arrayBuffer());
+    // MP3 upload technical preflight: never trust the filename or client MIME alone.
+    // This is NOT an AI music/rights approval; later analysis remains mandatory.
+    const id3=raw.length>=10&&raw[0]===0x49&&raw[1]===0x44&&raw[2]===0x33;
+    const frame=(offset:number)=>offset+3<raw.length&&raw[offset]===0xff&&
+      (raw[offset+1]&0xe0)===0xe0&&(raw[offset+1]&0x06)!==0&&
+      (raw[offset+2]&0xf0)!==0xf0;
+    let hasFrame=false;
+    for(let offset=0;offset<Math.min(raw.length-3,65536);offset++){
+      if(frame(offset)){hasFrame=true;break;}
+    }
+    if(!hasFrame) return c.json({ok:false,code:'MP3_FRAME_NOT_FOUND',error:'MP3 오디오 프레임을 확인할 수 없습니다. 정상 MP3 파일을 업로드하세요.'},422);
+    if(!id3&&!frame(0)&&!frame(1)&&!frame(2)&&!frame(3)){
+      // Some MP3 streams have leading metadata/junk; accept only when a valid frame was found.
+    }
     const hash=await sha256Hex(raw);
     const key='tracks/u'+userId+'/mp3_'+Date.now()+'_'+name;
     await putD1Object(c.env.DB,key,raw,'audio/mpeg',name);
