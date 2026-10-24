@@ -8,6 +8,25 @@ import { readRewardPolicy,paymentBonusMap } from './v5-reward-policy';
 
 const payment = new Hono<{ Bindings: Env }>();
 
+// V5 TL PREMIUM: cash promotion prices are informational until a separate
+// verified PG order + airtime settlement pipeline is implemented.
+// Never route promotion purchases through the ordinary TL top-up endpoints.
+payment.get('/v5/premium/plans', (c) => c.json({
+  ok: true,
+  currency: 'KRW',
+  krw_per_verified_airtime_second: 2.5,
+  plans: [
+    { id: 'trial', amount_krw: 5000 },
+    { id: 'basic', amount_krw: 15000 },
+    { id: 'focused', amount_krw: 30000 },
+    { id: 'premium', amount_krw: 50000 }
+  ],
+  checkout_enabled: false,
+  settlement_enabled: false,
+  note: 'Cash promotion is separate from TL charging. Payment and verified airtime settlement are not yet enabled.'
+}));
+
+
 /* ──────────────────────────────────────────────────
    공통 유틸: 토큰 파싱 → user_id
 ────────────────────────────────────────────────── */
