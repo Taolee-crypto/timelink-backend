@@ -1116,9 +1116,38 @@ app.post('/api/upload/mp3', async (c) => {
       // Some MP3 streams have leading metadata/junk; accept only when a valid frame was found.
     }
     const hash=await sha256Hex(raw);
-    const key='tracks/u'+userId+'/mp3_'+Date.now()+'_'+name;
+    // Require the review schema before accepting an intake; never silently skip the gate.
+    const schema=await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v5_music_gate_reviews'").first<any>();
+    if(!schema) return c.json({ok:false,code:'MUSIC_GATE_SCHEMA_REQUIRED',error:'음원 심사 시스템 준비 중입니다. 관리자에게 문의하세요.'},503);
+    const modeRaw=String(form['registration_mode']||'original_creation');
+    if(modeRaw!=='original_creation'&&modeRaw!=='existing_release_share')
+      return c.json({ok:false,code:'INVALID_REGISTRATION_MODE',error:'등록 유형을 확인하세요.'},400);
+    const prior=await c.env.DB.prepare(
+      'SELECT id,source_key,status FROM v5_music_gate_reviews WHERE user_id=? AND source_sha256=? AND registration_mode=?'
+    ).bind(userId,hash,modeRaw).first<any>();
+    if(prior) return c.json({ok:true,review_id:prior.id,key:prior.source_key,hash,
+      review_status:prior.status,can_publish:false,can_convert_tl3:false,
+      message:'이미 등록된 파일입니다. 기존 심사 상태를 확인하세요.'});
+    const key='tracks/u'+userId+'/mp3_'+crypto.randomUUID()+'_'+name;
     await putD1Object(c.env.DB,key,raw,'audio/mpeg',name);
-    return c.json({ok:true,key,size:raw.length,hash,stream_url:'https://api.timelink.digital/api/storage/'+encodeURIComponent(key),storage_mode:'timelink_d1',release_mode:'free_mp3'});
+    const reviewId=crypto.randomUUID();
+    try {
+      await c.env.DB.prepare(
+        "INSERT INTO v5_music_gate_reviews(id,user_id,source_key,source_sha256,registration_mode,status) VALUES(?,?,?,?,?,'pending_analysis')"
+      ).bind(reviewId,userId,key,hash,modeRaw).run();
+    } catch(e:any) {
+      // Concurrent duplicate upload: return the existing review, never create a second approval.
+      const duplicate=await c.env.DB.prepare(
+        'SELECT id,source_key,status FROM v5_music_gate_reviews WHERE user_id=? AND source_sha256=? AND registration_mode=?'
+      ).bind(userId,hash,modeRaw).first<any>();
+      if(duplicate) return c.json({ok:true,review_id:duplicate.id,key:duplicate.source_key,hash,
+        review_status:duplicate.status,can_publish:false,can_convert_tl3:false});
+      throw e;
+    }
+    return c.json({ok:true,review_id:reviewId,key,size:raw.length,hash,
+      review_status:'pending_analysis',can_publish:false,can_convert_tl3:false,
+      storage_mode:'timelink_d1',release_mode:'pending_ai_music_gate',
+      message:'MP3 접수 완료. AI 음원 심사 승인 전에는 TL3 변환과 공개가 허용되지 않습니다.'});
   }catch(e:any){ return c.json({ok:false,error:e?.message||'MP3 저장 실패'},500); }
 });
 
