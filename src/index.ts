@@ -2349,8 +2349,12 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
       idempotencyKey:'tl3-meter:'+sessionId+':'+chargedSeconds.toFixed(3),
       fileId,playedSeconds:delta,atomicStatements
     });
-    await c.env.DB.prepare("INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained) VALUES(?,'consume',?,?,?)")
-      .bind(user.id,delta,delta,delta*0.0005).run().catch(()=>{});
+    // A retried playback settlement must never grant duplicate PoC credit.
+    // PoC here remains a contribution log, NOT a TLC issuance event.
+    if (!settlement.replayed) {
+      await c.env.DB.prepare("INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained) VALUES(?,'consume',?,?,?)")
+        .bind(user.id,delta,delta,delta*0.0005).run().catch(()=>{});
+    }
     const accounts:any[]=await getLedgerWallet(c.env.DB,user.id) as any[];
     const walletAtoms=accounts.filter(a=>['wallet_paid','wallet_ad','wallet_bonus'].includes(String(a.bucket)))
       .reduce((n,a)=>n+Number(a.available_atoms||0),0);
