@@ -51,6 +51,17 @@ export function scorePocDay(events: PocEvent[], policy: PocPolicy = POC_V5_CONSE
   if (!policy.version || !/^\d{4}-\d{2}-\d{2}$/.test(events[0]?.day || '2000-01-01'))
     throw new Error('INVALID_POC_POLICY_OR_DAY');
   assertNonnegativeSafeInt(policy.dailyPointCap,'POINT_CAP');
+  assertNonnegativeSafeInt(policy.perTargetDailyCap,'TARGET_CAP');
+  for (const activity of Object.keys(policy.pointsPerActivity) as PocActivity[]) {
+    assertNonnegativeSafeInt(policy.pointsPerActivity[activity], 'ACTIVITY_POINTS');
+    assertNonnegativeSafeInt(policy.dailyEventCaps[activity], 'ACTIVITY_CAP');
+  }
+  if (!Number.isSafeInteger(policy.minimumQualityBps) ||
+      !Number.isSafeInteger(policy.minimumTrustBps) ||
+      policy.minimumQualityBps < 0 || policy.minimumQualityBps > 10000 ||
+      policy.minimumTrustBps < 0 || policy.minimumTrustBps > 10000) {
+    throw new Error('INVALID_POC_POLICY_THRESHOLDS');
+  }
   const counts = new Map<PocActivity,number>();
   const targetCounts = new Map<string,number>();
   const seenIds = new Set<string>();
