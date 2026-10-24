@@ -1,13 +1,20 @@
 /** TimeLink V5: adjudicated negative contribution and three-strike policy.
  * Proposal only. No production sanctions or wallet changes are triggered here.
  * Reports are allegations; only independently confirmed decisions count.
+ * Legitimate spoken-word, experimental music, mature art and context-dependent lyrics
+ * are not violations solely because they are nontraditional or contain profanity.
+ * Explicit audio requires contextual review and correct content labeling.
  */
 export type ViolationKind =
   | 'false_creator_claim'
   | 'false_rightsholder_claim'
   | 'repeat_infringing_upload'
   | 'fraudulent_contribution'
-  | 'malicious_false_report';
+  | 'malicious_false_report'
+  | 'disguised_non_music_upload'
+  | 'abusive_audio_upload'
+  | 'sexually_explicit_audio_mislabeling'
+  | 'reward_farming_audio_upload';
 export type ViolationStatus = 'reported'|'under_review'|'confirmed'|'dismissed'|'reversed';
 export interface ViolationDecision {
   caseId: string;
@@ -32,7 +39,11 @@ export const V5_VIOLATION_POLICY_DRAFT: ViolationPolicy = {
     false_rightsholder_claim:200,
     repeat_infringing_upload:200,
     fraudulent_contribution:120,
-    malicious_false_report:100
+    malicious_false_report:100,
+    disguised_non_music_upload:80,
+    abusive_audio_upload:120,
+    sexually_explicit_audio_mislabeling:150,
+    reward_farming_audio_upload:200
   },
   strikeLimit:3,
   suspendAt:3
