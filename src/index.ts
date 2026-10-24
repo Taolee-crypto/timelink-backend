@@ -1128,7 +1128,7 @@ app.post('/api/upload/mp3', async (c) => {
       'SELECT id,source_key,status FROM v5_music_gate_reviews WHERE user_id=? AND source_sha256=? AND registration_mode=?'
     ).bind(userId,hash,modeRaw).first<any>();
     if(prior) return c.json({ok:true,review_id:prior.id,key:prior.source_key,hash,
-      review_status:prior.status,can_publish:false,can_convert_tl3:false,
+      review_status:prior.status,can_publish:false,can_convert_tl3:prior.status==='approved',
       message:'이미 등록된 파일입니다. 기존 심사 상태를 확인하세요.'});
     const key='tracks/u'+userId+'/mp3_'+crypto.randomUUID()+'_'+name;
     await putD1Object(c.env.DB,key,raw,'audio/mpeg',name);
@@ -1143,7 +1143,7 @@ app.post('/api/upload/mp3', async (c) => {
         'SELECT id,source_key,status FROM v5_music_gate_reviews WHERE user_id=? AND source_sha256=? AND registration_mode=?'
       ).bind(userId,hash,modeRaw).first<any>();
       if(duplicate) return c.json({ok:true,review_id:duplicate.id,key:duplicate.source_key,hash,
-        review_status:duplicate.status,can_publish:false,can_convert_tl3:false});
+        review_status:duplicate.status,can_publish:false,can_convert_tl3:duplicate.status==='approved'});
       throw e;
     }
     return c.json({ok:true,review_id:reviewId,key,size:raw.length,hash,
