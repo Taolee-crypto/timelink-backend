@@ -60,7 +60,7 @@ export function scorePocDay(events: PocEvent[], policy: PocPolicy = POC_V5_CONSE
   const user = sorted[0]?.userId;
   const day = sorted[0]?.day;
   for (const e of sorted) {
-    if (e.userId !== user || e.day !== day || !e.id || !e.targetId)
+    if (e.userId !== user || e.day !== day || !e.id || !e.targetId || !e.userId)
       throw new Error('POC_MIXED_USER_DAY_OR_INVALID_EVENT');
     if (seenIds.has(e.id)) continue;
     seenIds.add(e.id);
@@ -68,6 +68,7 @@ export function scorePocDay(events: PocEvent[], policy: PocPolicy = POC_V5_CONSE
     if (!Number.isInteger(e.qualityBps) || !Number.isInteger(e.trustBps) ||
         e.qualityBps < 0 || e.qualityBps > 10000 ||
         e.trustBps < 0 || e.trustBps > 10000) throw new Error('INVALID_POC_BPS');
+    if (e.distinctCounterparty && e.distinctCounterparty === e.userId) continue;
     if (e.qualityBps < policy.minimumQualityBps || e.trustBps < policy.minimumTrustBps) continue;
     const count = counts.get(e.activity) || 0;
     const targetKey = e.activity+':'+e.targetId;
@@ -87,8 +88,8 @@ export function scorePocDay(events: PocEvent[], policy: PocPolicy = POC_V5_CONSE
 }
 /**
  * PoC only evaluates verified contribution. It must NEVER mint TLC.
- * TLC supply changes exclusively through a separately authorized TL<->TLC
- * exchange and settlement ledger with explicit reserve/liability controls.
+ * P2P TL/TLC trades transfer existing balances and NEVER create TLC supply.
+ * Any separately authorized TLC issuance must use its own auditable ledger path.
  * Exchange eligibility and rates are not defined by PoC scoring.
  */
 export function pocContributionOnly(events: PocEvent[], policy: PocPolicy = POC_V5_CONSERVATIVE_DRAFT) {
