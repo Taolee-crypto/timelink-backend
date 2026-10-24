@@ -3435,6 +3435,46 @@ app.get('/api/spotify/search', async (c) => {
 
 
  
+// V5 discovery metadata: independent catalogue matches are hints, never rights clearance.
+app.get('/api/v5/music/metadata-search', async (c) => {
+  const q = String(c.req.query('q') || '').trim().slice(0, 160);
+  if (q.length < 2) return c.json({ok:false,error:'검색어는 2자 이상이어야 합니다.'},400);
+  const env = c.env as any;
+  const providers: Record<string,string> = {};
+  const results: any[] = [];
+  const tasks: Promise<void>[] = [];
+  if (env.SPOTIFY_CLIENT_ID && env.SPOTIFY_CLIENT_SECRET) tasks.push((async () => {
+    try {
+      const token = await getSpotifyToken(c.env);
+      const r = await fetch('https://api.spotify.com/v1/search?q='+encodeURIComponent(q)+'&type=track&limit=10&market=KR',
+        {headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(6500)});
+      if (!r.ok) throw Error('HTTP '+r.status);
+      const d:any = await r.json();
+      for (const t of d.tracks?.items || []) results.push({source:'spotify',source_id:t.id,title:t.name,
+        artist:(t.artists||[]).map((a:any)=>a.name).join(', '),album:t.album?.name||'',
+        duration_seconds:Math.round((t.duration_ms||0)/1000),release_date:t.album?.release_date||'',
+        isrc:t.external_ids?.isrc||'',cover_url:t.album?.images?.[0]?.url||'',source_url:t.external_urls?.spotify||''});
+      providers.spotify='ok';
+    } catch(e:any) {providers.spotify=String(e.message||'unavailable').slice(0,80);}
+  })()); else providers.spotify='not_configured';
+  tasks.push((async () => {
+    try {
+      const r=await fetch('https://itunes.apple.com/search?term='+encodeURIComponent(q)+'&entity=song&limit=10&country=KR',
+        {signal:AbortSignal.timeout(6500)});
+      if (!r.ok) throw Error('HTTP '+r.status);
+      const d:any=await r.json();
+      for(const t of d.results||[]) results.push({source:'itunes',source_id:String(t.trackId||''),
+        title:t.trackName||'',artist:t.artistName||'',album:t.collectionName||'',
+        duration_seconds:Math.round((t.trackTimeMillis||0)/1000),release_date:t.releaseDate||'',
+        isrc:'',cover_url:t.artworkUrl100||'',source_url:t.trackViewUrl||''});
+      providers.itunes='ok';
+    } catch(e:any){providers.itunes=String(e.message||'unavailable').slice(0,80);}
+  })());
+  await Promise.all(tasks);
+  return c.header('Cache-Control','public, max-age=120').json({ok:true,query:q,providers,results,
+    rights_verified:false,note:'검색 결과는 음원 정보 후보일 뿐 저작권 및 유통 허락을 증명하지 않습니다. 공급자별 데이터/이미지 사용 조건을 준수해야 합니다.'});
+});
+
 // Creator作品情報と権利宣言を、本人所有の資産にひも付けて保存する。
 // Spotifyの一致情報は作品識別用であり、権利所有の証明として扱わない。
 app.post('/api/creator/metadata', async (c) => {
