@@ -52,6 +52,10 @@ router.post('/reviews/:id/decision', async (c) => {
     if(record.source_sha256!==hash)return c.json({ok:false,error:'SOURCE_HASH_MISMATCH'},409);
     if(!record.classifier_version||!record.evidence_json)
       return c.json({ok:false,error:'AI_EVIDENCE_REQUIRED'},409);
+    let evidence:unknown;
+    try { evidence=JSON.parse(record.evidence_json); } catch { return c.json({ok:false,error:'INVALID_AI_EVIDENCE'},409); }
+    if(!evidence||typeof evidence!=='object'||Array.isArray(evidence)||Object.keys(evidence).length===0)
+      return c.json({ok:false,error:'EMPTY_AI_EVIDENCE'},409);
     const status=body.action==='approve'?'approved':'rejected';
     const result=await c.env.DB.prepare(
       "UPDATE v5_music_gate_reviews SET status=?,reviewer_user_id=?,reviewer_note=?,decided_at=datetime('now'),updated_at=datetime('now') WHERE id=? AND status='review_required' AND source_sha256=? AND classifier_version IS NOT NULL AND evidence_json IS NOT NULL"
