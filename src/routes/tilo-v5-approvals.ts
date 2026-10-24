@@ -197,6 +197,8 @@ router.get('/settlements/:id/posting-readiness',async c=>{
    .first<{available_atoms:number}>();
   const available=BigInt(funding?.available_atoms||0);
   const blockers:string[]=[];
+  if(!funding)blockers.push('PLATFORM_FUNDING_ACCOUNT_MISSING');
+  if(available<0n)blockers.push('INVALID_PLATFORM_FUNDING_BALANCE');
   if(row.policy_version!==plan.policyVersion)blockers.push('POLICY_VERSION_MISMATCH');
   if(available<plan.platformFundingAtoms)blockers.push('INSUFFICIENT_PLATFORM_FUNDING');
   // Recompute the exact candidate snapshot from stored verified events.
