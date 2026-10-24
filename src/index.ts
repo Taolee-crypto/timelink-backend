@@ -3471,7 +3471,8 @@ app.get('/api/v5/music/metadata-search', async (c) => {
     } catch(e:any){providers.itunes=String(e.message||'unavailable').slice(0,80);}
   })());
   await Promise.all(tasks);
-  return c.header('Cache-Control','public, max-age=120').json({ok:true,query:q,providers,results,
+  c.header('Cache-Control','public, max-age=120');
+  return c.json({ok:true,query:q,providers,results,
     rights_verified:false,note:'검색 결과는 음원 정보 후보일 뿐 저작권 및 유통 허락을 증명하지 않습니다. 공급자별 데이터/이미지 사용 조건을 준수해야 합니다.'});
 });
 
