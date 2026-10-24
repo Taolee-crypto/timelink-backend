@@ -35,9 +35,17 @@ export function decideMusicGate(input:AudioIntakeInput, evidence:TrustedMusicEvi
       !['clear','suspected','unknown'].includes(evidence.unsafeContent)) {
     throw Error('INVALID_TRUSTED_MUSIC_EVIDENCE');
   }
+  // This gate is explicitly for pre-conversion MP3 intake; other formats need a separate policy.
   const preflight=screenAudioIntake(input);
+  if (input.detectedMime!=='audio/mpeg') {
+    return {state:'rejected_technical',reasons:['MP3_REQUIRED_FOR_THIS_GATE'],
+      allowTl3Conversion:false,allowPublication:false,allowRewards:false,
+      rightsVerificationRequired:true,evidenceVersion:evidence.classifierVersion};
+  }
   const reasons:string[]=[...preflight.reasons];
   if (evidence.musicProbability===null || evidence.speechProbability===null) reasons.push('CLASSIFICATION_UNAVAILABLE');
+  // A low music score alone cannot reject experimental music or spoken-word art.
+  // Route uncertain content to review, not an irreversible strike.
   else if (evidence.musicProbability<0.30 && evidence.speechProbability>0.80) reasons.push('POSSIBLE_SPOKEN_AUDIO_MISLABELING');
   if (evidence.unsafeContent!=='clear') reasons.push('CONTENT_REVIEW_REQUIRED');
   if (evidence.audioFingerprintMatches>0) reasons.push('FINGERPRINT_MATCH_REVIEW');
