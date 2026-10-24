@@ -238,12 +238,32 @@ router.post('/manufacture', async (c) => {
     await ensureD1Storage(c.env.DB);
 
     const sourceHash = hex(await sha256(raw));
+    // Rights evidence is embedded inside the encrypted V5 manifest.
+    // Imported catalogue metadata is informational, never proof of ownership.
+    const rightsKind=metadata.rights_kind==='ai_creation'?'ai_creation':'copyright';
+    const rightsEvidence={
+      kind:rightsKind,
+      display_term:rightsKind==='ai_creation'?'창작권':'저작권',
+      verification_status:'creator_declared',
+      certificate_status:'not_issued',
+      certificate_valid_until:null,
+      source_platform:String(metadata.source_platform||'').slice(0,120),
+      source_reference:String(metadata.source_reference||'').slice(0,240),
+      composer:String(metadata.composer||'').slice(0,200),
+      lyricist:String(metadata.lyricist||'').slice(0,200),
+      isrc:String(metadata.isrc||'').slice(0,32),
+      iswc:String(metadata.iswc||'').slice(0,32),
+      society_name:String(metadata.society_name||'').slice(0,160),
+      society_reference:String(metadata.society_reference||'').slice(0,160),
+      imported_metadata_verified:false
+    };
     const manifest = {
       profile:'TL3-V5', version:5, file_id:fileId, share_id:shareId,
       creator_id:userId, title:String(metadata.title || file.title || '').slice(0,200),
       artist:String(metadata.artist || file.artist || '').slice(0,200),
       duration_ms:durationMs, tl_required:Math.ceil(durationMs / 1000),
       source_sha256:sourceHash, rights_confirmed:true,
+      rights_evidence:rightsEvidence,
       rights:{ confirmed:true, confirmation_type:'creator_declaration', declared_role:String(rightsDeclaration.rights_role), declared_scope:String(rightsDeclaration.rights_scope), declaration_status:'declared', owner_user_id:userId },
       lp_meta:metadata.lp_license && typeof metadata.lp_license==='object' ? {
         enabled:metadata.lp_license.lp_enabled===true,
