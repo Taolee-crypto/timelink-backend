@@ -771,6 +771,12 @@ router.get('/my-files', async (c) => {
          AND (
            lower(COALESCE(content_kind,'')) = 'tl3'
            OR lower(COALESCE(release_mode,'')) LIKE 'tl3%'
+           OR EXISTS (
+             SELECT 1 FROM tl3_v5_releases v
+             WHERE v.status='sealed'
+               AND (CAST(v.share_id AS TEXT)=CAST(tl_shares.id AS TEXT)
+                    OR v.file_id IN (SELECT f.id FROM tl_files f WHERE f.stream_url=tl_shares.stream_url))
+           )
          )
        ORDER BY created_at DESC
        LIMIT 200`
