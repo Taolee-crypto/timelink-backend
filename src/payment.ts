@@ -15,11 +15,17 @@ payment.get('/v5/premium/plans', (c) => c.json({
   ok: true,
   currency: 'KRW',
   krw_per_verified_airtime_second: 2.5,
+  tl_per_verified_airtime_second: 5,
+  tl_payment_bucket: 'TL_P',
+  excluded_tl_buckets: ['TL_A','TL_B'],
+  rates_are_independent: true,
+  settlement_policy: 'verified_airtime_only',
+  unused_budget_policy: 'return_unspent_on_cancellation',
   plans: [
-    { id: 'trial', amount_krw: 5000 },
-    { id: 'basic', amount_krw: 15000 },
-    { id: 'focused', amount_krw: 30000 },
-    { id: 'premium', amount_krw: 50000 }
+    { id: 'trial', amount_krw: 5000, estimated_tl_budget_for_equivalent_airtime: 10000 },
+    { id: 'basic', amount_krw: 15000, estimated_tl_budget_for_equivalent_airtime: 30000 },
+    { id: 'focused', amount_krw: 30000, estimated_tl_budget_for_equivalent_airtime: 60000 },
+    { id: 'premium', amount_krw: 50000, estimated_tl_budget_for_equivalent_airtime: 100000 }
   ],
   checkout_enabled: false,
   settlement_enabled: false,
