@@ -2036,7 +2036,7 @@ app.get('/api/v1/tl3/file/:shareId', async (c) => {
       const encodedTitle=encodeURIComponent(safeTitle)+'.tl3';
       return new Response(bytes,{status:200,headers:{
         'Content-Type':'application/octet-stream','Content-Length':String(bytes.byteLength),
-        'Content-Disposition':"attachment; filename=\\\"track.tl3\\\"; filename*=UTF-8''"+encodedTitle,
+        'Content-Disposition':"attachment; filename=\"track.tl3\"; filename*=UTF-8''"+encodedTitle,
         'Cache-Control':'private, no-store','X-TL3-Version':'5','Access-Control-Allow-Origin':'*'
       }});
     }
