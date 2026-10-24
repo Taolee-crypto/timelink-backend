@@ -22,8 +22,6 @@ export interface PocPolicy {
   dailyPointCap: number;
   minimumQualityBps: number;
   minimumTrustBps: number;
-  dailyTlcBudgetAtoms: number;
-  perUserDailyTlcCapAtoms: number;
 }
 export const POC_V5_CONSERVATIVE_DRAFT: PocPolicy = {
   version: 'poc-v5-draft-20261025',
@@ -45,8 +43,6 @@ export const POC_V5_CONSERVATIVE_DRAFT: PocPolicy = {
   dailyPointCap: 250,
   minimumQualityBps: 6000,
   minimumTrustBps: 7000,
-  dailyTlcBudgetAtoms: 0, // fail closed until administrator explicitly funds a pool
-  perUserDailyTlcCapAtoms: 0
 };
 function assertNonnegativeSafeInt(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('INVALID_POC_'+field);
@@ -90,27 +86,11 @@ export function scorePocDay(events: PocEvent[], policy: PocPolicy = POC_V5_CONSE
   return {userId:user || null,day:day || null,policyVersion:policy.version,points,accepted,seen:seenIds.size};
 }
 /**
- * Pro-rata allocation with floor rounding; never exceed daily budget or per-user cap.
- * Residual atoms stay in the treasury (no automatic redistribution).
+ * PoC only evaluates verified contribution. It must NEVER mint TLC.
+ * TLC supply changes exclusively through a separately authorized TL<->TLC
+ * exchange and settlement ledger with explicit reserve/liability controls.
+ * Exchange eligibility and rates are not defined by PoC scoring.
  */
-export function allocatePocTlcDaily(
-  scores: Array<{userId:string;points:number}>, policy: PocPolicy
-): Array<{userId:string;points:number;tlcAtoms:number}> {
-  assertNonnegativeSafeInt(policy.dailyTlcBudgetAtoms,'DAILY_BUDGET');
-  assertNonnegativeSafeInt(policy.perUserDailyTlcCapAtoms,'USER_CAP');
-  const ids = new Set<string>();
-  let total = 0;
-  for (const s of scores) {
-    if (!s.userId || ids.has(s.userId)) throw new Error('DUPLICATE_POC_USER');
-    ids.add(s.userId);
-    assertNonnegativeSafeInt(s.points,'POINTS');
-    if (s.points > policy.dailyPointCap) throw new Error('POC_POINTS_EXCEED_CAP');
-    total += s.points;
-    if (!Number.isSafeInteger(total)) throw new Error('POC_TOTAL_OVERFLOW');
-  }
-  return [...scores].sort((a,b)=>a.userId.localeCompare(b.userId)).map(s => ({
-    userId:s.userId,points:s.points,
-    tlcAtoms:total === 0 ? 0 : Math.min(policy.perUserDailyTlcCapAtoms,
-      Math.floor(policy.dailyTlcBudgetAtoms * (s.points / total)))
-  }));
+export function pocContributionOnly(events: PocEvent[], policy: PocPolicy = POC_V5_CONSERVATIVE_DRAFT) {
+  return scorePocDay(events, policy);
 }
