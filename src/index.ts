@@ -4938,6 +4938,38 @@ app.get('/api/download/:shareId', async (c) => {
   }
 });
 
+/**
+ * Public, read-only diagnostics. A healthy schedule is not proof of audible playout.
+ * Do not depend on administrator browser tokens for this endpoint.
+ */
+app.get('/api/tilo/health', async c => {
+  const now = new Date();
+  const countries = Object.keys(TILO_COUNTRY_ZONES).map(country =>
+    tiloLocalSchedule(country as TiloCountryCode, now));
+  try {
+    const result = await c.env.DB.prepare(
+      'SELECT country, updated_at FROM tilo_country_clock'
+    ).all<{country:string;updated_at:string}>();
+    const rows = new Map((result.results || []).map(row => [row.country, row.updated_at]));
+    const clocks = countries.map(country => {
+      const last = rows.get(country.country) || null;
+      const ageMs = last ? now.getTime() - Date.parse(last) : NaN;
+      return {country:country.country, time_zone:country.timeZone,
+        clock_last_updated_at:last,
+        clock_fresh:Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= 180000};
+    });
+    const clockHealthy = clocks.every(clock => clock.clock_fresh);
+    return c.json({ok:true,checked_at:now.toISOString(),clock_healthy:clockHealthy,
+      playback_verified:false,streaming_status:'unknown',
+      countries:clocks,
+      note:'Clock freshness does not verify actual audio delivery. Broadcast playout heartbeat and listener probes are still required.'});
+  } catch(e) {
+    console.error('[TILO_HEALTH]',e);
+    return c.json({ok:false,checked_at:now.toISOString(),clock_healthy:false,
+      playback_verified:false,streaming_status:'unknown',error:'CLOCK_STORAGE_UNAVAILABLE'},503);
+  }
+});
+
 app.get('/api/tilo/server-clock', c => {
   const now=new Date();
   return c.json({ok:true,serverTime:now.toISOString(),countries:Object.keys(TILO_COUNTRY_ZONES).map(country=>tiloLocalSchedule(country as TiloCountryCode,now)),audioStreaming:false,note:'Country program clock only. Audio playout is a separate phase.'});
