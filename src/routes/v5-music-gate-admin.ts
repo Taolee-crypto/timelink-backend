@@ -120,8 +120,10 @@ router.post('/reviews/:id/analysis',async c=>{
       socialRiskSignals:body!.unsafe_content==='clear'?[]:['uncertain_context'],
       rightsClaimConflict:Number(body!.fingerprint_matches)>0 || body!.catalog_match==='matched'
     });
-    const autoClear=outcome==='auto_clear_for_registration' &&
-      body!.catalog_match==='not_found' && Number(body!.fingerprint_matches)===0;
+    // Manual evidence entry is not a trusted AI service result. Do not auto-approve
+    // until an authenticated analysis worker and independent evidence validation exist.
+    const autoClear=false;
+    const suggestedOutcome=outcome;
     const nextStatus=autoClear?'approved':'review_required';
     const result=await c.env.DB.prepare(
       "UPDATE v5_music_gate_reviews SET status=?,classifier_version=?,evidence_json=?,reviewer_user_id=?,reviewer_note=?,decided_at=CASE WHEN ?='approved' THEN datetime('now') ELSE NULL END,updated_at=datetime('now') WHERE id=? AND source_sha256=? AND status IN ('pending_analysis','analyzing')"
@@ -129,7 +131,7 @@ router.post('/reviews/:id/analysis',async c=>{
       autoClear?'Automated technical clearance from administrator-submitted analysis; rights not verified':null,
       nextStatus,id,hash).run();
     if(Number(result.meta?.changes||0)!==1)return c.json({ok:false,error:'ANALYSIS_CONFLICT'},409);
-    return c.json({ok:true,id,status:nextStatus,auto_technical_clearance:autoClear,rights_verified:false,rewards_approved:false,message:'Administrator-supplied analysis processed; this endpoint does not run AI inference.'});
+    return c.json({ok:true,id,status:nextStatus,auto_technical_clearance:autoClear,rights_verified:false,rewards_approved:false,suggested_outcome:suggestedOutcome,message:'Analysis evidence stored for review; no AI inference or automatic approval was performed.'});
   }catch(e){
     console.error('[V5_MUSIC_GATE_ANALYSIS]',e);
     return c.json({ok:false,error:'MUSIC_GATE_ANALYSIS_UNAVAILABLE'},503);
