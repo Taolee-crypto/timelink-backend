@@ -1375,6 +1375,24 @@ function parseMp3Segments(data: Uint8Array, targetMs=1000): Array<{offset:number
 
 // (buildTL3V2 제거됨 — v3에서 buildTL3V3 사용)
 
+// V5 AI Music Gate: bind TL3 releases to the exact approved MP3 source.
+// This must run on the server; client-provided review IDs are not sufficient.
+async function requireApprovedMusicGate(db:Env['DB'], userId:number, sourceUrl:string) {
+  const schema=await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='v5_music_gate_reviews'").first<any>();
+  if(!schema) return {ok:false,code:'MUSIC_GATE_SCHEMA_REQUIRED'};
+  let key='';
+  try {
+    const url=new URL(sourceUrl);
+    if(url.hostname!=='api.timelink.digital' || !url.pathname.startsWith('/api/storage/'))
+      return {ok:false,code:'MUSIC_GATE_SOURCE_NOT_VERIFIABLE'};
+    key=decodeURIComponent(url.pathname.slice('/api/storage/'.length));
+  } catch {return {ok:false,code:'MUSIC_GATE_SOURCE_NOT_VERIFIABLE'};}
+  const record=await db.prepare(
+    "SELECT id,status FROM v5_music_gate_reviews WHERE user_id=? AND source_key=? AND status='approved' LIMIT 1"
+  ).bind(userId,key).first<any>();
+  return record?{ok:true,reviewId:String(record.id)}:{ok:false,code:'MUSIC_GATE_APPROVAL_REQUIRED'};
+}
+
 app.post('/api/v1/tl3/releases', async (c) => {
   try {
     const body = await c.req.json<any>();
@@ -1399,6 +1417,8 @@ app.post('/api/v1/tl3/releases', async (c) => {
     if (!file || Number(file.user_id)!==Number(user.id)) return c.json({ok:false,error:'본인의 음원만 TL3로 출시할 수 있습니다.'},403);
     const sourceUrl = String(file.stream_url || '');
     if (!sourceUrl) return c.json({ok:false,error:'TL3 출시용 원본 주소가 없습니다.'},400);
+    const gate=await requireApprovedMusicGate(c.env.DB,Number(user.id),sourceUrl);
+    if(!gate.ok) return c.json({ok:false,code:gate.code,error:'AI 음원 등록 승인 후 TL3 변환이 가능합니다.'},409);
 
     // LP 전체 오디오는 저장하지 않고 재생 파라미터만 기록한다.
     const lpLicense: any = body.lp_license || null;
@@ -1663,6 +1683,8 @@ app.post('/api/v1/tl3/spine/releases', async (c) => {
     if (!user) return c.json({ok:false,error:'사용자를 확인할 수 없습니다.'},401);
     const file = await c.env.DB.prepare('SELECT id,user_id,title,artist,stream_url FROM tl_files WHERE id=?').bind(fileId).first<any>();
     if (!file || Number(file.user_id)!==Number(user.id)) return c.json({ok:false,error:'본인의 음원만 TL3로 자산화할 수 있습니다.'},403);
+    const gate=await requireApprovedMusicGate(c.env.DB,Number(user.id),String(file.stream_url||''));
+    if(!gate.ok) return c.json({ok:false,code:gate.code,error:'AI 음원 등록 승인 후 TL3 자산화가 가능합니다.'},409);
     const lpLicense=body.lp_license||null;
     const lpPrice=lpLicense&&lpLicense.lp_enabled===true?Math.max(0,Math.floor(Number(lpLicense.lp_price_tl||1000))):0;
     let lpAlreadyCharged=false;
