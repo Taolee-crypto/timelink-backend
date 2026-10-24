@@ -2007,10 +2007,39 @@ app.get('/api/v1/tl3/file/:shareId', async (c) => {
   try {
     const shareId = c.req.param('shareId');
     if (!shareId) return c.json({ok:false,error:'shareId 필요'},400);
+    // Track pages pass SharePlace IDs, which can also be numeric. Resolve the
+    // share mapping first so a numeric share ID is not mistaken for a file ID.
+    const linkedFileId = await resolveTL3FileId(c.env.DB,shareId);
     const numericFileId=Number(shareId);
-    const fileId=Number.isSafeInteger(numericFileId)&&numericFileId>0&&String(numericFileId)===shareId
-      ? numericFileId : await resolveTL3FileId(c.env.DB,shareId);
+    const fileId=linkedFileId || (Number.isSafeInteger(numericFileId)&&numericFileId>0&&String(numericFileId)===shareId ? numericFileId : 0);
     if(!fileId) return c.json({ok:false,error:'해당 SharePlace 항목에 연결된 TL3 자산을 하나로 특정할 수 없습니다.',share_id:shareId},404);
+    // V5 uses its own sealed release table and D1 object key. Do not fall
+    // through to legacy V3/V4 tables for a V5 asset.
+    const v5Release = await c.env.DB.prepare(
+      "SELECT file_id,object_key,container_bytes FROM tl3_v5_releases WHERE file_id=? AND status='sealed'"
+    ).bind(fileId).first<any>().catch(()=>null);
+    if (v5Release) {
+      const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
+      const requester=token?await verifyToken(token,c.env.JWT_SECRET):null;
+      if(!requester) return c.json({ok:false,error:'TL3 다운로드는 로그인이 필요합니다.'},401);
+      const cert=await c.env.DB.prepare(
+        "SELECT c.cert_no FROM tl_asset_certs c JOIN tl_assets a ON a.asset_id=c.asset_id WHERE a.file_id=? AND c.status='active' ORDER BY c.id DESC LIMIT 1"
+      ).bind(fileId).first<any>();
+      if(!cert) return c.json({ok:false,error:'창작권 인증이 완료된 음원만 TL3 다운로드할 수 있습니다.',code:'COPYRIGHT_CERT_REQUIRED'},403);
+      const key=String(v5Release.object_key||'');
+      if(!key) return c.json({ok:false,error:'TL3 V5 컨테이너 경로가 없습니다.'},409);
+      const meta=await getD1ObjectMeta(c.env.DB,key);
+      if(!meta || meta.size!==Number(v5Release.container_bytes)) return c.json({ok:false,error:'TL3 V5 컨테이너 저장 상태가 올바르지 않습니다.'},409);
+      const bytes=await readD1Range(c.env.DB,key,0,meta.size);
+      const file=await c.env.DB.prepare('SELECT title FROM tl_files WHERE id=?').bind(fileId).first<any>();
+      const safeTitle=String(file?.title||shareId).replace(/[\\/:*?"<>|]/g,'_').slice(0,80);
+      const encodedTitle=encodeURIComponent(safeTitle)+'.tl3';
+      return new Response(bytes,{status:200,headers:{
+        'Content-Type':'application/octet-stream','Content-Length':String(bytes.byteLength),
+        'Content-Disposition':"attachment; filename=\"track.tl3\"; filename*=UTF-8''"+encodedTitle,
+        'Cache-Control':'private, no-store','X-TL3-Version':'5','Access-Control-Allow-Origin':'*'
+      }});
+    }
     // Spine V4 stores its sealed container under the per-release object_key.
     // Legacy V3 releases continue to use tl3/releases/{file_id}.tl3.
     const v4Release = await c.env.DB.prepare(
