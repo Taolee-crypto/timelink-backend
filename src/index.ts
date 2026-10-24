@@ -2342,19 +2342,17 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
       c.env.DB.prepare("UPDATE tl3_play_meter_sessions SET billed_seconds=?,played_ms=?,updated_at=datetime('now') WHERE session_id=? AND user_id=? AND file_id=? AND billed_seconds=?")
         .bind(chargedSeconds,Math.min(playedMs,totalMs),sessionId,user.id,fileId,already),
       c.env.DB.prepare('INSERT INTO tl3_assertion_guard(ok) SELECT changes()'),
-      c.env.DB.prepare('DELETE FROM tl3_assertion_guard')
+      c.env.DB.prepare('DELETE FROM tl3_assertion_guard'),
+      // Commit PoC evidence in the same D1 batch as the playback ledger transaction.
+      // If the ledger write rolls back or the idempotency key replays, no second credit is written.
+      c.env.DB.prepare("INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained) VALUES(?,'consume',?,?,?)")
+        .bind(user.id,delta,delta,delta*0.0005)
     ];
     const settlement=await settleTrackPlayback(c.env.DB,{
       userId:Number(user.id),creatorId,shareId:String(file.share_id),amountAtoms:deltaAtoms,
       idempotencyKey:'tl3-meter:'+sessionId+':'+chargedSeconds.toFixed(3),
       fileId,playedSeconds:delta,atomicStatements
     });
-    // A retried playback settlement must never grant duplicate PoC credit.
-    // PoC here remains a contribution log, NOT a TLC issuance event.
-    if (!settlement.replayed) {
-      await c.env.DB.prepare("INSERT INTO poc_logs(user_id,mode,seconds,tl_spent,poc_gained) VALUES(?,'consume',?,?,?)")
-        .bind(user.id,delta,delta,delta*0.0005).run().catch(()=>{});
-    }
     const accounts:any[]=await getLedgerWallet(c.env.DB,user.id) as any[];
     const walletAtoms=accounts.filter(a=>['wallet_paid','wallet_ad','wallet_bonus'].includes(String(a.bucket)))
       .reduce((n,a)=>n+Number(a.available_atoms||0),0);
