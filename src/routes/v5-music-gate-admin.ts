@@ -138,4 +138,26 @@ router.post('/reviews/:id/analysis',async c=>{
   }
 });
 
+
+/** Service-to-service analysis queue. Requires a separate Worker secret.
+ * Never returns original audio or authorizes a publication.
+ */
+router.get('/automation/pending', async c=>{
+  const expected=String((c.env as Env & {MUSIC_GATE_WORKER_SECRET?:string}).MUSIC_GATE_WORKER_SECRET||'');
+  const supplied=String(c.req.header('X-Music-Gate-Worker-Secret')||'');
+  if(expected.length<32||supplied.length!==expected.length)
+    return c.json({ok:false,error:'SERVICE_UNAVAILABLE'},503);
+  const a=new TextEncoder().encode(expected),b=new TextEncoder().encode(supplied);
+  let diff=0;for(let i=0;i<a.length;i++)diff|=a[i]^b[i];
+  if(diff!==0)return c.json({ok:false,error:'SERVICE_FORBIDDEN'},403);
+  try {
+    const rows=await c.env.DB.prepare(
+      "SELECT id,user_id,source_key,source_sha256,registration_mode,created_at FROM v5_music_gate_reviews WHERE status='pending_analysis' ORDER BY created_at ASC LIMIT 20"
+    ).all();
+    return c.json({ok:true,jobs:rows.results||[]});
+  }catch {
+    return c.json({ok:false,error:'MUSIC_GATE_SCHEMA_NOT_READY'},503);
+  }
+});
+
 export default router;
