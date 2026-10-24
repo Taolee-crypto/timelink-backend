@@ -1153,6 +1153,27 @@ app.post('/api/upload/mp3', async (c) => {
   }catch(e:any){ return c.json({ok:false,error:e?.message||'MP3 저장 실패'},500); }
 });
 
+// Authenticated Creator Studio polling: expose only the caller's own gate status.
+app.get('/api/v1/music-gate/reviews/:id', async (c) => {
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  const user=token?await verifyToken(token,c.env.JWT_SECRET).catch(()=>null):null;
+  const userId=Number(user?.sub||0);
+  if(!Number.isSafeInteger(userId)||userId<=0)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+  const id=String(c.req.param('id')||'');
+  if(!/^[a-f0-9-]{36}$/i.test(id))return c.json({ok:false,error:'INVALID_REVIEW_ID'},400);
+  try {
+    const record=await c.env.DB.prepare(
+      'SELECT id,status,registration_mode,reasons_json,created_at,updated_at FROM v5_music_gate_reviews WHERE id=? AND user_id=?'
+    ).bind(id,userId).first<any>();
+    if(!record)return c.json({ok:false,error:'REVIEW_NOT_FOUND'},404);
+    return c.json({ok:true,review_id:record.id,review_status:record.status,
+      registration_mode:record.registration_mode,can_convert_tl3:record.status==='approved',
+      can_publish:false,created_at:record.created_at,updated_at:record.updated_at});
+  }catch {
+    return c.json({ok:false,error:'MUSIC_GATE_SCHEMA_NOT_READY'},503);
+  }
+});
+
 app.post('/api/upload/tl3', async (c) => {
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
   const user=token ? await verifyToken(token,c.env.JWT_SECRET).catch(()=>null) : null;
