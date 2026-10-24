@@ -1,6 +1,10 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../middleware';
 import type { Env, User } from '../types';
+import { readV5Wallet } from '../v5-wallet';
+import { listenerCashoutEligibility } from '../v5-cashout';
+import { getLedgerHistory,atomsToTl } from '../economy-ledger';
+import { reconcilePristineSignupBonus } from '../economics';
 
 const router = new Hono<{ Bindings: Env; Variables: { user: User } }>();
 
@@ -17,18 +21,25 @@ router.get('/me', (c) => {
 });
 
 // GET /me/wallet
-router.get('/me/wallet', (c) => {
+router.get('/me/wallet', async (c) => {
   const u = c.get('user');
-  const exchangeable_tl = u.total_tl_spent * 0.5;
+  let wallet;
+  try {
+    await reconcilePristineSignupBonus(c.env.DB,u);
+    wallet=await readV5Wallet(c.env.DB,u.id);
+  }
+  catch { return c.json({error:'V5_WALLET_NOT_READY'},503); }
+  const eligibility=await listenerCashoutEligibility(c.env.DB,u.id);
+  const exchangeable_tl = eligibility.eligible?Math.min(wallet.tl_p,eligibility.principalRemainingAtoms/10000):0;
   const tlc_mineable = u.poc_index > 0 ? u.total_tl_spent * 0.5 * u.poc_index : 0;
   return c.json({
-    tl_balance: u.tl_balance,
-    tl_locked: u.tl_locked,
+    ...wallet,
     tlc_balance: u.tlc_balance,
     total_tl_spent: u.total_tl_spent,
     total_tl_earned: u.total_tl_earned,
     total_tl_exchanged: u.total_tl_exchanged,
     exchangeable_tl,
+    cashout_eligibility:eligibility,
     tlc_mineable,
     poc_index: u.poc_index,
     tl_suspended: !!u.tl_suspended,
@@ -42,10 +53,9 @@ router.get('/me/transactions', async (c) => {
   const u = c.get('user');
   const limit = Number(c.req.query('limit') || 20);
   const offset = Number(c.req.query('offset') || 0);
-  const rows = await c.env.DB.prepare(
-    `SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`
-  ).bind(u.id, limit, offset).all();
-  return c.json(rows.results);
+  if(!Number.isSafeInteger(limit)||!Number.isSafeInteger(offset)||limit<1||offset<0)return c.json({error:'INVALID_PAGINATION'},400);
+  const rows=await getLedgerHistory(c.env.DB,u.id,limit,offset) as any[];
+  return c.json(rows.map(row=>({...row,tx_type:row.transaction_type,amount:row.asset_code==='TL'?atomsToTl(row.amount_atoms):Number(row.amount_atoms)/1e9,note:row.description})));
 });
 
 // GET /me/poc-history

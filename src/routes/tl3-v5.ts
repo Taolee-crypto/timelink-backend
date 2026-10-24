@@ -1,4 +1,5 @@
 import { ensureCentralBroadcastSchema } from '../central-broadcast-schema';
+import { permittedStationTracks } from '../tilo-station';
 /**
  * TimeLink TL3 V5 — MP3-preserving, whole-container authenticated encryption.
  * V4/Spine files and routes remain unchanged.
@@ -396,16 +397,7 @@ router.post('/player/revoke', async (c) => {
 async function authorizedTiloBroadcast(db:D1Database,userId:number,fileId:number,country:string):Promise<boolean>{
   if(!['KR','JP','US','CN','TH','VN'].includes(country))return false;
   await ensureCentralBroadcastSchema(db);
-  const serviceId='central-tilo-'+userId;
-  const row=await db.prepare(`
-    SELECT 1 AS permitted FROM central_broadcast_service_accounts sa
-    JOIN tl3_v5_releases v ON v.file_id=?
-    JOIN tl_files f ON f.id=v.file_id
-    WHERE sa.service_id=? AND sa.parent_admin_user_id=? AND sa.status='active'
-      AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
-
-    LIMIT 1`).bind(fileId,serviceId,userId).first();
-  return !!row;
+  return (await permittedStationTracks(db,country)).some(track=>track.file_id===fileId);
 }
 
 router.post('/session-license/:id', async (c) => {

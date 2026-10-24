@@ -1,10 +1,25 @@
 import { currentTiloSlot, tiloLocalShow, TILO_ZONES, type TiloCountry } from '../tilo-server-timeline';
 import { Hono } from 'hono';
+import { permittedStationTracks } from '../tilo-station';
 import type { Env } from '../types';
 import { calculateCentralBroadcastAtoms, calculateTiloCreatorContributionDelta, tiloLocalSettlementMonth } from '../central-broadcast-v5-settlement';
 
 const router = new Hono<{ Bindings: Env }>();
 type Song = {file_id:number;share_id:string;title:string;artist:string;genre:string;duration_ms:number;creator_id:number};
+
+router.get('/stations/:country',async c=>{
+  const country=String(c.req.param('country')).toUpperCase();
+  if(!Object.hasOwn(TILO_ZONES,country))return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+  try{
+    const tracks=await permittedStationTracks(c.env.DB,country);
+    const now=new Date();
+    return c.json({ok:true,country,service_enabled:tracks.length>0,
+      granted_file_ids:tracks.map(t=>t.file_id),tracks,
+      slot:currentTiloSlot(tracks,now.getTime(),Date.UTC(2026,0,1)),serverTime:now.toISOString(),
+      show:tiloLocalShow(country as TiloCountry,now),
+      playback_mode:'authorized_browser_receiver',server_audio_stream:false,posted:false});
+  }catch{return c.json({ok:false,error:'BROADCAST_STATION_UNAVAILABLE'},503);}
+});
 /**
  * Only V5 sealed, published, rights-confirmed tracks enter the broadcast
  * planning inventory. This is NOT a public audio download or license endpoint.
@@ -172,7 +187,7 @@ router.get('/service-state', async c => {
   const provided=c.req.header('X-Central-Broadcast-Secret')||'';
   if(!configured||!provided||provided!==configured)return c.json({ok:false,error:'UNAUTHORIZED'},403);
   const raw=c.req.query('admin_id')||'';
-  if(!/^[1-9]\\d{0,14}$/.test(raw))return c.json({ok:false,error:'INVALID_ADMIN_ID'},400);
+  if(!/^[1-9]\d{0,14}$/.test(raw))return c.json({ok:false,error:'INVALID_ADMIN_ID'},400);
   const adminId=Number(raw);
   try{
     const serviceId='central-tilo-'+adminId;

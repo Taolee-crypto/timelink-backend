@@ -1,3 +1,5 @@
+import { permittedStationTracks } from '../tilo-station';
+import { REWARD_RULES,readRewardPolicy,validateRewardRules } from '../v5-reward-policy';
 import { currentTiloSlot,tiloLocalShow,TILO_ZONES,type TiloCountry } from '../tilo-server-timeline';
 import { ensureCentralBroadcastSchema } from '../central-broadcast-schema';
 import { Hono } from 'hono';
@@ -7,6 +9,81 @@ import { verifyToken } from '../auth';
 
 const router = new Hono<{ Bindings: Env }>();
 
+// Persist the attempt before executing an administrator action. A process crash
+// leaves an explicit pending record rather than erasing the attempted operation.
+router.use('*',async(c,next)=>{
+  const actor=await requireAdmin(c);
+  if(!actor)return c.json({error:'ADMIN_REQUIRED'},403);
+  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS v5_admin_access_audit(
+    id TEXT PRIMARY KEY,actor_user_id INTEGER NOT NULL,method TEXT NOT NULL,path TEXT NOT NULL,
+    status INTEGER,outcome TEXT DEFAULT 'pending',created_at TEXT DEFAULT(datetime('now')),finished_at TEXT)`
+  ).run();
+  const id=crypto.randomUUID();
+  await c.env.DB.prepare('INSERT INTO v5_admin_access_audit(id,actor_user_id,method,path) VALUES(?,?,?,?)')
+    .bind(id,actor,c.req.method,new URL(c.req.url).pathname).run();
+  try{await next();}
+  finally{await c.env.DB.prepare("UPDATE v5_admin_access_audit SET status=?,outcome=?,finished_at=datetime('now') WHERE id=?")
+    .bind(c.res.status,c.res.status<400?'completed':'failed',id).run();}
+});
+router.get('/audit-events',async c=>{
+  const rows=await c.env.DB.prepare(`SELECT * FROM v5_admin_access_audit ORDER BY created_at DESC,id DESC LIMIT 100`).all();
+  const stats=await c.env.DB.prepare(`SELECT COUNT(*) AS requests,
+    SUM(CASE WHEN path='/api/admin/sql' THEN 1 ELSE 0 END) AS sql_requests
+    FROM v5_admin_access_audit WHERE created_at>=datetime('now','-30 days')`).first();
+  return c.json({ok:true,events:rows.results||[],stats});
+});
+router.get('/reward-policy',async c=>c.json({ok:true,...await readRewardPolicy(c.env.DB),definitions:REWARD_RULES,mode:'manual'}));
+router.get('/reward-policy/history',async c=>{
+  await readRewardPolicy(c.env.DB);
+  const rows=await c.env.DB.prepare('SELECT version,updated_by,note,updated_at FROM v5_reward_policy_history ORDER BY version DESC LIMIT 50').all();
+  return c.json({ok:true,history:rows.results||[]});
+});
+router.post('/reward-policy',async c=>{
+  const actor=await requireAdmin(c);if(!actor)return c.json({error:'ADMIN_REQUIRED'},403);
+  try{
+    const input=await c.req.json<any>();
+    if(!Number.isSafeInteger(input.expected_version))return c.json({error:'VERSION_REQUIRED'},400);
+    const rules=validateRewardRules(input.rules);
+    await readRewardPolicy(c.env.DB);
+    const result=await c.env.DB.prepare(`UPDATE v5_reward_policy SET version=version+1,rules_json=?,updated_by=?,updated_at=datetime('now') WHERE id=1 AND version=?`)
+      .bind(JSON.stringify(rules),actor,input.expected_version).run();
+    if(!result.meta?.changes)return c.json({error:'VERSION_CONFLICT'},409);
+    return c.json({ok:true,version:input.expected_version+1});
+  }catch(e:any){return c.json({error:e.message},400);}
+});
+
+async function ensureWorkLedger(db:D1Database){
+  await db.batch([db.prepare(`CREATE TABLE IF NOT EXISTS v5_work_ledger (
+    id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL DEFAULT 0,
+    state_json TEXT,updated_by INTEGER,updated_at TEXT)`),db.prepare('INSERT OR IGNORE INTO v5_work_ledger(id) VALUES(1)'),db.prepare(`CREATE TABLE IF NOT EXISTS v5_work_ledger_versions (
+    version INTEGER PRIMARY KEY,state_json TEXT NOT NULL,updated_by INTEGER,updated_at TEXT)`),db.prepare(`CREATE TRIGGER IF NOT EXISTS v5_work_ledger_history AFTER UPDATE ON v5_work_ledger
+    BEGIN INSERT INTO v5_work_ledger_versions VALUES(NEW.version,NEW.state_json,NEW.updated_by,NEW.updated_at); END`)]);
+}
+
+router.get('/v5-work-ledger',async c=>{
+  if(!await requireAdmin(c))return c.json({error:'ADMIN_REQUIRED'},403);
+  await ensureWorkLedger(c.env.DB);
+  const row=await c.env.DB.prepare('SELECT * FROM v5_work_ledger WHERE id=1').first<any>();
+  return c.json({ok:true,version:row.version,state:row.state_json?JSON.parse(row.state_json):null});
+});
+router.post('/v5-work-ledger',async c=>{
+  const adminId=await requireAdmin(c);
+  if(!adminId)return c.json({error:'ADMIN_REQUIRED'},403);
+  const body=await c.req.json<any>().catch(()=>null);
+  if(!body||!Number.isSafeInteger(body.expected_version)||body.expected_version<0||
+    !Array.isArray(body.state?.tasks)||!Array.isArray(body.state?.events)||
+    body.state.tasks.length>5000||body.state.events.length>10000)
+    return c.json({error:'INVALID_WORK_LEDGER'},400);
+  const serialized=JSON.stringify(body.state);
+  if(serialized.length>1000000)return c.json({error:'WORK_LEDGER_TOO_LARGE'},413);
+  await ensureWorkLedger(c.env.DB);
+  const result=await c.env.DB.prepare(`UPDATE v5_work_ledger SET version=version+1,
+    state_json=?,updated_by=?,updated_at=datetime('now') WHERE id=1 AND version=?`)
+    .bind(serialized,adminId,body.expected_version).run();
+  if(!result.meta?.changes)return c.json({error:'VERSION_CONFLICT'},409);
+  return c.json({ok:true,version:body.expected_version+1});
+});
+
 // ── 관리자 확인 ──
 async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<number | null> {
   const auth = (c.req.header('Authorization') || '').replace(/^Bearer\s+/, '').trim();
@@ -15,7 +92,7 @@ async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<number | nul
   if (!payload) return null;
   const userId = Number(payload.sub || 0);
   if (!userId) return null;
-  const user = await c.env.DB.prepare('SELECT id, role FROM users WHERE id=?').bind(userId).first<any>();
+  const user = await c.env.DB.prepare('SELECT id, role FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0').bind(userId).first<any>();
   if (!user || String(user.role || '').toLowerCase() !== 'admin') return null;
   return userId;
 }
@@ -106,12 +183,7 @@ router.get('/central-broadcast/stations/:country', async c => {
       ON CONFLICT(service_id) DO NOTHING`).bind(serviceId,adminId).run();
     const service=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?')
       .bind(serviceId,adminId).first<{status:string}>();
-    const grants=await c.env.DB.prepare(`SELECT v.file_id FROM tl3_v5_releases v
-      JOIN tl_files f ON f.id=v.file_id
-      WHERE v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
-
-
-      ORDER BY RANDOM() LIMIT 100`).all<{file_id:number}>();
+    const grants={results:await permittedStationTracks(c.env.DB,country,adminId)};
     return c.json({ok:true,country,locale:languages[country],service_enabled:service?.status==='active',
       granted_file_ids:(grants.results||[]).map(g=>g.file_id),
       stream_ready:(grants.results||[]).length>0,reason:(grants.results||[]).length?'READY_FOR_BROWSER_TEST':'NO_ELIGIBLE_V5_TRACKS',

@@ -17,6 +17,10 @@ import { getTrackPoolBalances, getLedgerWallet, chargeTrackPool, settleTrackPlay
 
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
+import { readRewardPolicy } from './v5-reward-policy';
+import { readV5Wallet } from './v5-wallet';
+import musicDiscoveryRouter from './routes/music-discovery';
+import communityRouter from './routes/community';
 import filesRouter from './routes/files';
 import playbackRouter from './routes/playback';
 import shareplaceRouter from './routes/shareplace';
@@ -382,7 +386,72 @@ app.get('/api/v1/health', async (c) => {
   }
 });
 
+async function registerWithEmail(c:any,providedBody?:any) {
+  try {
+    const rewardPolicy=await readRewardPolicy(c.env.DB);
+    const {rules:rewardRules}=rewardPolicy;
+    const { email, password, username, business_name: businessName, biz_reg_num: bizRegNum, is_advertiser: isAdvertiser, verify_code: verifyCode } = providedBody || await c.req.json();
+    if (!email || !username) return c.json({ error: '필수 항목 누락' }, 400);
+    const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
+    if (exists) return c.json({ error: '이미 가입된 이메일입니다. 로그인을 이용해 주세요.' }, 409);
+    const nameExists = await c.env.DB.prepare('SELECT id FROM users WHERE username=?').bind(username).first();
+    if (nameExists) return c.json({ error: '이미 사용 중인 닉네임입니다.' }, 409);
+
+    // 인증 코드 검증
+    if (verifyCode) {
+      if(typeof password!=='string'||password.length<8)return c.json({error:'비밀번호는 8자 이상이어야 합니다.'},400);
+      await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL, code TEXT NOT NULL,
+        expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
+      )`).run().catch(()=>{});
+      const row = await c.env.DB.prepare(
+        'SELECT * FROM email_verifications WHERE email=? AND code=?'
+      ).bind(email, verifyCode).first() as any;
+      if (!row) return c.json({ error: '인증 코드가 올바르지 않습니다' }, 400);
+      if (new Date(row.expires_at) < new Date()) return c.json({ error: '인증 코드가 만료되었습니다' }, 400);
+      await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
+      const now = new Date().toISOString().replace('T',' ').substring(0,19);
+      const hashedPw2 = await hashPassword(password||'');
+      await c.env.DB.batch([c.env.DB.prepare(
+        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name, email_verified) VALUES (?,?,?,?,?,0,?,?,?,?,1)'
+      ).bind(email, username, hashedPw2, isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus, isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus, now, isAdvertiser?1:0, bizRegNum||'', businessName||username),
+        c.env.DB.prepare('INSERT INTO v5_signup_entitlements(user_id,bonus_tl,policy_version) SELECT id,?,? FROM users WHERE email=?').bind(isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus,rewardPolicy.version,email)
+      ]);
+      const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
+      await c.env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=?').bind(Number((user as any).id)).run();
+      if(user){
+        const bonusUser=await c.env.DB.prepare('SELECT id,tl,tl_balance,total_tl_spent,tl_p_lifetime,tl_p_exchanged FROM users WHERE id=?').bind(Number((user as any).id)).first();
+        await reconcilePristineSignupBonus(c.env.DB,bonusUser,isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus);
+      }
+      const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
+      const wallet=await readV5Wallet(c.env.DB,Number((user as any).id));
+      return c.json({ ok:true,token,access_token:token,token_type:'bearer',user_id:Number((user as any).id),user:{...user,...wallet,tl:wallet.tl_balance} });
+    }
+
+    // 인증 코드 발송
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL, code TEXT NOT NULL,
+      expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
+    )`).run().catch(()=>{});
+    await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
+    await c.env.DB.prepare(
+      'INSERT INTO email_verifications (email, code, expires_at) VALUES (?,?,?)'
+    ).bind(email, code, expiresAt).run();
+    await sendVerificationEmail(c.env, email, username, code);
+    return c.json({ ok: true, step: 'verify', message: '인증 코드를 이메일로 발송했습니다' });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+}
+
+app.post('/api/v1/auth/register',c=>registerWithEmail(c));
 app.route('/api/v1/auth', authRouter);
+app.route('/api/v5/music-discovery',musicDiscoveryRouter);
+app.route('/api/v5/community',communityRouter);
 app.route('/api/v1/tl3/v5', tl3V5Router);
 app.route('/api/v5/central-broadcast', centralBroadcastV5Router);
 // Admin review only; no TL payouts are triggered by these routes.
@@ -851,155 +920,18 @@ app.post('/api/playlist/:id/add',async(c)=>{
 });
 
 // ── Track Social / Playlist: existing D1 tables, real persistence ──
-app.get('/api/social/stats/:id', async (c) => {
-  const shareId = c.req.param('id');
-  const userId = await shareAuthUser(c);
-  try {
-    const [likes, comments, mine] = await Promise.all([
-      c.env.DB.prepare('SELECT COUNT(*) AS total FROM user_likes WHERE share_id=?').bind(shareId).first<any>(),
-      c.env.DB.prepare('SELECT COUNT(*) AS total FROM social_comments WHERE share_id=?').bind(shareId).first<any>(),
-      userId
-        ? c.env.DB.prepare('SELECT 1 AS liked FROM user_likes WHERE user_id=? AND share_id=? LIMIT 1').bind(userId, shareId).first<any>()
-        : Promise.resolve(null)
-    ]);
-    // play_logs/play_events are not currently a verified per-share view counter.
-    return c.json({ likes: Number(likes?.total || 0), comments: Number(comments?.total || 0), views: 0, my_like: !!mine });
-  } catch (e: any) {
-    return c.json({ error: e?.message || '통계 조회 실패' }, 500);
-  }
-});
-app.post('/api/social/like/:id', async (c) => {
-  const userId = await shareAuthUser(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-  const shareId = c.req.param('id');
-  const share = await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-  if (!share) return c.json({ error: '곡을 찾을 수 없습니다.' }, 404);
-  try {
-    await c.env.DB.prepare('INSERT OR IGNORE INTO user_likes (user_id, share_id) VALUES (?, ?)').bind(userId, shareId).run();
-    const row = await c.env.DB.prepare('SELECT COUNT(*) AS total FROM user_likes WHERE share_id=?').bind(shareId).first<any>();
-    return c.json({ ok: true, liked: true, likes: Number(row?.total || 0) });
-  } catch (e: any) { return c.json({ error: e?.message || '좋아요 처리 실패' }, 500); }
-});
-app.delete('/api/social/like/:id', async (c) => {
-  const userId = await shareAuthUser(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-  const shareId = c.req.param('id');
-  try {
-    await c.env.DB.prepare('DELETE FROM user_likes WHERE user_id=? AND share_id=?').bind(userId, shareId).run();
-    const row = await c.env.DB.prepare('SELECT COUNT(*) AS total FROM user_likes WHERE share_id=?').bind(shareId).first<any>();
-    return c.json({ ok: true, liked: false, likes: Number(row?.total || 0) });
-  } catch (e: any) { return c.json({ error: e?.message || '좋아요 취소 실패' }, 500); }
-});
-app.get('/api/social/follow-status/:id', async (c) => {
-  const targetId = Number(c.req.param('id'));
-  const userId = await shareAuthUser(c);
-  if (!Number.isSafeInteger(targetId) || targetId <= 0) return c.json({ error: '잘못된 창작자 ID' }, 400);
-  if (!userId) return c.json({ following: false });
-  try {
-    const row = await c.env.DB.prepare('SELECT 1 AS following FROM user_follows WHERE follower_id=? AND following_id=? LIMIT 1').bind(userId, targetId).first<any>();
-    return c.json({ following: !!row });
-  } catch (e: any) { return c.json({ error: e?.message || '팔로우 상태 조회 실패' }, 500); }
-});
-app.post('/api/social/follow/:id', async (c) => {
-  const userId = await shareAuthUser(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-  const targetId = Number(c.req.param('id'));
-  if (!Number.isSafeInteger(targetId) || targetId <= 0) return c.json({ error: '잘못된 창작자 ID' }, 400);
-  if (userId === targetId) return c.json({ error: '자기 자신은 팔로우할 수 없습니다.' }, 400);
-  const target = await c.env.DB.prepare('SELECT id FROM users WHERE id=?').bind(targetId).first<any>();
-  if (!target) return c.json({ error: '창작자를 찾을 수 없습니다.' }, 404);
-  try {
-    await c.env.DB.prepare('INSERT OR IGNORE INTO user_follows (follower_id, following_id) VALUES (?, ?)').bind(userId, targetId).run();
-    return c.json({ ok: true, following: true });
-  } catch (e: any) { return c.json({ error: e?.message || '팔로우 처리 실패' }, 500); }
-});
-app.delete('/api/social/follow/:id', async (c) => {
-  const userId = await shareAuthUser(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-  const targetId = Number(c.req.param('id'));
-  if (!Number.isSafeInteger(targetId) || targetId <= 0) return c.json({ error: '잘못된 창작자 ID' }, 400);
-  try {
-    await c.env.DB.prepare('DELETE FROM user_follows WHERE follower_id=? AND following_id=?').bind(userId, targetId).run();
-    return c.json({ ok: true, following: false });
-  } catch (e: any) { return c.json({ error: e?.message || '팔로우 취소 실패' }, 500); }
-});
-app.get('/api/social/comments/:id', async (c) => {
-  const shareId = c.req.param('id');
-  try {
-    const rows = await c.env.DB.prepare(
-      'SELECT id, user_id, username, content, created_at FROM social_comments WHERE share_id=? ORDER BY created_at DESC LIMIT 100'
-    ).bind(shareId).all();
-    return c.json({ comments: rows.results || [] });
-  } catch (e: any) {
-    return c.json({ comments: [], error: e?.message || '댓글 조회 실패' }, 500);
-  }
-});
-app.post('/api/social/comment/:id', async (c) => {
-  const userId = await shareAuthUser(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-  const shareId = c.req.param('id');
-  const share = await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-  if (!share) return c.json({ error: '곡을 찾을 수 없습니다.' }, 404);
-  const body = await c.req.json<any>().catch(() => ({}));
-  const content = String(body.content || '').trim().slice(0, 1000);
-  if (!content) return c.json({ error: '내용 필요' }, 400);
-  if (content.length < 10) return c.json({ error: '10자 이상 입력해주세요' }, 400);
-  const user = await c.env.DB.prepare('SELECT username FROM users WHERE id=?').bind(userId).first<any>();
-  const username = user?.username || ('User' + userId);
-  try {
-    const r = await c.env.DB.prepare(
-      'INSERT INTO social_comments (share_id, user_id, username, content) VALUES (?, ?, ?, ?)'
-    ).bind(shareId, userId, username, content).run();
-    const fresh = await c.env.DB.prepare(
-      'SELECT id, user_id, username, content, created_at FROM social_comments WHERE id=?'
-    ).bind(r.meta?.last_row_id).first<any>();
-    return c.json({ ok: true, comment: fresh });
-  } catch (e: any) { return c.json({ error: e?.message || '댓글 등록 실패' }, 500); }
-});
-app.post('/api/social/report/comment/:id', (c) => c.json({ ok: false, error: '신고 기능은 실제 신고 기록 테이블 연결 후 활성화됩니다.' }, 501));
-app.get('/api/playlist/my', async (c) => {
-  const userId = await shareAuthUser(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-  try {
-    const rows = await c.env.DB.prepare(
-      'SELECT id, user_id, title, is_public, share_ids, subscriber_count, created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC'
-    ).bind(userId).all();
-    return c.json({ playlists: rows.results || [] });
-  } catch (e: any) { return c.json({ error: e?.message || '플레이리스트 조회 실패' }, 500); }
-});
-app.post('/api/playlist/:id/add', async (c) => {
-  const userId = await shareAuthUser(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-  const playlistId = Number(c.req.param('id'));
-  const body = await c.req.json<any>().catch(() => ({}));
-  const shareId = String(body.share_id || '').trim();
-  if (!Number.isSafeInteger(playlistId) || playlistId <= 0 || !shareId) return c.json({ error: '플레이리스트와 곡 정보가 필요합니다.' }, 400);
-  const playlist = await c.env.DB.prepare('SELECT id, share_ids FROM playlists WHERE id=? AND user_id=?').bind(playlistId, userId).first<any>();
-  if (!playlist) return c.json({ error: '플레이리스트를 찾을 수 없거나 수정 권한이 없습니다.' }, 404);
-  const share = await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-  if (!share) return c.json({ error: '곡을 찾을 수 없습니다.' }, 404);
-  try {
-    let ids: string[] = [];
-    try { const parsed = JSON.parse(String(playlist.share_ids || '[]')); if (Array.isArray(parsed)) ids = parsed.map(String); } catch {}
-    if (!ids.includes(shareId)) ids.push(shareId);
-    await c.env.DB.prepare('UPDATE playlists SET share_ids=? WHERE id=? AND user_id=?').bind(JSON.stringify(ids), playlistId, userId).run();
-    return c.json({ ok: true, playlist_id: playlistId, share_ids: ids });
-  } catch (e: any) { return c.json({ error: e?.message || '플레이리스트 추가 실패' }, 500); }
-});
-app.post('/api/playlist', async (c) => {
-  const userId = await shareAuthUser(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-  const body = await c.req.json<any>().catch(() => ({}));
-  const title = String(body.title || '').trim().slice(0, 100);
-  if (!title) return c.json({ error: '플레이리스트 이름을 입력해주세요.' }, 400);
-  try {
-    const r = await c.env.DB.prepare(
-      'INSERT INTO playlists (user_id, title, is_public, share_ids) VALUES (?, ?, ?, ?)'
-    ).bind(userId, title, body.is_public ? 1 : 0, '[]').run();
-    return c.json({ ok: true, playlist_id: Number(r.meta?.last_row_id || 0) });
-  } catch (e: any) { return c.json({ error: e?.message || '플레이리스트 생성 실패' }, 500); }
 
-});
+
+
+
+
+
+
+
+
+
+
+
 
 // ── Unsplash 이미지 검색 (곡 커버 자동 매칭용) ──
 app.get('/api/unsplash/search', async (c) => {
@@ -1129,53 +1061,7 @@ app.get('/api/tracks', async (c) => {
 
 // POST /api/files/sync
 // 소유권은 요청 본문이 아니라 검증된 Bearer JWT 주체에서만 결정한다.
-app.post('/api/files/sync', async (c) => {
 
-  const session = await storageUser(c);
-  const userId = Number(session?.sub || 0);
-  if (!Number.isSafeInteger(userId) || userId <= 0) return c.json({ ok: false, error: '인증 필요' }, 401);
-
-  try {
-    const owner = await c.env.DB.prepare('SELECT id FROM users WHERE id = ?')
-      .bind(userId).first<{ id: number }>();
-    if (!owner) return c.json({ ok: false, error: '인증 사용자 확인 불가' }, 401);
-    const body = await c.req.json<any>();
-
-    if (!String(body.title || '').trim()) return c.json({ error: 'title required' }, 422);
-
-    if (!body.title) return c.json({ error: 'title required' }, 422);
-
-    const existing = body.force_new === true ? null : await c.env.DB.prepare(
-      'SELECT id FROM tl_files WHERE title = ? AND user_id = ?'
-    ).bind(body.title, userId).first<{ id: number }>();
-    if (existing) {
-      await c.env.DB.prepare(`
-        UPDATE tl_files SET artist=?, genre=?, file_type=?, stream_url=?, cover_image=?,
-        price_per_sec=?, spotify_album=?, shared_to_shareplace=0, shared=0, pulse=?,
-        auth_status='unverified', icon=?, updated_at=datetime('now') WHERE id=?
-      `).bind(
-        body.artist||'', body.genre||'etc', body.file_type||'application/octet-stream', body.stream_url||'', body.cover_image||'',
-        body.price_per_sec||1, body.spotify_album||'', body.pulse||0,
-        body.icon||'🎵', existing.id
-      ).run();
-      return c.json({ ok: true, action: 'updated', d1_id: existing.id });
-    } else {
-      const res = await c.env.DB.prepare(`
-        INSERT INTO tl_files (user_id,title,artist,genre,file_type,stream_url,cover_image,
-          price_per_sec,spotify_album,shared_to_shareplace,pulse,auth_status,icon,file_tl,max_file_tl,shared)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,'unverified',?,?,?,0) RETURNING id
-      `).bind(
-        userId, body.title, body.artist||'', body.genre||'etc', body.file_type||'application/octet-stream',
-        body.stream_url||'', body.cover_image||'', body.price_per_sec||1,
-        body.spotify_album||'', 0, body.pulse||0, body.icon||'🎵',
-        Math.max(0,Math.floor(Number(body.file_tl||0))), Math.max(0,Math.floor(Number(body.file_tl||0)))
-      ).first<{ id: number }>();
-      return c.json({ ok: true, action: 'created', d1_id: res?.id, share_id: body.share_id || (res?.id ? 'tl3_' + res.id : '') });
-    }
-  } catch (e: any) {
-    return c.json({ ok: false, error: e.message }, 500);
-  }
-});
 
 // POST /api/tracks/:id/play
 app.post('/api/tracks/:id/play', async (c) => {
@@ -4381,32 +4267,7 @@ app.post('/api/shares/:id/pulse', async (c) => {
 });
 
 // 회원가입 (register)
-app.post('/api/auth/register', async (c) => {
-  try {
-    const { email, password, username, business_name: businessName, biz_reg_num: bizRegNum, is_advertiser: isAdvertiser } = await c.req.json();
-    if (!email || !password || !username) return c.json({ error: '필수 항목 누락' }, 400);
-    const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
-    if (exists) return c.json({ error: '이미 가입된 이메일입니다' }, 409);
-    const nameExists = await c.env.DB.prepare('SELECT id FROM users WHERE username=?').bind(username).first();
-    if (nameExists) return c.json({ error: '이미 사용 중인 닉네임(상호명)입니다' }, 409);
-    const now = new Date().toISOString().replace('T',' ').substring(0,19);
-    const hashedPw = await hashPassword(password);
-    await c.env.DB.prepare(
-      'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name) VALUES (?,?,?,?,?,0,?,?,?,?)'
-    ).bind(email, username, hashedPw, isAdvertiser?300000:42500, isAdvertiser?300000:42500, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
-    const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
-    // V5 경제원장: 신규 일반 회원 가입 보상은 TL_B로도 기록한다.
-    if(!isAdvertiser && user){
-      const bonusUser=await c.env.DB.prepare('SELECT id,tl,tl_balance,total_tl_spent,tl_p_lifetime,tl_p_exchanged FROM users WHERE id=?').bind((user as any).id).first();
-      try { await reconcilePristineSignupBonus(c.env.DB,bonusUser); }
-      catch(e) { console.error('[V5 registration bonus ledger]',e); }
-    }
-    const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
-    return c.json({ ok: true, token, user });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
+app.post('/api/auth/register',c=>registerWithEmail(c));
 
 
 // 이메일 인증 코드 발송
@@ -4434,32 +4295,10 @@ app.post('/api/auth/send-code', async (c) => {
 
 // 이메일 인증 코드 확인
 // ── 프론트 호환 alias ──
-app.post('/api/auth/verify', async (c) => {
-  try {
-    const { email, code, password, username } = await c.req.json() as any;
-    if (!email || !code) return c.json({ error: 'email/code 필요' }, 400);
-    const row = await c.env.DB.prepare(
-      'SELECT * FROM email_verifications WHERE email=? AND code=?'
-    ).bind(email, code).first() as any;
-    if (!row) return c.json({ error: '인증 코드가 올바르지 않습니다' }, 400);
-    if (new Date(row.expires_at) < new Date()) return c.json({ error: '인증 코드가 만료되었습니다' }, 400);
-    await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
-    // 사용자 생성 (아직 없으면)
-    let user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
-    if (!user) {
-      const now = new Date().toISOString().replace('T',' ').substring(0,19);
-      const passwordHash = await hashPassword(password || '');
-      await c.env.DB.prepare(
-        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, email_verified) VALUES (?,?,?,42500,42500,0,?,1)'
-      ).bind(email, username||email, passwordHash, now).run();
-      user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
-    }
-    await c.env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=?').bind(Number((user as any).id)).run();
-    const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
-    return c.json({ ok: true, token, user });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
+app.post('/api/auth/verify',async c=>{
+  const body=await c.req.json<any>().catch(()=>null);
+  if(!body?.email||!body?.code)return c.json({error:'email/code 필요'},400);
+  return registerWithEmail(c,{...body,verify_code:body.code});
 });
 
 app.post('/api/auth/resend', async (c) => {
@@ -4561,57 +4400,7 @@ app.post('/api/auth/check-email', async (c) => {
 });
 
 // 회원가입 (signup) - 이메일 인증 코드 발송
-app.post('/api/auth/signup', async (c) => {
-  try {
-    const { email, password, username, business_name: businessName, biz_reg_num: bizRegNum, is_advertiser: isAdvertiser, verify_code: verifyCode } = await c.req.json();
-    if (!email || !username) return c.json({ error: '필수 항목 누락' }, 400);
-    const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
-    if (exists) return c.json({ error: '이미 가입된 이메일입니다. 로그인을 이용해 주세요.' }, 409);
-    const nameExists = await c.env.DB.prepare('SELECT id FROM users WHERE username=?').bind(username).first();
-    if (nameExists) return c.json({ error: '이미 사용 중인 닉네임입니다.' }, 409);
-
-    // 인증 코드 검증
-    if (verifyCode) {
-      await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT NOT NULL, code TEXT NOT NULL,
-        expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
-      )`).run().catch(()=>{});
-      const row = await c.env.DB.prepare(
-        'SELECT * FROM email_verifications WHERE email=? AND code=?'
-      ).bind(email, verifyCode).first() as any;
-      if (!row) return c.json({ error: '인증 코드가 올바르지 않습니다' }, 400);
-      if (new Date(row.expires_at) < new Date()) return c.json({ error: '인증 코드가 만료되었습니다' }, 400);
-      await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
-      const now = new Date().toISOString().replace('T',' ').substring(0,19);
-      const hashedPw2 = await hashPassword(password||'');
-      await c.env.DB.prepare(
-        'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name, email_verified) VALUES (?,?,?,?,?,0,?,?,?,?,1)'
-      ).bind(email, username, hashedPw2, isAdvertiser?300000:42500, isAdvertiser?300000:42500, now, isAdvertiser?1:0, bizRegNum||'', businessName||username).run();
-      const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
-      await c.env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=?').bind(Number((user as any).id)).run();
-      const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
-      return c.json({ ok: true, token, user });
-    }
-
-    // 인증 코드 발송
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT NOT NULL, code TEXT NOT NULL,
-      expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
-    )`).run().catch(()=>{});
-    await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
-    await c.env.DB.prepare(
-      'INSERT INTO email_verifications (email, code, expires_at) VALUES (?,?,?)'
-    ).bind(email, code, expiresAt).run();
-    await sendVerificationEmail(c.env, email, username, code);
-    return c.json({ ok: true, step: 'verify', message: '인증 코드를 이메일로 발송했습니다' });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
+app.post('/api/auth/signup',c=>registerWithEmail(c));
 
 // 오디오 프록시
 app.get('/api/legacy-stream/:fileId',async(c)=>{

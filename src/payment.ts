@@ -1,6 +1,10 @@
 import { Hono } from 'hono';
 import type { Env } from './types';
 import { verifyToken } from './auth';
+import { creditVerifiedPayment } from './v5-payment-ledger';
+import { readV5Wallet } from './v5-wallet';
+import { assertTLAtomScale } from './economy-ledger';
+import { readRewardPolicy,paymentBonusMap } from './v5-reward-policy';
 
 const payment = new Hono<{ Bindings: Env }>();
 
@@ -9,12 +13,13 @@ const payment = new Hono<{ Bindings: Env }>();
 ────────────────────────────────────────────────── */
 async function authUserId(c: any): Promise<string | null> {
   const auth = c.req.header('Authorization') || '';
-  const token = auth.replace(/^Bearer\\s+/i, '').trim();
+  const token = auth.replace(/^Bearer\s+/i, '').trim();
   const secret = String((c.env as any).JWT_SECRET || '');
   if (!token || !secret) return null;
   const payload = await verifyToken(token, secret).catch(() => null);
-  if (!payload?.sub || !/^\\d+$/.test(String(payload.sub))) return null;
-  return String(payload.sub);
+  if (!payload?.sub || !/^\d+$/.test(String(payload.sub))) return null;
+  const user=await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0').bind(payload.sub).first();
+  return user?String(payload.sub):null;
 }
 
 /* ──────────────────────────────────────────────────
@@ -83,13 +88,8 @@ payment.post('/virtual/charge', async (c) => {
   try {
     const { amount } = await c.req.json() as any;
     const paidAmount = Number(amount);
-    const bonusMap: Record<number, number> = {
-      5000: 0,
-      10000: 500,
-      30000: 2000,
-      50000: 5000,
-      100000: 15000
-    };
+    const rewardPolicy=await readRewardPolicy(c.env.DB);
+    const bonusMap=paymentBonusMap(rewardPolicy.rules);
 
     if (!Number.isInteger(paidAmount) || !Object.prototype.hasOwnProperty.call(bonusMap, paidAmount)) {
       return c.json({ error: '지원하지 않는 충전 금액입니다.' }, 400);
@@ -102,23 +102,9 @@ payment.post('/virtual/charge', async (c) => {
 
     await ensurePaymentTable(c.env.DB);
 
-    const batch = await c.env.DB.batch([
-      c.env.DB.prepare(
-        'UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+? WHERE id=?'
-      ).bind(total_tl, total_tl, userId),
-      c.env.DB.prepare(
-        `INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
-         VALUES (?,?,?,?,?,?,?)`
-      ).bind(userId, 'virtual', pgId, pgId, paidAmount, total_tl, 'success')
-    ]);
-
-    if (Number(batch[0]?.meta?.changes || 0) !== 1) {
-      return c.json({ error: '사용자 TL 잔액 갱신에 실패했습니다.' }, 500);
-    }
-
-    const user = await c.env.DB.prepare(
-      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p FROM users WHERE id=?'
-    ).bind(userId).first() as any;
+    await creditVerifiedPayment(c.env.DB,{userId,method:'virtual',paymentId:pgId,orderId:pgId,paidTL:paidAmount,bonusTL:bonus_tl});
+    const wallet=await readV5Wallet(c.env.DB,Number(userId));
+    const user={tl:wallet.tl_balance,tl_p:wallet.tl_p};
 
     return c.json({
       success: true,
@@ -135,7 +121,7 @@ payment.post('/virtual/charge', async (c) => {
   }
 });
 
-payment.post('/toss/order', async (c) => {
+async function createProviderOrder(c:any,provider:'toss'|'portone') {
   const userId = await authUserId(c);
   if (!userId) return c.json({ error: '인증이 필요합니다' }, 401);
   try {
@@ -147,7 +133,7 @@ payment.post('/toss/order', async (c) => {
     }
     await ensureTossOrderTable(c.env.DB);
     const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase();
-    const orderId = 'TL_' + String(userId) + '_' + Date.now() + '_' + suffix;
+    const orderId = 'TL_'+provider+'_'  + String(userId) + '_' + Date.now() + '_' + suffix;
     await c.env.DB.prepare(
       'INSERT INTO tl_toss_orders (order_id,user_id,amount_krw,status) VALUES (?,?,?,?)'
     ).bind(orderId, userId, paidAmount, 'ready').run();
@@ -155,7 +141,9 @@ payment.post('/toss/order', async (c) => {
   } catch (e: any) {
     return c.json({ error: e?.message || '결제 주문 생성 실패' }, 500);
   }
-});
+}
+payment.post('/toss/order',c=>createProviderOrder(c,'toss'));
+payment.post('/portone/order',c=>createProviderOrder(c,'portone'));
 
 /* ══════════════════════════════════════════════════
    Toss Payments 결제 승인 + TL 지급
@@ -185,18 +173,18 @@ payment.post('/toss/confirm', async (c) => {
   if (Number(order.amount_krw) !== paidAmount) {
     return c.json({ error: '결제 금액이 주문 금액과 일치하지 않습니다.' }, 400);
   }
-  if (order.status === 'success') {
-    return c.json({ error: '이미 처리된 주문입니다.' }, 409);
+  if (order.status === 'success' && order.payment_key!==paymentKey) {
+    return c.json({ error: '이미 다른 결제로 처리된 주문입니다.' }, 409);
   }
 
   // paymentKey를 고유 키로 사용하여 동일 결제의 중복 지급을 막는다.
   const dup = await c.env.DB.prepare(
-    'SELECT id,status,tl_granted FROM tl_payments WHERE pg_id=?'
+    'SELECT id,user_id,merchant_uid,status,tl_granted FROM tl_payments WHERE pg_id=?'
   ).bind(paymentKey).first() as any;
   if (dup?.status === 'success') {
-    const user = await c.env.DB.prepare(
-      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p FROM users WHERE id=?'
-    ).bind(userId).first() as any;
+    if(String(dup.user_id)!==userId||String(dup.merchant_uid)!==String(orderId))return c.json({error:'PAYMENT_OWNER_MISMATCH'},403);
+    const wallet=await readV5Wallet(c.env.DB,Number(userId));
+    const user={tl:wallet.tl_balance,tl_p:wallet.tl_p};
     return c.json({
       success: true,
       already_processed: true,
@@ -206,6 +194,8 @@ payment.post('/toss/confirm', async (c) => {
       tl_p: Number(user?.tl_p || 0)
     });
   }
+
+  try {await assertTLAtomScale(c.env.DB);}catch{return c.json({error:'V5_LEDGER_NOT_READY'},503);}
 
   const TOSS_SECRET = (c.env as any).TOSS_SECRET_KEY || '';
   if (!TOSS_SECRET) {
@@ -232,36 +222,17 @@ payment.post('/toss/confirm', async (c) => {
     }
 
     // 결제 금액별 보너스는 SharePlace의 충전 패키지와 동일하게 적용한다.
-    const bonusMap: Record<number, number> = {
-      5000: 0,
-      10000: 500,
-      30000: 2000,
-      50000: 5000,
-      100000: 15000
-    };
+    const rewardPolicy=await readRewardPolicy(c.env.DB);
+    const bonusMap=paymentBonusMap(rewardPolicy.rules);
     const bonus_tl = bonusMap[paidAmount] || 0;
     const total_tl = paidAmount + bonus_tl;
 
-    // 사용자 잔액과 결제 원장을 함께 갱신한다.
-    const batch = await c.env.DB.batch([
-      c.env.DB.prepare(
-        'UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+?, tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?'
-      ).bind(total_tl, total_tl, total_tl, userId),
-      c.env.DB.prepare(
-        `INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
-         VALUES (?,?,?,?,?,?,?)`
-      ).bind(userId, 'toss', paymentKey, orderId, paidAmount, total_tl, 'success'),
-      c.env.DB.prepare(
+    await creditVerifiedPayment(c.env.DB,{userId,method:'toss',paymentId:paymentKey,orderId,
+      paidTL:paidAmount,bonusTL:bonus_tl,atomicStatements:[c.env.DB.prepare(
         "UPDATE tl_toss_orders SET status='success', payment_key=?, updated_at=datetime('now') WHERE order_id=? AND user_id=? AND status='ready'"
-      ).bind(paymentKey, orderId, userId)
-    ]);
-    if (Number(batch[2]?.meta?.changes || 0) !== 1) {
-      return c.json({ error: '결제 주문 상태 갱신에 실패했습니다.' }, 409);
-    }
-
-    const user = await c.env.DB.prepare(
-      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p FROM users WHERE id=?'
-    ).bind(userId).first() as any;
+      ).bind(paymentKey,orderId,userId)]});
+    const wallet=await readV5Wallet(c.env.DB,Number(userId));
+    const user={tl:wallet.tl_balance,tl_p:wallet.tl_p};
 
     return c.json({
       success: true,
@@ -292,6 +263,10 @@ payment.post('/portone/verify', async (c) => {
   }
 
   await ensurePaymentTable(c.env.DB);
+  await ensureTossOrderTable(c.env.DB);
+  try{await assertTLAtomScale(c.env.DB);}catch{return c.json({error:'V5_LEDGER_NOT_READY'},503);}
+  const order=await c.env.DB.prepare('SELECT * FROM tl_toss_orders WHERE order_id=? AND user_id=?').bind(String(merchant_uid||''),userId).first<any>();
+  if(!order||Number(order.amount_krw)!==Number(amount)||!String(order.order_id).startsWith('TL_portone_'))return c.json({error:'SERVER_PAYMENT_ORDER_REQUIRED'},403);
 
   // 중복 결제 방지
   const dup = await c.env.DB.prepare('SELECT id FROM tl_payments WHERE pg_id=?').bind(imp_uid).first();
@@ -326,7 +301,7 @@ payment.post('/portone/verify', async (c) => {
       if (payment && payment.status === 'paid') {
         paidAmount = payment.amount;
         // 금액 위변조 검증
-        if (paidAmount === Number(amount)) {
+        if (paidAmount === Number(amount) && payment.merchant_uid===merchant_uid) {
           verified = true;
         }
       }
@@ -336,10 +311,6 @@ payment.post('/portone/verify', async (c) => {
   }
 
   if (!verified) {
-    await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
-       VALUES (?,?,?,?,?,?,?)`
-    ).bind(userId, 'portone', imp_uid, merchant_uid || '', amount, 0, 'fail').run();
     return c.json({ error: '결제 검증 실패' }, 400);
   }
 
@@ -347,16 +318,9 @@ payment.post('/portone/verify', async (c) => {
   const tlGranted = paidAmount;
 
   try {
-    // TL_P (구매 TL) 지급 — 교환 가능
-  await c.env.DB.prepare(
-    'UPDATE users SET tl=tl+?, tl_p=tl_p+?, tl_p_lifetime=tl_p_lifetime+? WHERE id=?'
-  ).bind(tlGranted, tlGranted, tlGranted, userId).run();
-    await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
-       VALUES (?,?,?,?,?,?,?)`
-    ).bind(userId, 'portone', imp_uid, merchant_uid || '', paidAmount, tlGranted, 'success').run();
-
-    const user = await c.env.DB.prepare('SELECT tl, tlc_balance, poc_index FROM users WHERE id=?').bind(userId).first() as any;
+    await creditVerifiedPayment(c.env.DB,{userId,method:'portone',paymentId:imp_uid,orderId:merchant_uid||'',paidTL:tlGranted,bonusTL:0,atomicStatements:[c.env.DB.prepare("UPDATE tl_toss_orders SET status='success',payment_key=?,updated_at=datetime('now') WHERE order_id=? AND user_id=? AND status='ready'").bind(imp_uid,merchant_uid,userId)]});
+    const wallet=await readV5Wallet(c.env.DB,Number(userId));
+    const user={tl:wallet.tl_balance};
     return c.json({ success: true, tl_granted: tlGranted, tl_balance: user?.tl || 0 });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -438,7 +402,7 @@ payment.post('/stripe/confirm', async (c) => {
         headers: { 'Authorization': 'Basic ' + btoa(STRIPE_SECRET + ':') },
       });
       const data: any = await res.json();
-      if (data.status === 'succeeded' && data.metadata?.user_id === userId) {
+      if (data.status === 'succeeded' && data.currency==='krw' && Number(data.amount_received)===Number(amount_krw) && data.metadata?.user_id === userId) {
         paidAmount = data.amount;
         verified = true;
       }
@@ -450,13 +414,9 @@ payment.post('/stripe/confirm', async (c) => {
 
   const tlGranted = paidAmount;
   try {
-    await c.env.DB.prepare('UPDATE users SET tl=COALESCE(tl,0)+?, tl_p=COALESCE(tl_p,0)+?, tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?').bind(tlGranted,tlGranted,tlGranted,userId).run();
-    await c.env.DB.prepare(
-      `INSERT OR REPLACE INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
-       VALUES (?,?,?,?,?,?,?)`
-    ).bind(userId, 'stripe', payment_intent_id, '', paidAmount, tlGranted, 'success').run();
-
-    const user = await c.env.DB.prepare('SELECT COALESCE(tl,0) as tl, COALESCE(tl_p,0) as tl_p FROM users WHERE id=?').bind(userId).first() as any;
+    await creditVerifiedPayment(c.env.DB,{userId,method:'stripe',paymentId:payment_intent_id,orderId:'',paidTL:tlGranted,bonusTL:0});
+    const wallet=await readV5Wallet(c.env.DB,Number(userId));
+    const user={tl:wallet.tl_balance,tl_p:wallet.tl_p};
     return c.json({ success: true, tl_granted: tlGranted, tl_balance: user?.tl || 0, tl_p: user?.tl_p || 0 });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);

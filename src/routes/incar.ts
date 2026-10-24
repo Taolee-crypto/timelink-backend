@@ -1,9 +1,78 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
+import { putV5Object,deleteV5Object,readV5Object } from '../v5-object-store';
 import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 
 const router = new Hono<{ Bindings: Env }>();
+router.use('/channels/:id/photo',bodyLimit({maxSize:5*1024*1024}));
+
+async function ensureVehicleListings(db:D1Database){
+  await db.prepare(`CREATE TABLE IF NOT EXISTS v5_vehicle_listings(
+    channel_id TEXT PRIMARY KEY,photo_key TEXT,photo_type TEXT,
+    sale_status TEXT NOT NULL DEFAULT 'none',price INTEGER,currency TEXT DEFAULT 'KRW',
+    model_year INTEGER,mileage_km INTEGER,description TEXT DEFAULT '',contact TEXT DEFAULT '',updated_at TEXT)`
+  ).run();
+}
+router.get('/channels/:id',async c=>{
+  await ensureIncarTables(c.env.DB);await ensureVehicleListings(c.env.DB);
+  const channel=await c.env.DB.prepare(`SELECT channel_id,name,owner_name,car_type,drive_region,description,theme
+    FROM incar_channels WHERE channel_id=? AND status='active'`).bind(c.req.param('id')).first<any>();
+  if(!channel)return c.json({error:'CHANNEL_NOT_FOUND'},404);
+  const listing=await c.env.DB.prepare('SELECT sale_status,price,currency,model_year,mileage_km,description,contact,photo_key FROM v5_vehicle_listings WHERE channel_id=?').bind(channel.channel_id).first<any>();
+  const user=await authUser(c);
+  const owned=user?await c.env.DB.prepare('SELECT 1 FROM incar_channels WHERE channel_id=? AND owner_id=?').bind(channel.channel_id,user.id).first():null;
+  if(listing){listing.has_photo=!!listing.photo_key;delete listing.photo_key;}
+  if(listing&&!owned&&listing.sale_status!=='sale')listing.contact='';
+  return c.json({ok:true,channel,listing:listing||null,can_edit:!!owned});
+});
+router.post('/channels/:id/listing',async c=>{
+  const user=await authUser(c);if(!user)return c.json({error:'LOGIN_REQUIRED'},401);
+  await ensureIncarTables(c.env.DB);await ensureVehicleListings(c.env.DB);
+  const owned=await c.env.DB.prepare("SELECT 1 FROM incar_channels WHERE channel_id=? AND owner_id=? AND status='active'").bind(c.req.param('id'),user.id).first();
+  if(!owned)return c.json({error:'OWNER_REQUIRED'},403);
+  const b=await c.req.json<any>();
+  const price=Number(b.price),year=Number(b.model_year),mileage=Number(b.mileage_km);
+  if(!['none','sale','sold'].includes(b.sale_status)||!['KRW','USD','JPY','CNY','THB','VND'].includes(b.currency)||
+    !Number.isSafeInteger(price)||price<0||price>1e12||!Number.isInteger(year)||year<1950||year>new Date().getFullYear()+1||
+    !Number.isSafeInteger(mileage)||mileage<0||mileage>3000000||String(b.description||'').length>3000||String(b.contact||'').length>200)
+    return c.json({error:'차량 연식·주행거리·가격·연락 방법을 확인하세요.'},400);
+  await c.env.DB.prepare(`INSERT INTO v5_vehicle_listings(channel_id,sale_status,price,currency,model_year,mileage_km,description,contact,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,datetime('now')) ON CONFLICT(channel_id) DO UPDATE SET sale_status=excluded.sale_status,
+    price=excluded.price,currency=excluded.currency,model_year=excluded.model_year,mileage_km=excluded.mileage_km,
+    description=excluded.description,contact=excluded.contact,updated_at=excluded.updated_at`)
+    .bind(c.req.param('id'),b.sale_status,price,b.currency,year,mileage,String(b.description||'').trim(),String(b.contact||'').trim()).run();
+  return c.json({ok:true});
+});
+router.post('/channels/:id/photo',async c=>{
+  const user=await authUser(c);if(!user)return c.json({error:'LOGIN_REQUIRED'},401);
+  await ensureIncarTables(c.env.DB);await ensureVehicleListings(c.env.DB);
+  const owned=await c.env.DB.prepare("SELECT 1 FROM incar_channels WHERE channel_id=? AND owner_id=? AND status='active'").bind(c.req.param('id'),user.id).first();
+  if(!owned)return c.json({error:'OWNER_REQUIRED'},403);
+  const b=await c.req.parseBody(),file=b.photo;
+  if(!(file instanceof File)||file.size<=0||file.size>4*1024*1024)return c.json({error:'사진은 최대 4MB입니다.'},400);
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const jpg=bytes[0]===255&&bytes[1]===216&&bytes[2]===255;
+  const png=bytes.slice(0,8).join(',')==='137,80,78,71,13,10,26,10';
+  const webp=new TextDecoder().decode(bytes.slice(0,4))==='RIFF'&&new TextDecoder().decode(bytes.slice(8,12))==='WEBP';
+  const type=jpg?'image/jpeg':png?'image/png':webp?'image/webp':null;
+  if(!type)return c.json({error:'JPG·PNG·WebP 사진만 올릴 수 있습니다.'},400);
+  const key='vehicle-photos/'+c.req.param('id')+'/'+crypto.randomUUID();
+  await putV5Object(c.env,key,bytes,type);
+  try{await c.env.DB.prepare(`INSERT INTO v5_vehicle_listings(channel_id,photo_key,photo_type,updated_at)
+    VALUES(?,?,?,datetime('now')) ON CONFLICT(channel_id) DO UPDATE SET photo_key=excluded.photo_key,photo_type=excluded.photo_type,updated_at=excluded.updated_at`).bind(c.req.param('id'),key,type).run();}
+  catch(e){await deleteV5Object(c.env,key);throw e;}
+  return c.json({ok:true});
+});
+router.get('/channels/:id/photo',async c=>{
+  await ensureIncarTables(c.env.DB);await ensureVehicleListings(c.env.DB);
+  const row=await c.env.DB.prepare(`SELECT l.photo_key,l.photo_type FROM v5_vehicle_listings l JOIN incar_channels c ON c.channel_id=l.channel_id
+    WHERE l.channel_id=? AND c.status='active'`).bind(c.req.param('id')).first<any>();
+  if(!row?.photo_key)return c.notFound();
+  const body=await readV5Object(c.env,row.photo_key);if(!body)return c.notFound();
+  return new Response(body,{headers:{'Content-Type':row.photo_type,'X-Content-Type-Options':'nosniff','Cache-Control':'no-store'}});
+});
 
 async function authUser(c: Context<{ Bindings: Env }>): Promise<{ id: number; user: any } | null> {
   const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '').trim();
@@ -11,7 +80,7 @@ async function authUser(c: Context<{ Bindings: Env }>): Promise<{ id: number; us
   const payload = await verifyToken(token, c.env.JWT_SECRET).catch(() => null);
   const id = Number(payload?.sub || 0);
   if (!id) return null;
-  const user = await c.env.DB.prepare('SELECT id, email, username FROM users WHERE id=?').bind(id).first<any>();
+  const user = await c.env.DB.prepare('SELECT id, email, username FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0').bind(id).first<any>();
   return user ? { id, user } : null;
 }
 
@@ -69,9 +138,12 @@ async function ensureIncarTables(db: any) {
 router.get('/channels', async (c) => {
   try {
     await ensureIncarTables(c.env.DB);
+    await ensureVehicleListings(c.env.DB);
     const { results } = await c.env.DB.prepare(
-      `SELECT channel_id, name, owner_name, car_type, drive_region, description, theme, playlist, schedules, created_at
-       FROM incar_channels WHERE status='active' ORDER BY created_at DESC LIMIT 100`
+      `SELECT c.channel_id,c.name,c.owner_name,c.car_type,c.drive_region,c.description,c.theme,c.playlist,c.schedules,c.created_at,
+       CASE WHEN l.photo_key IS NOT NULL THEN 1 ELSE 0 END AS has_photo,l.sale_status,l.price,l.currency
+       FROM incar_channels c LEFT JOIN v5_vehicle_listings l ON l.channel_id=c.channel_id
+       WHERE c.status='active' ORDER BY c.created_at DESC LIMIT 100`
     ).all();
     return c.json({ ok: true, channels: results || [] });
   } catch (error: any) {

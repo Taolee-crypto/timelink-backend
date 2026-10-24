@@ -1,4 +1,7 @@
 import { Hono } from 'hono';
+import { requestListenerCashout } from './v5-cashout';
+import { readRewardPolicy } from './v5-reward-policy';
+import { completeAdReward, startAdReward } from './v5-ad-reward';
 import { verifyToken } from './auth';
 import type { Env } from './types';
 import { getLedgerWallet, atomsToTl, ensureLedgerAccount, postLedgerTransaction, tlToAtoms } from './economy-ledger';
@@ -113,6 +116,7 @@ async function migrateDB(db: any) {
 eco.post('/migrate', async (c) => {
   try {
     await migrateDB(c.env.DB);
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
     // 기존 tl → tl_p 마이그레이션 (기존 유저 구매 TL 보존)
     await c.env.DB.prepare(`
       UPDATE users SET tl_p = tl, tl_p_lifetime = tl
@@ -134,14 +138,18 @@ eco.post('/migrate', async (c) => {
  * 가입 보상액이 그대로 남아 있고 원장 거래 이력이 전혀 없는 회원만 처리한다.
  * 구매 TL로 전환하거나 이미 소비된 보상을 재지급하지 않는다.
  */
-export async function reconcilePristineSignupBonus(db: D1Database, user: any): Promise<void> {
+export async function reconcilePristineSignupBonus(db: D1Database, user: any, promotionAmount=42500): Promise<void> {
+  const entitlement=await db.prepare('SELECT bonus_tl FROM v5_signup_entitlements WHERE user_id=?').bind(user.id).first<any>().catch(()=>null);
+  if(entitlement)promotionAmount=Number(entitlement.bonus_tl);
+  if(promotionAmount===0)return;
+  if(!Number.isSafeInteger(promotionAmount)||promotionAmount<0)throw new Error('INVALID_SIGNUP_BONUS');
   const expected=Number(user.tl_balance);
   // Legacy signup bonus may have been stored in tl_balance only or tl only.
   // Require matching documented 42,500 TL and zero lifetime spending/purchases;
   // the transaction and account checks below still prevent duplicate issuance.
   const legacyTl=Number(user.tl);
-  if(!((expected===42500 && (legacyTl===0 || legacyTl===42500)) ||
-       (legacyTl===42500 && (expected===0 || !Number.isFinite(expected)))) ||
+  if(!((expected===promotionAmount && (legacyTl===0 || legacyTl===promotionAmount)) ||
+       (legacyTl===promotionAmount && (expected===0 || !Number.isFinite(expected)))) ||
      Number(user.total_tl_spent||0)!==0 || Number(user.tl_p_lifetime||0)!==0 ||
      Number(user.tl_p_exchanged||0)!==0) return;
   const owner=String(user.id);
@@ -150,9 +158,9 @@ export async function reconcilePristineSignupBonus(db: D1Database, user: any): P
     JOIN v3_economy_accounts a ON a.id=e.account_id
     WHERE a.owner_type='user' AND a.owner_id=? LIMIT 1
   `).bind(owner).first<any>();
-  if(activity) return;
+  if(activity&&!entitlement) return;
   const existing=await getLedgerWallet(db,Number(user.id)) as any[];
-  if(existing.some(a=>a.asset_code==='TL' && (Number(a.available_atoms||0)!==0 || Number(a.held_atoms||0)!==0))) return;
+  if(!entitlement&&existing.some(a=>a.asset_code==='TL' && (Number(a.available_atoms||0)!==0 || Number(a.held_atoms||0)!==0))) return;
   const key='v5-signup-bonus-legacy-user-'+owner;
   const prior=await db.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>();
   if(prior)return;
@@ -161,14 +169,14 @@ export async function reconcilePristineSignupBonus(db: D1Database, user: any): P
   await postLedgerTransaction(db,{
     idempotencyKey:key,transactionType:'signup_bonus',source:'v5_promotion',
     referenceType:'user',referenceId:owner,
-    description:'기존 회원가입 42,500 TL_B 지급 이력 복구',
+    description:'회원가입 TL_B 지급 기록',
     metadata:{non_redeemable:true,legacy_signup_reconciliation:true},
     issuanceStatements:[db.prepare(
       "UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?"
-    ).bind(tlToAtoms(42500),source)],
+    ).bind(tlToAtoms(promotionAmount),source)],
     lines:[
-      {accountId:source,assetCode:'TL',amountAtoms:-tlToAtoms(42500)},
-      {accountId:destination,assetCode:'TL',amountAtoms:tlToAtoms(42500)}
+      {accountId:source,assetCode:'TL',amountAtoms:-tlToAtoms(promotionAmount)},
+      {accountId:destination,assetCode:'TL',amountAtoms:tlToAtoms(promotionAmount)}
     ]
   });
 }
@@ -178,6 +186,7 @@ eco.get('/wallet', async (c) => {
   if (!userId) return c.json({ error: '인증 필요' }, 401);
   try {
     await migrateDB(c.env.DB);
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
     const user = await c.env.DB.prepare(`
       SELECT id, username, tl, tl_p, tl_a, tl_b,
       tl_balance, tl_locked,
@@ -201,9 +210,7 @@ eco.get('/wallet', async (c) => {
       tlA=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0));
       tlB=atomsToTl(accounts.filter(a=>a.asset_code==='TL'&&a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0));
     }else{
-      tlP=Number(user.tl_p ?? user.tl ?? 0)||0;
-      tlA=Number(user.tl_a ?? 0)||0;
-      tlB=Number(user.tl_b ?? 0)||0;
+      return c.json({error:'V5_WALLET_NOT_READY'},503);
     }
     let reconciliationStatus='not_eligible';
     if(ledgerReady && Number(user.tl_balance)===42500 && Number(user.tl)===42500){
@@ -265,6 +272,7 @@ eco.post('/consume', async (c) => {
 
   try {
     await migrateDB(c.env.DB);
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
     const requestedShare=String(share_id||'').trim();
     if(requestedShare){
       let v5=await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE share_id=? AND status='sealed' LIMIT 1").bind(requestedShare).first<any>().catch(()=>null);
@@ -410,44 +418,22 @@ eco.post('/consume', async (c) => {
    광고 시청 완료 → TL_A 지급 (교환 불가)
    body: { ad_id, tl_amount }
 ══════════════════════════════════════════════════════ */
-eco.post('/ad-reward', async (c) => {
-  const userId = await authId(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-
-  const { tl_amount, ad_id } = await c.req.json() as any;
-  const reward = Math.min(Math.max(50, tl_amount || 300), 1000);
-
+eco.post('/ad-session', async c => {
+  const userId=await authId(c);
+  if(!userId)return c.json({error:'인증 필요'},401);
   try {
-    await migrateDB(c.env.DB);
+    const body=await c.req.json<any>();
+    return c.json({ok:true,...await startAdReward(c.env.DB,Number(userId),String(body.ad_id||''))});
+  } catch(e:any){return c.json({error:e.message},400);}
+});
 
-    // 오늘 이미 해당 광고 시청했는지 체크
-    const already = await c.env.DB.prepare(
-      `SELECT id FROM ad_views WHERE ad_id=? AND user_id=? AND DATE(viewed_at)=DATE('now') AND completed=1`
-    ).bind(ad_id || 'general', userId).first().catch(() => null);
-    if (already) return c.json({ error: '오늘 이미 시청한 광고', already: true }, 400);
-
-    // TL_A 지급 (교환 불가)
-    await c.env.DB.prepare(
-      'UPDATE users SET tl_a = tl_a + ? WHERE id=?'
-    ).bind(reward, userId).run();
-
-    const user = await c.env.DB.prepare(
-      'SELECT tl_p, tl_a, tl_b FROM users WHERE id=?'
-    ).bind(userId).first() as any;
-
-    return c.json({
-      ok: true,
-      tl_a_rewarded: reward,
-      wallet: {
-        tl_p: user?.tl_p ?? 0,
-        tl_a: user?.tl_a ?? 0,
-        tl_b: user?.tl_b ?? 0,
-      },
-      note: 'TL_A는 플랫폼 내 소비만 가능합니다'
-    });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
+eco.post('/ad-reward', async c => {
+  const userId=await authId(c);
+  if(!userId)return c.json({error:'인증 필요'},401);
+  try {
+    const body=await c.req.json<any>();
+    return c.json(await completeAdReward(c.env.DB,Number(userId),String(body.ad_id||''),String(body.session_id||'')));
+  } catch(e:any){return c.json({error:e.message},409);}
 });
 
 /* ══════════════════════════════════════════════════════
@@ -455,55 +441,17 @@ eco.post('/ad-reward', async (c) => {
    TL_P → 현금 교환 신청 (수수료 차감 후 순액 지급)
    body: { tl_amount }
 ══════════════════════════════════════════════════════ */
-eco.post('/exchange', async (c) => {
-  const userId = await authId(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-
-  const { tl_amount } = await c.req.json() as any;
-  if (!tl_amount || tl_amount < 1000) return c.json({ error: '최소 교환 금액: 1,000 TL' }, 400);
-
-  try {
+eco.post('/exchange',async c=>{
+  const userId=await authId(c);if(!userId)return c.json({error:'인증 필요'},401);
+  try{
     await migrateDB(c.env.DB);
-
-    const user = await c.env.DB.prepare(
-      'SELECT tl_p, tl, plan FROM users WHERE id=?'
-    ).bind(userId).first() as any;
-    if (!user) return c.json({ error: '유저 없음' }, 404);
-
-    const tlP = user.tl_p ?? user.tl ?? 0;
-    if (tlP < tl_amount) return c.json({ error: 'TL_P 잔액 부족', balance: tlP }, 402);
-
-    // 수수료: 플랜A 5%, 플랜B 3%
-    const feePct = (user.plan || 'A') === 'B' ? 0.03 : 0.05;
-    const feeTL = Math.ceil(tl_amount * feePct);
-    const netTL = tl_amount - feeTL;
-
-    // TL_P 차감
-    await c.env.DB.prepare(`
-      UPDATE users SET
-        tl_p = tl_p - ?,
-        tl = MAX(0, tl - ?),
-        tl_p_exchanged = tl_p_exchanged + ?
-      WHERE id=?
-    `).bind(tl_amount, tl_amount, tl_amount, userId).run();
-
-    // 교환 내역 기록
-    await c.env.DB.prepare(`
-      INSERT INTO tl_exchanges (user_id, tl_amount, fee_pct, fee_tl, net_tl, status)
-      VALUES (?, ?, ?, ?, ?, 'pending')
-    `).bind(userId, tl_amount, feePct, feeTL, netTL).run();
-
-    return c.json({
-      ok: true,
-      tl_requested: tl_amount,
-      fee_pct: feePct * 100,
-      fee_tl: feeTL,
-      net_tl: netTL,
-      note: `${(feePct*100).toFixed(0)}% 수수료 차감 후 ${netTL.toLocaleString()}원 지급 예정`
-    });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
+    const body=await c.req.json<any>();
+    if(body.kind&&body.kind!=='listener')return c.json({error:'창작자 환전은 별도 기여도 정책 승인 경로를 이용해야 합니다.'},409);
+    const user=await c.env.DB.prepare('SELECT plan FROM users WHERE id=?').bind(userId).first<any>();
+    return c.json(await requestListenerCashout(c.env.DB,{userId:Number(userId),amountTL:Number(body.tl_amount),
+      requestKey:String(c.req.header('Idempotency-Key')||body.request_key||''),plan:user?.plan||'A'}));
+  }catch(e:any){return c.json({error:e.message},409);}
 });
 
 /* ══════════════════════════════════════════════════════
@@ -530,6 +478,7 @@ eco.post('/activity', async (c) => {
 
   try {
     await migrateDB(c.env.DB);
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
 
     // POC 로그 기록
     if (seconds > 0 || tl_p_spent > 0 || tl_a_spent > 0 || new_uploads > 0) {
@@ -584,34 +533,34 @@ eco.post('/activity', async (c) => {
     // MP3 = 1점, TL3 = 3점 (가중치)
     const mp3Count = Number(uploadStats?.mp3_count || 0);
     const tl3Count = Number(uploadStats?.tl3_count || 0);
-    const uploads  = mp3Count * 1 + tl3Count * 3 + new_uploads;
+    const uploads  = mp3Count * policy.upload_mp3_weight + tl3Count * policy.upload_tl3_weight + new_uploads;
 
     // 각 요소 점수 (0 ~ 최대값)
-    const contentScore = Math.min(2.0, monthlyPlays / 500);        // 500회 = 만점
-    const spendScore   = Math.min(1.5, monthlyTlP / 5000);         // 5,000 TL_P = 만점
-    const listenScore  = Math.min(1.0, monthlyHours / 30);         // 30시간 = 만점
-    const uploadScore  = Math.min(0.5, uploads / 5);               // 5개 = 만점
+    const contentScore = Math.min(policy.content_cap,monthlyPlays/policy.content_target);        // 500회 = 만점
+    const spendScore   = Math.min(policy.spend_cap,monthlyTlP/policy.spend_target);         // 5,000 TL_P = 만점
+    const listenScore  = Math.min(policy.listen_cap,monthlyHours/policy.listen_target);         // 30시간 = 만점
+    const uploadScore  = Math.min(policy.upload_cap,uploads/policy.upload_target);               // 5개 = 만점
 
     // ★ 악보 기여 점수 (신규)
     const scoreShares = Number(scoreStats?.shares || 0);
     const scoreUses   = Number(scoreStats?.uses || 0);
     const scoreViews  = Number(scoreStats?.views || 0);
-    const scoreScore  = Math.min(0.6,
-      scoreShares * 0.3 +        // 악보 공유 1개 = 0.3
-      scoreUses   * 0.05 +       // 악보 사용 1회 = 0.05
-      scoreViews  * 0.005        // 악보 보기 1회 = 0.005
+    const scoreScore  = Math.min(policy.score_cap,
+      scoreShares * policy.score_share +        // 악보 공유 1개 = 0.3
+      scoreUses   * policy.score_use +       // 악보 사용 1회 = 0.05
+      scoreViews  * policy.score_view        // 악보 보기 1회 = 0.005
     );
 
     // 가중합 (5요소, 총 100%)
     const rawPoc =
-      contentScore * 0.35 +      // 40% → 35%
-      spendScore   * 0.25 +      // 30% → 25%
-      listenScore  * 0.18 +      // 20% → 18%
-      uploadScore  * 0.10 +      // 그대로
-      scoreScore   * 0.12;       // ★ 신규 12%
+      contentScore * policy.weight_content +      // 40% → 35%
+      spendScore   * policy.weight_spend +      // 30% → 25%
+      listenScore  * policy.weight_listen +      // 20% → 18%
+      uploadScore  * policy.weight_upload +      // 그대로
+      scoreScore   * policy.weight_score;       // ★ 신규 12%
 
     // 하드캡 5.0, 최솟값 0.1
-    const pocIndex = Math.min(5.0, Math.max(0.1, rawPoc * 10));
+    const pocIndex = Math.min(policy.poc_max,Math.max(policy.poc_min,rawPoc*policy.poc_scale));
 
     await c.env.DB.prepare(
       'UPDATE users SET poc_index=? WHERE id=?'
@@ -623,14 +572,14 @@ eco.post('/activity', async (c) => {
     ).bind(userId).first() as any;
 
     const userPlan      = user?.plan || 'A';
-    const mineMultiplier = userPlan === 'B' ? 2.0 : 1.0;
+    const mineMultiplier = userPlan === 'B' ? policy.plan_b_multiplier : 1.0;
 
     // 일일 채굴량 = (월소비 / 30) × 0.08 × POC × 배율
-    const dailyBase = (monthlyTlP / 30) * 0.08;
+    const dailyBase = (monthlyTlP / 30) * policy.mining_rate;
     const dailyTLC  = dailyBase * pocIndex * mineMultiplier;
 
     // 월 하드캡: TL_P 월소비의 30%
-    const monthHardCap = monthlyTlP * 0.30;
+    const monthHardCap = monthlyTlP * policy.mining_month_cap;
 
     return c.json({
       ok: true,
@@ -662,6 +611,7 @@ eco.get('/mining-history', async (c) => {
   if (!userId) return c.json({ error: '인증 필요' }, 401);
   try {
     await migrateDB(c.env.DB);
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
     const result = await c.env.DB.prepare(`
       SELECT tl_p_base, poc_index, plan, multiplier, tlc_mined, created_at
       FROM tlc_mining_v2
@@ -688,6 +638,7 @@ eco.post('/mine-tlc', async (c) => {
 
   try {
     await migrateDB(c.env.DB);
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
 
     // 오늘 채굴 내역 확인
     const today = new Date().toISOString().slice(0, 10);
@@ -707,7 +658,7 @@ eco.post('/mine-tlc', async (c) => {
 
     const pocIndex      = Number(user.poc_index || 1.0);
     const userPlan      = user.plan || 'A';
-    const mineMultiplier = userPlan === 'B' ? 2.0 : 1.0;
+    const mineMultiplier = userPlan === 'B' ? policy.plan_b_multiplier : 1.0;
 
     // 이번 달 TL_P 소비 조회
     const monthStart = new Date().toISOString().slice(0, 7) + '-01';
@@ -719,9 +670,9 @@ eco.post('/mine-tlc', async (c) => {
     const monthlyTlP = Number(monthStats?.monthly_tl_p || 0);
 
     // 일일 최대 채굴량
-    const dailyMax = (monthlyTlP / 30) * 0.08 * pocIndex * mineMultiplier;
+    const dailyMax = (monthlyTlP / 30) * policy.mining_rate * pocIndex * mineMultiplier;
     // 월 하드캡 (일 환산)
-    const monthHardCapDaily = (monthlyTlP * 0.30) / 30;
+    const monthHardCapDaily = (monthlyTlP * policy.mining_month_cap) / 30;
     const actualDailyMax = Math.min(dailyMax, monthHardCapDaily);
 
     // 오늘 남은 채굴량
@@ -777,6 +728,7 @@ eco.post('/set-plan', async (c) => {
 
   try {
     await migrateDB(c.env.DB);
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
     await c.env.DB.prepare('UPDATE users SET plan=? WHERE id=?').bind(plan, userId).run();
     return c.json({
       ok: true, plan,
@@ -802,6 +754,7 @@ eco.post('/purchase', async (c) => {
 
   try {
     await migrateDB(c.env.DB);
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
     // 1원 = 1 TL_P
     await c.env.DB.prepare(`
       UPDATE users SET
@@ -836,6 +789,7 @@ eco.post('/purchase', async (c) => {
 eco.get('/summary', async (c) => {
   try {
     await migrateDB(c.env.DB);
+    const {rules:policy}=await readRewardPolicy(c.env.DB);
     const stats = await c.env.DB.prepare(`
       SELECT
         COUNT(*) as total_users,

@@ -1,0 +1,24 @@
+name: V5 trace remediation regression
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  trace-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install tsc --noEmit
+      - run: node scripts/test-v5-trace-remediation.cjs
+      - run: node scripts/test-v5-signup-policy.cjs
+      - run: node scripts/test-v5-trace-d1.cjs
+      - run: node scripts/test-v5-real-ledger-sqlite.cjs
+      - run: node scripts/test-tilo-v5-contribution.cjs
+      - run: python scripts/validate-stream-auth.py

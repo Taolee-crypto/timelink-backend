@@ -4,6 +4,8 @@
 //   app.route('/api/ads', adsRouter);
 
 import { Hono } from 'hono';
+import { completeAdReward } from './v5-ad-reward';
+import { readRewardPolicy } from './v5-reward-policy';
 import { bodyLimit } from 'hono/body-limit';
 import type { Env } from './types';
 import { verifyToken } from './auth';
@@ -124,12 +126,13 @@ ads.get('/available', async (c) => {
         ) as viewed_today
       FROM tl_ads a
       WHERE a.status='active'
-        AND (a.spent_tl < a.budget_tl OR a.budget_tl = 0)
+        AND a.budget_tl>0 AND a.spent_tl<a.budget_tl
       ORDER BY a.tl_reward DESC, a.created_at DESC
       LIMIT 20
     `).bind(userId || 0).all();
 
-    return c.json({ ads: result.results || [] });
+    const {rules}=await readRewardPolicy(c.env.DB);
+    return c.json({ ads: (result.results||[]).map((ad:any)=>({...ad,tl_reward:Math.min(rules.ad_max,Math.max(rules.ad_min,Number(ad.tl_reward)||rules.ad_default))})) });
   } catch (e: any) {
     return c.json({ ads: [], error: e.message });
   }
@@ -146,34 +149,7 @@ ads.post('/:id/complete', async (c) => {
 
     const body = await c.req.json<any>().catch(() => ({}));
 
-    // 오늘 이미 시청했는지 체크
-    const already = await c.env.DB.prepare(
-      `SELECT id FROM ad_views WHERE ad_id=? AND user_id=? AND DATE(viewed_at)=DATE('now') AND completed=1`
-    ).bind(adId, userId).first();
-    if (already) return c.json({ error: '오늘 이미 시청한 광고입니다', already: true }, 400);
-
-    // 광고 정보
-    const ad = await c.env.DB.prepare('SELECT * FROM tl_ads WHERE id=?').bind(adId).first<any>();
-    if (!ad) return c.json({ error: '광고 없음' }, 404);
-    if (ad.status !== 'active') return c.json({ error: '비활성 광고' }, 400);
-    if (ad.spent_tl >= ad.budget_tl && ad.budget_tl > 0)
-      return c.json({ error: '광고 예산 소진' }, 400);
-
-    const reward = ad.tl_reward || 300;
-
-    // TL 지급
-    await c.env.DB.prepare('UPDATE users SET tl=tl+? WHERE id=?').bind(reward, userId).run();
-    // 광고 통계 업데이트
-    await c.env.DB.prepare(
-      `UPDATE tl_ads SET views=views+1, completions=completions+1, spent_tl=spent_tl+?, updated_at=datetime('now') WHERE id=?`
-    ).bind(reward, adId).run();
-    // 시청 로그
-    await c.env.DB.prepare(
-      `INSERT INTO ad_views (ad_id, user_id, completed, tl_rewarded, duration_watched) VALUES (?,?,1,?,?)`
-    ).bind(adId, userId, reward, body.duration || 0).run();
-
-    const user = await c.env.DB.prepare('SELECT tl FROM users WHERE id=?').bind(userId).first<any>();
-    return c.json({ ok: true, tl_rewarded: reward, tl_balance: user?.tl || 0 });
+    return c.json(await completeAdReward(c.env.DB,Number(userId),adId,String(body.session_id||'')));
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
@@ -413,56 +389,10 @@ ads.post('/stream/:adId/tick', async (c) => {
   try {
     await ensureTables(c.env.DB);
     const body = await c.req.json<any>();
-    const seconds    = Math.min(Number(body.seconds||1), 10);
-    const completed  = body.completed === true;
-
-    const ad = await c.env.DB.prepare(
-      'SELECT * FROM tl_ads WHERE id=? AND status=\'active\''
-    ).bind(adId).first<any>();
-    if (!ad) return c.json({error:'광고 없음'},404);
-
-    const tlPerSec  = Number(ad.tl_per_sec || 1.0);
-    const cost      = Math.ceil(seconds * tlPerSec);  // 광고주 예산 차감
-    const reward    = Math.floor(cost * 0.5);          // 뷰어 50% 적립 (TL_A)
-
-    // 예산 잔액 확인
-    if (ad.budget_tl > 0 && (ad.spent_tl + cost) > ad.budget_tl) {
-      await c.env.DB.prepare("UPDATE tl_ads SET status='ended' WHERE id=?").bind(adId).run();
-      return c.json({ok:false, code:'BUDGET_EXHAUSTED'}, 402);
-    }
-
-    // 광고주 예산 차감
-    await c.env.DB.prepare(
-      'UPDATE tl_ads SET spent_tl=spent_tl+?, updated_at=datetime(\'now\') WHERE id=?'
-    ).bind(cost, adId).run();
-
-    // 뷰어 TL_A 적립
-    if (reward > 0) {
-      await c.env.DB.prepare(
-        'UPDATE users SET tl_a=COALESCE(tl_a,0)+?, tl=COALESCE(tl,0)+? WHERE id=?'
-      ).bind(reward, reward, userId).run();
-    }
-
-    // 완료 시 완료 카운트
-    if (completed) {
-      await c.env.DB.prepare(
-        'UPDATE tl_ads SET completions=completions+1 WHERE id=?'
-      ).bind(adId).run().catch(()=>{});
-    }
-
-    // 뷰어 현재 잔액 조회
-    const user = await c.env.DB.prepare(
-      'SELECT COALESCE(tl,0) as tl, COALESCE(tl_a,0) as tl_a FROM users WHERE id=?'
-    ).bind(userId).first<any>();
-
-    return c.json({
-      ok: true,
-      cost,
-      reward,
-      budget_remaining: Math.max(0, ad.budget_tl - ad.spent_tl - cost),
-      viewer_tl: user?.tl || 0,
-      viewer_tl_a: user?.tl_a || 0,
-    });
+    // Legacy client-reported ticks cannot mint rewards. A completed server
+    // session shares the same daily idempotency key as /complete and eco.
+    if(body.completed!==true)return c.json({ok:true,reward:0,note:'Complete the verified ad session to collect TL_A.'});
+    return c.json(await completeAdReward(c.env.DB,Number(userId),adId,String(body.session_id||'')));
   } catch(e:any) {
     return c.json({ok:false, error:e.message}, 500);
   }
