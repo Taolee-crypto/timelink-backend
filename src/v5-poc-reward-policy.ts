@@ -87,8 +87,11 @@ export function scorePocDay(events: PocEvent[], policy: PocPolicy = POC_V5_CONSE
     if (count >= policy.dailyEventCaps[e.activity] || targetCount >= policy.perTargetDailyCap) continue;
     const base = policy.pointsPerActivity[e.activity];
     assertNonnegativeSafeInt(base,'BASE_POINTS');
-    const weighted = Math.floor(base * e.qualityBps * e.trustBps / 100000000);
-    if (!Number.isSafeInteger(weighted)) throw new Error('POC_POINT_OVERFLOW');
+    // Avoid unsafe intermediate multiplication even when the final score is small.
+    const product = BigInt(base) * BigInt(e.qualityBps) * BigInt(e.trustBps);
+    const weightedBig = product / 100000000n;
+    if (weightedBig > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('POC_POINT_OVERFLOW');
+    const weighted = Number(weightedBig);
     points = Math.min(policy.dailyPointCap,points+weighted);
     counts.set(e.activity,count+1);
     targetCounts.set(targetKey,targetCount+1);
