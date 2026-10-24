@@ -2019,7 +2019,7 @@ app.get('/api/v1/tl3/file/:shareId', async (c) => {
       "SELECT file_id,object_key,container_bytes FROM tl3_v5_releases WHERE file_id=? AND status='sealed'"
     ).bind(fileId).first<any>().catch(()=>null);
     if (v5Release) {
-      const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();
+      const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
       const requester=token?await verifyToken(token,c.env.JWT_SECRET):null;
       if(!requester) return c.json({ok:false,error:'TL3 다운로드는 로그인이 필요합니다.'},401);
       const cert=await c.env.DB.prepare(
