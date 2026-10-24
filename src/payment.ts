@@ -47,6 +47,36 @@ async function authUserId(c: any): Promise<string | null> {
   return user?String(payload.sub):null;
 }
 
+// Preparation only: orders do not debit wallets or charge cards.
+payment.post('/v5/premium/prepare',async c=>{
+ const userId=await authUserId(c);
+ if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null);
+ const amounts:Record<string,number>={trial:5000,basic:15000,focused:30000,premium:50000};
+ const plan=String(b?.plan||''),method=String(b?.method||'');
+ const fileId=Number(b?.file_id);
+ if(!Object.prototype.hasOwnProperty.call(amounts,plan)||
+    !['cash','tl'].includes(method)||!Number.isSafeInteger(fileId)||
+    fileId<=0||b?.rights_accepted!==true)
+   return c.json({ok:false,error:'INVALID_REQUEST'},400);
+ try{
+  const owned=await c.env.DB.prepare(`SELECT f.id FROM tl_files f
+    JOIN tl3_v5_releases v ON v.file_id=f.id
+    JOIN tl3_releases r ON r.file_id=f.id
+    WHERE f.id=? AND f.user_id=? AND f.shared=1
+      AND v.status='sealed' AND r.status='released'
+      AND r.rights_confirmed=1 AND COALESCE(f.revenue_held,0)=0
+    LIMIT 1`).bind(fileId,Number(userId)).first();
+  if(!owned)return c.json({ok:false,error:'NOT_ELIGIBLE'},403);
+  const amount=amounts[plan];
+  return c.json({ok:true,method,plan,file_id:fileId,
+    amount_krw:method==='cash'?amount:null,
+    amount_tl:method==='tl'?amount*2:null,
+    order_created:false,checkout_enabled:false,
+    note:'Eligibility verified only; no funds reserved or charged.'});
+ }catch{return c.json({ok:false,error:'PREPARATION_UNAVAILABLE'},503);}
+});
+
 /* ──────────────────────────────────────────────────
    결제 내역 테이블 생성 (첫 요청 시 자동)
    CREATE TABLE tl_payments (
