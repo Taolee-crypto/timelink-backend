@@ -4158,6 +4158,13 @@ app.patch('/api/shares/:id', async (c) => {
     const v5 = await c.env.DB.prepare(`SELECT v.share_id,v.file_id,v.user_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE (v.share_id=? OR CAST(v.file_id AS TEXT)=? OR ('tl3_'||CAST(v.file_id AS TEXT))=?) AND v.status='sealed' AND LOWER(f.file_type)='audio/tl3' LIMIT 1`).bind(shareId,shareId,shareId).first<any>().catch(()=>null);
     if (!v5) return c.json({ error: 'V5 곡을 찾을 수 없습니다.' }, 404);
     if (String(v5.user_id) !== String(userId)) return c.json({ error: '권한 없음' }, 403);
+    // Genre is mutable classification metadata, not sealed audio content.
+    if (body.category !== undefined) {
+      if (typeof body.category !== 'string' || !body.category.trim() || body.category.length > 120)
+        return c.json({error:'장르를 1~120자로 입력해 주세요.'},400);
+      await c.env.DB.prepare('UPDATE tl_files SET genre=? WHERE id=? AND user_id=?')
+        .bind(body.category.trim(),Number(v5.file_id),userId).run();
+    }
     // V5 artwork is mutable metadata on tl_files, never part of the sealed TL3 asset.
     // The authenticated owner may replace artwork without changing audio or billing.
     if (body.cover_url !== undefined) {
@@ -4168,6 +4175,7 @@ app.patch('/api/shares/:id', async (c) => {
         .bind(coverUrl,Number(v5.file_id),userId).run();
       if (body.lyrics === undefined) return c.json({ok:true,share:{id:String(v5.share_id),cover_url:coverUrl}});
     }
+    if (body.lyrics === undefined && body.category !== undefined) return c.json({ok:true,share:{id:String(v5.share_id),category:body.category.trim()}});
     if (body.lyrics === undefined) return c.json({ error: 'V5 곡은 현재 가사 또는 커버 이미지만 수정할 수 있습니다.' }, 400);
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_v5_track_metadata (share_id TEXT PRIMARY KEY, file_id INTEGER NOT NULL, user_id INTEGER NOT NULL, lyrics TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL)`).run();
     await c.env.DB.prepare(`INSERT INTO tl3_v5_track_metadata (share_id,file_id,user_id,lyrics,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(share_id) DO UPDATE SET lyrics=excluded.lyrics,updated_at=excluded.updated_at WHERE tl3_v5_track_metadata.user_id=excluded.user_id`).bind(String(v5.share_id),Number(v5.file_id),userId,String(body.lyrics).slice(0,20000),Date.now()).run();
