@@ -253,9 +253,35 @@ router.get('/settlements/:id/posting-readiness',async c=>{
      gross!==BigInt(scope.new_creator_gross_atoms)||
      platform!==BigInt(scope.new_platform_share_atoms))
    blockers.push('EVIDENCE_SNAPSHOT_CHANGED');
+  // Recheck every broadcast source against current grants and release state.
+  // This is intentionally stricter than checking rights only at ingestion.
+  const rights=await c.env.DB.prepare(`SELECT COUNT(*) AS denied
+   FROM tilo_v5_verified_airtime e
+   LEFT JOIN central_broadcast_service_accounts svc
+     ON svc.service_id=e.service_id AND svc.status='active'
+   LEFT JOIN central_broadcast_service_file_grants sg
+     ON sg.service_id=e.service_id AND sg.country=e.country
+     AND sg.file_id=e.file_id AND sg.status='active'
+     AND (sg.expires_at IS NULL OR sg.expires_at>datetime('now'))
+   LEFT JOIN central_broadcast_rights_grants rg
+     ON rg.file_id=e.file_id AND rg.creator_id=e.creator_id
+     AND rg.country=e.country AND rg.status='active'
+     AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now'))
+   LEFT JOIN tl3_v5_releases v ON v.file_id=e.file_id
+     AND v.user_id=e.creator_id AND v.status='sealed'
+   LEFT JOIN tl_files f ON f.id=e.file_id AND f.shared=1
+     AND COALESCE(f.revenue_held,0)=0
+   WHERE e.country=? AND e.creator_id=? AND e.local_month=?
+     AND (svc.service_id IS NULL OR sg.service_id IS NULL
+       OR rg.file_id IS NULL OR v.file_id IS NULL OR f.id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM tl3_releases tr
+         WHERE tr.file_id=e.file_id AND tr.status='released'
+           AND tr.rights_confirmed=1))`)
+   .bind(scope.country,scope.creator_id,scope.local_date.slice(0,7))
+   .first<{denied:number}>();
+  if(Number(rights?.denied||0)>0)blockers.push('BROADCAST_RIGHTS_REVOKED_OR_EXPIRED');
   // Migration presence must be verified on the actual production D1.
-  blockers.push('ATOMIC_GUARD_DEPLOYMENT_UNVERIFIED','RIGHTS_RECHECK_NOT_ENABLED',
-   'ATOMIC_POSTING_NOT_ENABLED');
+  blockers.push('ATOMIC_GUARD_DEPLOYMENT_UNVERIFIED','ATOMIC_POSTING_NOT_ENABLED');
   return c.json({ok:true,ready:false,state:row.state,posted:false,
    evidence_digest:row.evidence_digest,policy_version:plan.policyVersion,
    required_funding_atoms:Number(plan.platformFundingAtoms),
