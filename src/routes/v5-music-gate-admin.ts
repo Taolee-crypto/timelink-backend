@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
+import { decideInitialGate } from '../v5-ai-music-gate-automation-policy';
 
 const router = new Hono<{ Bindings: Env }>();
 
@@ -109,11 +110,26 @@ router.post('/reviews/:id/analysis',async c=>{
       fingerprint_matches:body!.fingerprint_matches,catalog_match:body!.catalog_match,
       submitted_by_admin_user_id:actor
     });
+    // Only administrator-submitted, complete and unambiguous results can take the
+    // initial automated clearance path. This is NOT live AI inference.
+    const outcome=decideInitialGate({
+      analysisComplete:body!.unsafe_content!=='unknown' && body!.catalog_match!=='unavailable',
+      audioDecoded:body!.decoded===true,
+      validMusicOrSpokenAudio:Number(body!.music_probability)>=0.98 ||
+        Number(body!.speech_probability)>=0.98,
+      socialRiskSignals:body!.unsafe_content==='clear'?[]:['uncertain_context'],
+      rightsClaimConflict:Number(body!.fingerprint_matches)>0 || body!.catalog_match==='matched'
+    });
+    const autoClear=outcome==='auto_clear_for_registration' &&
+      body!.catalog_match==='not_found' && Number(body!.fingerprint_matches)===0;
+    const nextStatus=autoClear?'approved':'review_required';
     const result=await c.env.DB.prepare(
-      "UPDATE v5_music_gate_reviews SET status='review_required',classifier_version=?,evidence_json=?,updated_at=datetime('now') WHERE id=? AND source_sha256=? AND status IN ('pending_analysis','analyzing')"
-    ).bind(version,evidence,id,hash).run();
+      "UPDATE v5_music_gate_reviews SET status=?,classifier_version=?,evidence_json=?,reviewer_user_id=?,reviewer_note=?,decided_at=CASE WHEN ?='approved' THEN datetime('now') ELSE NULL END,updated_at=datetime('now') WHERE id=? AND source_sha256=? AND status IN ('pending_analysis','analyzing')"
+    ).bind(nextStatus,version,evidence,autoClear?actor:null,
+      autoClear?'Automated technical clearance from administrator-submitted analysis; rights not verified':null,
+      nextStatus,id,hash).run();
     if(Number(result.meta?.changes||0)!==1)return c.json({ok:false,error:'ANALYSIS_CONFLICT'},409);
-    return c.json({ok:true,id,status:'review_required',message:'Evidence recorded for manual review; no AI inference was run by this endpoint.'});
+    return c.json({ok:true,id,status:nextStatus,auto_technical_clearance:autoClear,rights_verified:false,rewards_approved:false,message:'Administrator-supplied analysis processed; this endpoint does not run AI inference.'});
   }catch(e){
     console.error('[V5_MUSIC_GATE_ANALYSIS]',e);
     return c.json({ok:false,error:'MUSIC_GATE_ANALYSIS_UNAVAILABLE'},503);
