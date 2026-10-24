@@ -25,4 +25,44 @@ router.get('/reviews', async (c) => {
   }
 });
 
+
+router.post('/reviews/:id/decision', async (c) => {
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer /i,'').trim();
+  const payload=token?await verifyToken(token,c.env.JWT_SECRET).catch(()=>null):null;
+  const actor=Number(payload?.sub||0);
+  if(!Number.isSafeInteger(actor)||actor<=0)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const admin=await c.env.DB.prepare('SELECT role,is_active FROM users WHERE id=?').bind(actor).first<{role:string;is_active:number}>();
+  if(admin?.is_active!==1||String(admin.role).toLowerCase()!=='admin')
+    return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const id=String(c.req.param('id')||'');
+  if(!/^[a-f0-9-]{36}$/i.test(id))return c.json({ok:false,error:'INVALID_REVIEW_ID'},400);
+  const body=await c.req.json().catch(()=>null) as {action?:string;note?:string;source_sha256?:string}|null;
+  if(body?.action!=='approve'&&body?.action!=='reject')
+    return c.json({ok:false,error:'INVALID_ACTION'},400);
+  const note=String(body.note||'').trim();
+  const hash=String(body.source_sha256||'').toLowerCase();
+  if(note.length<10||note.length>2000)return c.json({ok:false,error:'REVIEW_REASON_REQUIRED'},400);
+  if(!/^[a-f0-9]{64}$/.test(hash))return c.json({ok:false,error:'SOURCE_HASH_REQUIRED'},400);
+  try {
+    const record=await c.env.DB.prepare(
+      'SELECT status,source_sha256,classifier_version,evidence_json FROM v5_music_gate_reviews WHERE id=?'
+    ).bind(id).first<{status:string;source_sha256:string;classifier_version:string|null;evidence_json:string|null}>();
+    if(!record)return c.json({ok:false,error:'REVIEW_NOT_FOUND'},404);
+    if(record.status!=='review_required')return c.json({ok:false,error:'REVIEW_NOT_READY'},409);
+    if(record.source_sha256!==hash)return c.json({ok:false,error:'SOURCE_HASH_MISMATCH'},409);
+    if(!record.classifier_version||!record.evidence_json)
+      return c.json({ok:false,error:'AI_EVIDENCE_REQUIRED'},409);
+    const status=body.action==='approve'?'approved':'rejected';
+    const result=await c.env.DB.prepare(
+      "UPDATE v5_music_gate_reviews SET status=?,reviewer_user_id=?,reviewer_note=?,decided_at=datetime('now'),updated_at=datetime('now') WHERE id=? AND status='review_required' AND source_sha256=? AND classifier_version IS NOT NULL AND evidence_json IS NOT NULL"
+    ).bind(status,actor,note,id,hash).run();
+    if(Number(result.meta?.changes||0)!==1)return c.json({ok:false,error:'REVIEW_CONFLICT'},409);
+    return c.json({ok:true,id,status,reviewer_user_id:actor,
+      rights_verification_required:true,publication_approved:false,rewards_approved:false});
+  } catch(e) {
+    console.error('[V5_MUSIC_GATE_DECISION]',e);
+    return c.json({ok:false,error:'MUSIC_GATE_REVIEW_UNAVAILABLE'},503);
+  }
+});
+
 export default router;
