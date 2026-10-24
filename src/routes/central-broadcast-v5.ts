@@ -99,6 +99,18 @@ router.post('/airtime/record', async c => {
   if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||
      end>Date.now()+60_000||end-start>3600000||audibleMs>end-start)
     return c.json({ok:false,error:'INVALID_AIRTIME_INTERVAL'},400);
+  // Settlement candidates are local-calendar-day scoped. Reject events that
+  // straddle local midnight before persisting evidence, even within one month.
+  const zones:Record<string,string>={KR:'Asia/Seoul',JP:'Asia/Tokyo',
+    US:'America/New_York',CN:'Asia/Shanghai',TH:'Asia/Bangkok',VN:'Asia/Ho_Chi_Minh'};
+  const localDay=(ms:number):string=>{
+    const parts=new Intl.DateTimeFormat('en-US',{timeZone:zones[country],
+      year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(ms));
+    const v=(key:string)=>parts.find(p=>p.type===key)?.value||'';
+    return v('year')+'-'+v('month')+'-'+v('day');
+  };
+  if(localDay(start)!==localDay(end-1))
+    return c.json({ok:false,error:'CROSSES_LOCAL_DAY'},400);
   let localMonth:string;
   try{
     localMonth=tiloLocalSettlementMonth(country as TiloCountry,startedAt);
