@@ -8,6 +8,7 @@ const {createHash}=require('node:crypto');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'tl-music-gate-'));
 buildSync({stdin:{contents:`export * from './src/v5-music-gate-worker';
 export * from './src/v5-music-gate-provider';
+export * from './src/v5-music-gate-public-details';
 export {default as admin} from './src/routes/v5-music-gate-admin';
 export {makeAccessToken} from './src/auth';
 export {default as worker} from './src/index';`,resolveDir:process.cwd(),loader:'ts'},
@@ -153,6 +154,27 @@ async function main(){
   res=await api.worker.fetch(new Request('https://fixture.test/api/v1/music-gate/health'),{...env,MUSIC_GATE_GEMINI_API_KEY:undefined},{});
   assert.equal(res.status,503);assert.equal((await res.json()).ready,false);
   console.log('PASS Creator bearer polling, owner isolation and truthful public readiness');
+
+  const diagnosticRow={status:'review_required',source_sha256:'a'.repeat(64),analysis_attempts:1,analysis_error:null,
+    reasons_json:JSON.stringify(['AI_RISK_PROFANITY','INDEPENDENT_DECODE_REQUIRED','CATALOG_VERIFICATION_UNAVAILABLE']),
+    evidence_json:JSON.stringify({provider:'gemini',source_sha256:'a'.repeat(64),analysis_complete:true,
+      source_key:'PRIVATE-SOURCE',summary:'PRIVATE-SUMMARY',audio_analysis:{audio_understood:true,full_audio_reviewed:true,unsafe_content:'suspected',
+      risk_signals:['profanity','invented','profanity']}})};
+  let diagnostic=api.creatorMusicGateDetails(diagnosticRow);
+  assert.equal(diagnostic.analysis_status,'complete');assert.deepEqual(diagnostic.risk_signals,['profanity']);
+  assert.equal(diagnostic.verification_pending.length,2);
+  assert.ok(!JSON.stringify(diagnostic).includes('PRIVATE'));
+  diagnostic=api.creatorMusicGateDetails({...diagnosticRow,analysis_error:'AI_HTTP_400'});
+  assert.equal(diagnostic.analysis_status,'failed');assert.equal(diagnostic.analysis_error,'AI_HTTP_400');
+  assert.deepEqual(diagnostic.risk_signals,[]);
+  diagnostic=api.creatorMusicGateDetails({...diagnosticRow,status:'pending_analysis',analysis_error:'AI_HTTP_429'});
+  assert.equal(diagnostic.analysis_status,'retry_wait');
+  diagnostic=api.creatorMusicGateDetails({...diagnosticRow,evidence_json:'{"provider":"gemini","source_sha256":"wrong","audio_analysis":{"risk_signals":["profanity"]}}'});
+  assert.equal(diagnostic.analysis_status,'not_started');assert.deepEqual(diagnostic.risk_signals,[]);
+  diagnostic=api.creatorMusicGateDetails({...diagnosticRow,evidence_json:'invalid json',reasons_json:'{}',analysis_error:'PRIVATE-ERROR'});
+  assert.equal(diagnostic.analysis_status,'not_started');assert.equal(diagnostic.analysis_error,null);
+  console.log('PASS owner diagnostics distinguish real inference, provider errors and missing checks without raw evidence');
+
   console.log('ALL MUSIC GATE INTEGRATION CHECKS PASSED (mock provider; live inference not tested)');
 }
 main().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>{sqlite.close();fs.rmSync(temp,{recursive:true,force:true})});
