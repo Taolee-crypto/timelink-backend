@@ -78,7 +78,28 @@ payment.post('/v5/premium/prepare',async c=>{
  }catch{return c.json({ok:false,error:'PREPARATION_UNAVAILABLE'},503);}
 });
 
-// Premium orders: cash is a simulated test payment; TL_P uses the real V5 ledger.
+// Toss premium confirmation is distinct from TL top-up: no TL is credited.
+payment.post('/v5/premium/toss/confirm',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null);
+ const orderId=String(b?.orderId||''),paymentKey=String(b?.paymentKey||''),amount=Number(b?.amount);
+ if(!orderId.startsWith('v5promo_'+uid+'_')||!paymentKey||!Number.isSafeInteger(amount)||amount<1)return c.json({ok:false,error:'INVALID_REQUEST'},400);
+ try{
+  const order=await c.env.DB.prepare('SELECT * FROM v5_premium_orders WHERE order_id=? AND user_id=? AND method=?').bind(orderId,Number(uid),'cash').first<any>();
+  if(!order||Number(order.amount)!==amount)return c.json({ok:false,error:'ORDER_MISMATCH'},403);
+  if(order.status==='toss_test_paid_pending_broadcast')return c.json({ok:true,order_id:orderId,status:order.status,replayed:true});
+  if(order.status!=='pending_toss')return c.json({ok:false,error:'ORDER_NOT_PENDING'},409);
+  const secret=String((c.env as any).TOSS_SECRET_KEY||'');
+  if(!secret||!secret.startsWith('test_sk_'))return c.json({ok:false,error:'TOSS_TEST_SECRET_REQUIRED'},503);
+  const response=await fetch('https://api.tosspayments.com/v1/payments/confirm',{method:'POST',headers:{Authorization:'Basic '+btoa(secret+':'),'Content-Type':'application/json'},body:JSON.stringify({paymentKey,orderId,amount})});
+  const verified:any=await response.json();
+  if(!response.ok||verified?.status!=='DONE'||verified?.orderId!==orderId||Number(verified?.totalAmount)!==amount)return c.json({ok:false,error:verified?.message||'TOSS_CONFIRM_FAILED'},400);
+  await c.env.DB.prepare("UPDATE v5_premium_orders SET status='toss_test_paid_pending_broadcast' WHERE order_id=? AND user_id=? AND status='pending_toss'").bind(orderId,Number(uid)).run();
+  return c.json({ok:true,order_id:orderId,status:'toss_test_paid_pending_broadcast',test_payment:true});
+ }catch(e){console.error('[PREMIUM_TOSS_CONFIRM]',e);return c.json({ok:false,error:'TOSS_CONFIRM_UNAVAILABLE'},503);}
+});
+
+// Premium cash uses Toss PG test-mode verification; TL_P uses the real V5 ledger.
 payment.post('/v5/premium/checkout',async c=>{
  const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
  const b=await c.req.json<any>().catch(()=>null);
@@ -92,11 +113,10 @@ payment.post('/v5/premium/checkout',async c=>{
   if(existing){if(existing.user_id!=uid||existing.method!==method||existing.plan!==plan||existing.file_ids_json!==JSON.stringify(ids))return c.json({ok:false,error:'ORDER_CONFLICT'},409);return c.json({ok:true,order_id:orderId,status:existing.status,amount:existing.amount,replayed:true});}
   const matches=await c.env.DB.prepare(`SELECT COUNT(DISTINCT f.id) n FROM tl_files f JOIN tl3_v5_releases v ON v.file_id=f.id WHERE f.id IN (${ids.map(()=>'?').join(',')}) AND f.user_id=? AND f.shared=1 AND v.status='sealed' AND COALESCE(f.revenue_held,0)=0`).bind(...ids,Number(uid)).first<any>();
   if(Number(matches?.n)!==ids.length)return c.json({ok:false,error:'TRACK_NOT_ELIGIBLE'},403);
-  const status=method==='cash'?'simulated_paid_pending_broadcast':'funded_pending_broadcast';
+  const status=method==='cash'?'pending_toss':'funded_pending_broadcast';
   const insert=c.env.DB.prepare('INSERT INTO v5_premium_orders(order_id,user_id,method,plan,file_ids_json,amount,status) VALUES(?,?,?,?,?,?,?)').bind(orderId,Number(uid),method,plan,JSON.stringify(ids),amount,status);
   if(method==='cash'){
-   // Explicitly simulated: never contacts a payment provider or claims real funds.
-   await insert.run();return c.json({ok:true,order_id:orderId,status,amount,currency:'KRW',simulated:true});
+   await insert.run();return c.json({ok:true,order_id:orderId,status,amount,currency:'KRW',toss_checkout:true});
   }
   await assertTLAtomScale(c.env.DB);
   const from=await ensureLedgerAccount(c.env.DB,'user',uid,'TL','wallet_paid');
