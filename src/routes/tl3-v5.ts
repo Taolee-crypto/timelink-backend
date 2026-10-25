@@ -1,3 +1,4 @@
+import {readCreatorSplit} from '../creator-split-policy';
 import { ensureCentralBroadcastSchema } from '../central-broadcast-schema';
 import { permittedStationTracks } from '../tilo-station';
 /**
@@ -256,6 +257,13 @@ router.post('/manufacture', async (c) => {
     },409);
     // Rights evidence is embedded inside the encrypted V5 manifest.
     // Imported catalogue metadata is informational, never proof of ownership.
+    const spotifyReference=await c.env.DB.prepare('SELECT metadata_json FROM tl_creator_spotify_metadata WHERE file_id=? AND user_id=?')
+      .bind(fileId,userId).first<{metadata_json:string}>().catch((e:unknown)=>{
+        if(/no such table.*tl_creator_spotify_metadata/i.test(String(e)))return null;
+        throw e;
+      });
+    const externalCatalogue=spotifyReference?JSON.parse(spotifyReference.metadata_json):null;
+    const contributorSplit=await readCreatorSplit(c.env.DB,fileId);
     const rightsKind=metadata.rights_kind==='ai_creation'?'ai_creation':'copyright';
     const rightsEvidence={
       kind:rightsKind,
@@ -280,6 +288,8 @@ router.post('/manufacture', async (c) => {
       duration_ms:durationMs, tl_required:Math.ceil(durationMs / 1000),
       source_sha256:sourceHash, rights_confirmed:true,
       rights_evidence:rightsEvidence,
+      external_catalogue:externalCatalogue,
+      contributor_credits:contributorSplit?{version:contributorSplit.version,basis:contributorSplit.basis,members:contributorSplit.members.map(m=>({role:m.role,name:m.name,share_bps:m.share_bps})),snapshot_only:true}:null,
       rights:{ confirmed:true, confirmation_type:'creator_declaration', declared_role:String(rightsDeclaration.rights_role), declared_scope:String(rightsDeclaration.rights_scope), declaration_status:'declared', owner_user_id:userId },
       lp_meta:metadata.lp_license && typeof metadata.lp_license==='object' ? {
         enabled:metadata.lp_license.lp_enabled===true,

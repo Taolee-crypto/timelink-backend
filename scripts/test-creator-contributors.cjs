@@ -1,0 +1,41 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {DatabaseSync}=require('node:sqlite'),{buildSync}=require('esbuild');
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'creator-splits-'));
+buildSync({stdin:{contents:`export {default as router} from './src/routes/creator-contributors';export * from './src/creator-split-policy';export {makeAccessToken} from './src/auth';export {ensureLedgerAccount,settleTrackPlayback} from './src/economy-ledger';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:path.join(dir,'api.cjs'),logLevel:'silent'});
+const api=require(path.join(dir,'api.cjs')),sqlite=new DatabaseSync(':memory:');sqlite.exec(fs.readFileSync('migrations/0003_v3_economy_ledger.sql','utf8'));
+sqlite.exec(`UPDATE v3_economy_assets SET decimals=4 WHERE asset_code='TL';CREATE TABLE users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER DEFAULT 1,account_forfeited INTEGER DEFAULT 0);INSERT INTO users(id,role) VALUES(1,'user'),(33,'user'),(34,'user'),(35,'user');CREATE TABLE tl_files(id INTEGER PRIMARY KEY,user_id INTEGER,title TEXT);INSERT INTO tl_files VALUES(147,33,'Fixture');CREATE TABLE play_events(file_id INTEGER,player_user_id INTEGER,tl_deducted REAL,revenue_credited REAL,file_tl_after REAL,play_duration_seconds REAL,car_mode INTEGER);`);
+const db={prepare(sql){let args=[];const q={bind(...a){args=a;return q},async first(){return sqlite.prepare(sql).get(...args)||null},async all(){return {results:sqlite.prepare(sql).all(...args)}},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}}}};return q},async batch(stmts){sqlite.exec('BEGIN');try{let results=[];for(const s of stmts)results.push(await s.run());sqlite.exec('COMMIT');return results}catch(e){sqlite.exec('ROLLBACK');throw e}}};
+const env={DB:db,JWT_SECRET:'fixture-only-key',TWILIO_ACCOUNT_SID:'AC'+'a'.repeat(32),TWILIO_AUTH_TOKEN:'fixture-token',TWILIO_VERIFY_SERVICE_SID:'VA'+'b'.repeat(32)};
+let calls=0;global.fetch=async(url,opts)=>{calls++;const body=new URLSearchParams(opts.body);const to=body.get('To');return Response.json({status:url.endsWith('VerificationCheck')?(body.get('Code')==='123456'?'approved':'pending'):'pending',valid:body.get('Code')==='123456',to,service_sid:env.TWILIO_VERIFY_SERVICE_SID,account_sid:env.TWILIO_ACCOUNT_SID})};
+(async()=>{
+ const tokens={};for(const id of [33,34,35])tokens[id]=await api.makeAccessToken(id,env.JWT_SECRET);
+ const call=async(uid,endpoint,body,override)=>{const r=await api.router.request(endpoint,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+tokens[uid],'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})},override||env);return {status:r.status,data:await r.json()}};
+ assert.equal((await call(33,'/phone/send',{phone:'+821011111111',consent:true},{DB:db,JWT_SECRET:env.JWT_SECRET})).status,503);assert.equal(calls,0);
+ const members=[{role:'composition',name:'Alice',share_percent:'50',phone:'+821011111111'},{role:'lyrics',name:'Bob',share_percent:'50',phone:'+821022222222'}];
+ assert.equal((await call(34,'/tracks/147',{expected_version:0,members})).status,404);
+ const created=await call(33,'/tracks/147',{expected_version:0,members});assert.equal(created.status,200);assert.equal(created.data.split.ready,false);
+ assert(!JSON.stringify(created.data).includes('phone_hash'));assert(!JSON.stringify(created.data).includes('+8210'));
+ assert.equal((await call(33,'/tracks/147',{expected_version:1,members:[{...members[0],share_percent:101}]})).status,400);
+ const pool=await api.ensureLedgerAccount(db,'user',1,'TL','track_pool:tl3_147:paid');sqlite.prepare('UPDATE v3_economy_balances SET available_atoms=1000000 WHERE account_id=?').run(pool);
+ const play={userId:1,creatorId:33,shareId:'tl3_147',amountAtoms:10000,idempotencyKey:'fixture-split-pending',fileId:147,playedSeconds:1};
+ await api.settleTrackPlayback(db,play);
+ assert.equal(sqlite.prepare("SELECT b.available_atoms n FROM v3_economy_accounts a JOIN v3_economy_balances b ON b.account_id=a.id WHERE a.owner_type='escrow' AND a.owner_id='track:147:split:1' AND a.bucket='creator_split_pending_paid'").get().n,7000);
+ for(const [uid,phone] of [[34,members[0].phone],[35,members[1].phone]]){
+  const sent=await call(uid,'/phone/send',{phone,consent:true});assert.equal(sent.status,200);
+  assert.equal((await call(uid,'/phone/send',{phone,consent:true})).status,429);
+  assert.equal((await call(uid,'/phone/check',{phone,challenge_id:sent.data.challenge_id,code:'999999'})).status,400);
+  assert.equal((await call(uid,'/phone/check',{phone,challenge_id:sent.data.challenge_id,code:'123456'})).status,200);
+ }
+ const alice=(await call(34,'/claims')).data.claims[0],bob=(await call(35,'/claims')).data.claims[0];
+ assert.equal((await call(35,'/claims/'+alice.id+'/consent',{version:1,action:'accept'})).status,409);
+ assert.equal((await call(34,'/claims/'+alice.id+'/consent',{version:1,action:'accept'})).data.split.ready,false);
+ assert.equal((await call(35,'/claims/'+bob.id+'/consent',{version:1,action:'accept'})).data.split.ready,true);
+ await api.settleTrackPlayback(db,{...play,idempotencyKey:'fixture-split-ready'});
+ for(const uid of [34,35])assert.equal(sqlite.prepare("SELECT b.available_atoms n FROM v3_economy_accounts a JOIN v3_economy_balances b ON b.account_id=a.id WHERE a.owner_type='user' AND a.owner_id=? AND a.bucket='wallet_paid'").get(String(uid)).n,3500);
+ assert.equal(sqlite.prepare("SELECT SUM(b.available_atoms) n FROM v3_economy_accounts a JOIN v3_economy_balances b ON b.account_id=a.id WHERE a.owner_type='user' AND a.owner_id='33'").get().n,null);
+ const updated=await call(33,'/tracks/147',{expected_version:1,members:[{...members[0],share_percent:60},{...members[1],share_percent:40}]});assert.equal(updated.data.split.version,2);assert.equal(updated.data.split.ready,false);
+ assert.equal((await call(34,'/claims/'+alice.id+'/consent',{version:1,action:'accept'})).status,409);
+ assert.equal((await call(33,'/tracks/147',{expected_version:1,members})).status,409);
+ for(let n=0;n<20;n++)assert.equal(api.allocateCreatorAtoms(n,[{id:'a',share_bps:3333,recipient_user_id:34},{id:'b',share_bps:6667,recipient_user_id:35}]).reduce((s,r)=>s+r.amount_atoms,0),n);
+ console.log('PASS contributors: owner/version guards, exact shares, private phones, real-provider-only verification, SMS limits, self consent, pending escrow, verified recipients and share-change reconsent');
+})().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>fs.rmSync(dir,{recursive:true,force:true}));

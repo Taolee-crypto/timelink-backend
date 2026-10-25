@@ -1,0 +1,36 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {DatabaseSync}=require('node:sqlite'),{buildSync}=require('esbuild');
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'spotify-catalogue-'));
+buildSync({entryPoints:['src/spotify-catalogue.ts'],bundle:true,platform:'node',format:'cjs',outfile:path.join(dir,'catalogue.cjs'),logLevel:'silent'});
+const api=require(path.join(dir,'catalogue.cjs'));
+const sqlite=new DatabaseSync(':memory:');
+const db={prepare(sql){let args=[];const s={bind(...v){args=v;return s},async first(){return sqlite.prepare(sql).get(...args)||null},async all(){return {results:sqlite.prepare(sql).all(...args)}},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}}}};return s}};
+const id='A'.repeat(22),albumId='B'.repeat(22),artistId='C'.repeat(22);
+const track={id,name:'Selected recording',artists:[{id:artistId,name:'Artist',external_urls:{spotify:'https://open.spotify.com/artist/'+artistId}}],duration_ms:183456,external_ids:{isrc:'KRTEST2600001'},external_urls:{spotify:'https://open.spotify.com/track/'+id},explicit:false,disc_number:1,track_number:2,album:{id:albumId,name:'Album',images:[{url:'https://i.scdn.co/image/fixture'}],release_date:'2026-10-25',release_date_precision:'day',total_tracks:10}};
+let calls=[],denyAlbum=false,denyAll=false;
+global.fetch=async(url,options)=>{
+ calls.push(url);assert.equal(options.headers.Authorization,'Bearer test-token');
+ assert.equal(new URL(url).hostname,'api.spotify.com');
+ if(denyAll)return new Response('{}',{status:429});
+ if(url.includes('/search?'))return Response.json({tracks:{items:[track]}});
+ if(url.includes('/tracks/'))return Response.json(track);
+ if(url.includes('/albums/'))return denyAlbum?new Response('{}',{status:403}):Response.json({...track.album,label:'Fixture Records',external_ids:{upc:'0123456789012'},copyrights:[{type:'P',text:'2026 Fixture'}],tracks:{items:[{name:'UNRELATED ALBUM TRACK'}]}});
+ if(url.includes('/artists/'))return Response.json({id:artistId,name:'Artist',genres:['jazz'],followers:{total:123},images:[{url:'https://i.scdn.co/image/artist'}]});
+ throw Error('Unexpected provider endpoint '+url);
+};
+(async()=>{
+ const found=await api.searchSpotifyCatalogue('test-token','Recording');assert.equal(found[0].isrc,track.external_ids.isrc);assert.equal(found[0].explicit,false);
+ const details=await api.spotifyCatalogueDetails(db,async()=>'test-token',id);
+ assert.equal(details.upc,'0123456789012');assert.equal(details.label,'Fixture Records');assert.deepEqual(details.genres,['jazz']);assert.equal(details.catalogue.artists[0].followers.total,123);assert.equal(details.catalogue.album.tracks,undefined);assert.equal(details.rights_verified,false);assert.equal(details.catalogue.track.disc_number,1);
+ const count=calls.length;await api.spotifyCatalogueDetails(db,async()=>{throw Error('cache not used')},id);assert.equal(calls.length,count);
+ await api.storeCreatorSpotifyReference(db,147,33,details);
+ const saved=sqlite.prepare('SELECT * FROM tl_creator_spotify_metadata WHERE file_id=147').get();assert.equal(saved.isrc,details.isrc);assert.equal(JSON.parse(saved.metadata_json).catalogue.album.label,'Fixture Records');
+ await api.storeCreatorSpotifyReference(db,147,34,{...details,isrc:'WRONG'});assert.equal(sqlite.prepare('SELECT isrc FROM tl_creator_spotify_metadata WHERE file_id=147').get().isrc,details.isrc);
+ await api.storeCreatorSpotifyReference(db,147,34,null);assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM tl_creator_spotify_metadata').get().n,1);
+ sqlite.exec('DELETE FROM spotify_catalogue_cache');denyAlbum=true;
+ const partial=await api.spotifyCatalogueDetails(db,async()=>'test-token',id);assert.equal(partial.isrc,details.isrc);assert(partial.catalogue.unavailable.includes('album'));assert.equal(partial.label,'');
+ await assert.rejects(api.spotifyCatalogueDetails(db,async()=>'test-token','../../secrets'),/Track ID/);
+ sqlite.exec('DELETE FROM spotify_catalogue_cache');denyAll=true;
+ await assert.rejects(api.spotifyCatalogueDetails(db,async()=>'test-token',id),e=>e.status===429);
+ console.log('PASS Spotify: search ISRC, full details, partial provider denial, server cache, owner-scoped persistence, raw metadata, invalid IDs and rate limits');
+})().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>fs.rmSync(dir,{recursive:true,force:true}));

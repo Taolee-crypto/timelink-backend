@@ -27,6 +27,14 @@ export async function postApprovedTiloSettlement(
       !['KR','JP','US','CN','TH','VN'].includes(settlement.country) ||
       !Number.isSafeInteger(settlement.creatorId) || settlement.creatorId <= 0)
     throw new RangeError('INVALID_TILO_SETTLEMENT_IDENTITY');
+  // Creator-wide aggregates cannot safely pay track-specific collaborators.
+  // Require the track-level posting path when a split agreement exists.
+  const trackSplit=await db.prepare(`SELECT 1 AS found FROM tilo_v5_verified_airtime e
+    JOIN v5_creator_split_heads h ON h.file_id=e.file_id
+    WHERE e.creator_id=? AND e.country=? AND e.local_month=? LIMIT 1`)
+    .bind(settlement.creatorId,settlement.country,settlement.localDate.slice(0,7)).first()
+    .catch((e:unknown)=>{if(/no such table.*(?:v5_creator_split_heads|tilo_v5_verified_airtime)/i.test(String(e)))return null;throw e;});
+  if(trackSplit)throw new Error('TRACK_LEVEL_SPLIT_SETTLEMENT_REQUIRED');
   await assertTLAtomScale(db);
   const plan=planTiloV5LedgerPosting(
     settlement.previousMonthlyCreatorGrossAtoms,

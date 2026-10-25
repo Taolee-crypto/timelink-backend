@@ -56,6 +56,11 @@ jobs:
           npx --no-install esbuild tests/tilo-v5-scheduler.test.ts --bundle --platform=node --format=cjs --outfile=/tmp/tilo-scheduler-test.cjs
           node /tmp/tilo-scheduler-test.cjs
 
+      - name: Verify Creator catalogue import and contributor payouts
+        run: |
+          node scripts/test-spotify-catalogue.cjs
+          node scripts/test-creator-contributors.cjs
+
       - name: Validate Worker bundle
         run: npx wrangler deploy --dry-run --outdir .wrangler-dist
 

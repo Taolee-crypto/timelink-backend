@@ -2,6 +2,9 @@ export interface Env {
   DB: D1Database;
   R2?: R2Bucket;
   JWT_SECRET: string;
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_VERIFY_SERVICE_SID?: string;
   MUSIC_GATE_WORKER_SECRET?: string;
   MUSIC_GATE_ANALYSIS_ENABLED?: string;
   MUSIC_GATE_GEMINI_API_KEY?: string;

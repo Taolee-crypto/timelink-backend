@@ -1,3 +1,4 @@
+import {readCreatorSplit,allocateCreatorAtoms} from './creator-split-policy';
 import { assertTLAtomScale, ensureLedgerAccount, postLedgerTransaction } from './economy-ledger';
 import { validateAndCalculateBroadcastAirtime, type VerifiedBroadcastAirtime } from './central-broadcast-v5-airtime';
 
@@ -36,7 +37,16 @@ export async function settleVerifiedCentralBroadcast(
   ).bind(a.idempotencyKey).first<{id:string}>();
   if(existing)return {transactionId:existing.id,replayed:true,...a};
   const escrow=await ensureLedgerAccount(db,'escrow','central-broadcast','TL','broadcast_budget');
-  const creator=await ensureLedgerAccount(db,'user',event.creatorId,'TL','broadcast_earnings');
+  const split=await readCreatorSplit(db,event.fileId);
+  const creatorLines:{accountId:string;assetCode:'TL';amountAtoms:number}[]=[];
+  if(split&&!split.ready){
+    const held=await ensureLedgerAccount(db,'escrow','track:'+event.fileId+':split:'+split.version,'TL','creator_split_pending_broadcast');
+    creatorLines.push({accountId:held,assetCode:'TL',amountAtoms:a.creatorAtoms});
+  }else if(split){
+    for(const part of allocateCreatorAtoms(a.creatorAtoms,split.members.map(m=>({id:String(m.id),share_bps:Number(m.share_bps),recipient_user_id:Number(m.recipient_user_id)})))){
+      if(part.amount_atoms)creatorLines.push({accountId:await ensureLedgerAccount(db,'user',part.recipient_user_id,'TL','broadcast_earnings'),assetCode:'TL',amountAtoms:part.amount_atoms});
+    }
+  }else creatorLines.push({accountId:await ensureLedgerAccount(db,'user',event.creatorId,'TL','broadcast_earnings'),assetCode:'TL',amountAtoms:a.creatorAtoms});
   const platform=await ensureLedgerAccount(db,'platform','timelink','TL','broadcast_revenue');
   const funds=await db.prepare(
     'SELECT available_atoms FROM v3_economy_balances WHERE account_id=?'
@@ -54,14 +64,16 @@ export async function settleVerifiedCentralBroadcast(
     source:'verified_central_broadcast',referenceType:'broadcast_event',referenceId:event.eventId,
     description:'V5 중앙방송 검증 송출 정산',
     metadata:{file_id:event.fileId,creator_id:event.creatorId,country:event.country,
+      rights_split_version:split?.version??null,rights_split_pending:!!split&&!split.ready,
       played_ms:a.playedMs,rights_grant_id:evidence.rightsGrantId,verified_by:evidence.verifiedBy},
     lines:[
       {accountId:escrow,assetCode:'TL',amountAtoms:-a.totalAtoms},
-      {accountId:creator,assetCode:'TL',amountAtoms:a.creatorAtoms},
+      ...creatorLines,
       {accountId:platform,assetCode:'TL',amountAtoms:a.platformAtoms}
     ],
     // Guard must precede debit, not follow it. Use issuanceStatements (prepended).
-    issuanceStatements:[debitGuard]
+    issuanceStatements:[debitGuard],
+    atomicStatements:split?[db.prepare(`SELECT CASE WHEN (SELECT version FROM v5_creator_split_heads WHERE file_id=?)=? THEN 1 ELSE json_extract('invalid','$') END`).bind(event.fileId,split.version)]:[]
   });
   return {transactionId:posted.id,replayed:posted.replayed,...a};
 }

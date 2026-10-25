@@ -1,3 +1,6 @@
+import {readCreatorSplit} from './creator-split-policy';
+import creatorContributorsRouter from './routes/creator-contributors';
+import { searchSpotifyCatalogue,spotifyCatalogueDetails,storeCreatorSpotifyReference,SpotifyCatalogueError } from './spotify-catalogue';
 import { Hono } from 'hono';
 import { refreshTiloCountryClocks, tiloLocalSchedule, TILO_COUNTRY_ZONES, type TiloCountryCode } from './tilo-country-clock';
 import { planTiloBroadcast } from './tilo-v5-scheduler';
@@ -454,6 +457,7 @@ async function registerWithEmail(c:any,providedBody?:any) {
 app.post('/api/v1/auth/register',c=>registerWithEmail(c));
 app.route('/api/v1/auth', authRouter);
 app.route('/api/v5/music-discovery',musicDiscoveryRouter);
+app.route('/api/v5/creator-contributors',creatorContributorsRouter);
 app.route('/api/v5/community',communityRouter);
 app.route('/api/v1/tl3/v5', tl3V5Router);
 app.route('/api/v5/central-broadcast', centralBroadcastV5Router);
@@ -3374,9 +3378,11 @@ async function getSpotifyToken(env: Env): Promise<string> {
       'Authorization': 'Basic ' + btoa((env as any).SPOTIFY_CLIENT_ID + ':' + (env as any).SPOTIFY_CLIENT_SECRET),
       'Content-Type': 'application/x-www-form-urlencoded'
     },
+    signal:AbortSignal.timeout(8000),redirect:'error',
     body: 'grant_type=client_credentials'
   });
   const d: any = await r.json();
+  if(!r.ok||typeof d.access_token!=='string')throw new Error('Spotify 인증 실패 (HTTP '+r.status+')');
   _spToken = d.access_token;
   _spExp = Date.now() + (d.expires_in - 60) * 1000;
   return _spToken!;
@@ -3450,36 +3456,18 @@ app.post('/api/music/verify-release', async (c) => {
 });
 
 // Spotify 검색
-app.get('/api/spotify/search', async (c) => {
-  const q = c.req.query('q');
-  if (!q) return c.json({ error: 'q 필요' }, 400);
-  const env = c.env as any;
-  if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return c.json({ tracks: [] });
-  try {
-    const token = await getSpotifyToken(c.env);
-    const r = await fetch(
-      'https://api.spotify.com/v1/search?q=' + encodeURIComponent(q) + '&type=track&limit=6&market=KR',
-      { headers: { 'Authorization': 'Bearer ' + token } }
-    );
-    const d: any = await r.json();
-    const tracks = (d.tracks?.items || []).map((t: any) => ({
-      id: t.id, title: t.name,
-      artist: t.artists.map((a: any) => a.name).join(', '),
-      album: t.album?.name || '',
-      duration: Math.round(t.duration_ms / 1000),
-      cover_url: t.album?.images?.[0]?.url || '',
-      preview_url: t.preview_url || '',
-      spotify_url: t.external_urls?.spotify || '',
-      release_date: t.album?.release_date || ''
-    }));
-    return c.json({ tracks });
-  } catch (e: any) {
-    return c.json({ tracks: [], error: e.message });
-  }
+app.get('/api/spotify/search', async c => {
+  if (!(c.env as any).SPOTIFY_CLIENT_ID || !(c.env as any).SPOTIFY_CLIENT_SECRET)
+    return c.json({tracks:[],error:'Spotify 연결 설정이 필요합니다.'},503);
+  try{return c.json({tracks:await searchSpotifyCatalogue(await getSpotifyToken(c.env),c.req.query('q')||'')});}
+  catch(e){return c.json({tracks:[],error:e instanceof Error?e.message:'Spotify 조회 실패'},e instanceof SpotifyCatalogueError&&e.status===400?400:e instanceof SpotifyCatalogueError&&e.status===429?429:502);}
+});
+app.get('/api/spotify/tracks/:id',async c=>{
+  if(!(c.env as any).SPOTIFY_CLIENT_ID||!(c.env as any).SPOTIFY_CLIENT_SECRET)return c.json({ok:false,error:'Spotify 연결 설정이 필요합니다.'},503);
+  try{return c.json({ok:true,track:await spotifyCatalogueDetails(c.env.DB,()=>getSpotifyToken(c.env),c.req.param('id'))});}
+  catch(e){return c.json({ok:false,error:e instanceof Error?e.message:'Spotify 상세 조회 실패'},e instanceof SpotifyCatalogueError&&e.status===400?400:e instanceof SpotifyCatalogueError&&e.status===429?429:502);}
 });
 
-
- 
 // V5 discovery metadata: independent catalogue matches are hints, never rights clearance.
 app.get('/api/v5/music/metadata-search', async (c) => {
   const q = String(c.req.query('q') || '').trim().slice(0, 160);
@@ -3541,9 +3529,10 @@ app.post('/api/creator/metadata', async (c) => {
     if (!file || Number(file.user_id) !== userId) return c.json({ok:false,error:'본인 소유 자산만 권리 정보를 등록할 수 있습니다.'},403);
     const workIdentityType = String(body.work_identity_type || '').trim();
     if (!['new_work','new_recording','same_recording'].includes(workIdentityType)) return c.json({ok:false,error:'음악 작품 동일성 유형을 선택해주세요.'},400);
-    const spotify = body.spotify && typeof body.spotify === 'object' ? body.spotify : null;
+    const selectedSpotify = body.spotify && typeof body.spotify === 'object' ? body.spotify : null;
+    const spotify = selectedSpotify?.id ? await spotifyCatalogueDetails(c.env.DB,()=>getSpotifyToken(c.env),String(selectedSpotify.id)) : null;
     const spotifyId = spotify ? String(spotify.id || '').trim().slice(0,64) : '';
-    const spotifyUrl = spotify ? String(spotify.url || '').trim().slice(0,500) : '';
+    const spotifyUrl = spotify ? String(spotify.spotify_url || '').trim().slice(0,500) : '';
     if (spotifyId && !/^[A-Za-z0-9]{10,64}$/.test(spotifyId)) return c.json({ok:false,error:'Spotify Track ID 형식이 올바르지 않습니다.'},400);
     if (spotifyUrl && !/^https:\/\/open\.spotify\.com\/track\/[A-Za-z0-9]+/i.test(spotifyUrl)) return c.json({ok:false,error:'Spotify 작품 주소가 올바르지 않습니다.'},400);
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl_creator_metadata (
@@ -3569,7 +3558,8 @@ app.post('/api/creator/metadata', async (c) => {
       spotify?String(spotify.artist||'').slice(0,300):null,
       spotify?String(spotify.album||'').slice(0,300):null,
       spotify?String(spotify.release_date||'').slice(0,32):null,role,scope,workIdentityType).run();
-    return c.json({ok:true,file_id:fileId,declaration_status:'declared',work_identity_type:workIdentityType,spotify_linked:!!spotifyId});
+    await storeCreatorSpotifyReference(c.env.DB,fileId,userId,spotify);
+    return c.json({ok:true,file_id:fileId,declaration_status:'declared',work_identity_type:workIdentityType,spotify_linked:!!spotifyId,isrc:spotify?.isrc||null});
   } catch (e:any) {
     return c.json({ok:false,error:e?.message||'권리 정보 저장에 실패했습니다.'},500);
   }
@@ -4163,9 +4153,18 @@ app.get('/api/shares/:id', async (c) => {
     const lyricRow=await c.env.DB.prepare('SELECT lyrics FROM tl3_v5_track_metadata WHERE share_id=?').bind(resolvedShareId).first<any>().catch(()=>null);
     v5Lyrics=String(lyricRow?.lyrics||'');
   }
+  const creditSplit=await readCreatorSplit(c.env.DB,Number(file.id));
+  const credits=(creditSplit?.members||[]).map(m=>({role:String(m.role),name:String(m.name),status:String(m.consent)}));
+  const names=(role:string)=>credits.filter(m=>m.role===role).map(m=>m.name).join(', ');
+  const externalReference=await c.env.DB.prepare('SELECT metadata_json FROM tl_creator_spotify_metadata WHERE file_id=?')
+    .bind(file.id).first<{metadata_json:string}>().catch((e:unknown)=>{if(/no such table.*tl_creator_spotify_metadata/i.test(String(e)))return null;throw e;});
+  const externalMetadata=externalReference?JSON.parse(externalReference.metadata_json):null;
   const response={
+    composer:names('composition')||String(file.composer||''),lyricist:names('lyrics')||String(file.lyricist||''),arranger:names('arrangement')||String(file.arranger||''),contributors:credits,
+    isrc:externalMetadata?.isrc||null,release_date:externalMetadata?.release_date||null,
+    spotify_url:externalMetadata?.spotify_url||null,spotify_metadata:externalMetadata,
     id:String(v5Release?.share_id||file.id),file_id:Number(file.id),share_id:resolvedShareId||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
-    title:String(file.title||''),artist:String(file.artist||''),album:'',duration:durationSec,duration_sec:durationSec,
+    title:String(file.title||''),artist:String(file.artist||''),album:externalMetadata?.album||'',duration:durationSec,duration_sec:durationSec,
     file_tl:requiredTL,price_tl:requiredTL,category:String(file.genre||'Music'),file_type:v5Release?'audio/tl3':String(file.file_type||''),
     category_type:'audio',description:'',plan:'A',cover_url:file.cover_image||null,pulse:Number(file.pulse||0),
     play_count:Number(file.play_count||0),created_at:file.created_at,
