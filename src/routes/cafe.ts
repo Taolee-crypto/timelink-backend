@@ -450,6 +450,47 @@ router.put('/channels/:id', async (c) => {
   }
 });
 
+// DJs attached to the same contracted manager's active stores form the selectable roster.
+async function storeDjRoster(db:D1Database,channelId:string):Promise<any[]>{
+  const row=await db.prepare('SELECT manager_user_id FROM v5_sales_stores WHERE channel_id=?').bind(channelId).first<any>();
+  if(!row?.manager_user_id)return [];
+  const result=await db.prepare(
+    "SELECT DISTINCT d.id,d.dj_name,d.is_live,d.live_current_track_id FROM v5_sales_stores s JOIN dj_profiles d ON d.id=s.dj_id WHERE s.manager_user_id=? AND d.status='active' ORDER BY d.dj_name"
+  ).bind(row.manager_user_id).all<any>();
+  return result.results||[];
+}
+router.get('/channels/:id/dj-schedule',async c=>{
+  const auth=await authUser(c);if(!auth)return c.json({ok:false,error:'인증 필요'},401);
+  await ensureCafeTables(c.env.DB);
+  const id=c.req.param('id');
+  const store=await c.env.DB.prepare('SELECT owner_id,schedules,country FROM cafe_channels WHERE channel_id=? AND status=?').bind(id,'active').first<any>();
+  if(!store)return c.json({ok:false,error:'스토어 없음'},404);
+  if(Number(store.owner_id)!==auth.id)return c.json({ok:false,error:'권한 없음'},403);
+  let slots:any[]=[];try{const parsed=JSON.parse(store.schedules||'[]');if(Array.isArray(parsed))slots=parsed;}catch(_){}
+  const djs=await storeDjRoster(c.env.DB,id);
+  return c.json({ok:true,channel_id:id,country:store.country,schedules:slots,djs});
+});
+router.get('/channels/:id/broadcast-source',async c=>{
+  const auth=await authUser(c);if(!auth)return c.json({ok:false,error:'인증 필요'},401);
+  await ensureCafeTables(c.env.DB);
+  const id=c.req.param('id');
+  const store=await c.env.DB.prepare('SELECT owner_id,schedules,country FROM cafe_channels WHERE channel_id=? AND status=?').bind(id,'active').first<any>();
+  if(!store)return c.json({ok:false,error:'스토어 없음'},404);
+  if(Number(store.owner_id)!==auth.id)return c.json({ok:false,error:'권한 없음'},403);
+  const zone:Record<string,string>={KR:'Asia/Seoul',JP:'Asia/Tokyo',US:'America/New_York',GB:'Europe/London',FR:'Europe/Paris',DE:'Europe/Berlin',TH:'Asia/Bangkok',VN:'Asia/Ho_Chi_Minh',CN:'Asia/Shanghai'};
+  const local=new Intl.DateTimeFormat('en-GB',{timeZone:zone[store.country]||'UTC',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date());
+  let slots:any[]=[];try{slots=JSON.parse(store.schedules||'[]');}catch(_){}
+  const selected=Array.isArray(slots)?slots.find((s:any)=>s.start<=local&&local<s.end):null;
+  if(selected){
+    const roster=await storeDjRoster(c.env.DB,id);
+    if(roster.some((d:any)=>Number(d.id)===Number(selected.dj_id))){
+      const dj=await c.env.DB.prepare('SELECT id,is_live,live_current_track_id FROM dj_profiles WHERE id=? AND status=?').bind(selected.dj_id,'active').first<any>();
+      if(dj?.is_live&&dj.live_current_track_id)return c.json({ok:true,source:'dj',dj_id:dj.id,track_id:dj.live_current_track_id,local_time:local});
+    }
+  }
+  return c.json({ok:true,source:'central',local_time:local});
+});
+
 // Store DJ timetable: one source at a time, central radio otherwise.
 // Times are HH:mm in the store's local clock; schedule is explicitly selected by the owner.
 router.put('/channels/:id/dj-schedule',async c=>{
@@ -471,7 +512,7 @@ router.put('/channels/:id/dj-schedule',async c=>{
     if(!Number.isSafeInteger(djId)||djId<=0||!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(start)||!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(end)||start>=end)
       return c.json({ok:false,error:'DJ 및 방송 시간을 확인하세요.'},400);
     const dj=await c.env.DB.prepare('SELECT id FROM dj_profiles WHERE id=? AND status=?').bind(djId,'active').first<any>();
-    if(!dj||djId!==Number(links.dj_id))return c.json({ok:false,error:'계약 매니저가 연결한 DJ만 편성할 수 있습니다.'},403);
+    if(!dj||!(await storeDjRoster(c.env.DB,id)).some((item:any)=>Number(item.id)===djId))return c.json({ok:false,error:'계약 매니저가 연결한 DJ만 편성할 수 있습니다.'},403);
     normalized.push({dj_id:djId,start,end});
   }
   normalized.sort((a,b)=>a.start.localeCompare(b.start));
