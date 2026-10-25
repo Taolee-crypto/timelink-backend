@@ -18,7 +18,7 @@ const sqlite=new DatabaseSync(':memory:');
 const db={prepare(sql){let args=[];const s={bind(...a){args=a;return s},
   async first(){return sqlite.prepare(sql).get(...args)||null},
   async all(){return {results:sqlite.prepare(sql).all(...args)}},
-  async run(){const r=sqlite.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}}}};return s;}};
+  async run(){const before=sqlite.prepare('SELECT total_changes() n').get().n;sqlite.prepare(sql).run(...args);return {meta:{changes:Number(sqlite.prepare('SELECT total_changes() n').get().n-before)}}}};return s;}};
 const base=fs.readFileSync('migrations/20261025_v5_ai_music_gate_reviews.sql','utf8');
 const migration=fs.readFileSync('migrations/20261025_v5_music_gate_analysis_worker.sql','utf8');
 const sha=b=>createHash('sha256').update(b).digest('hex');
@@ -105,7 +105,7 @@ async function main(){
   id=insert();result=await api.runMusicGateAnalysis(env,async()=>{
     sqlite.prepare("UPDATE v5_music_gate_reviews SET status='cancelled' WHERE id=?").run(id);return response();});
   assert.equal(result.state,'lease_lost');assert.equal(review(id).status,'cancelled');
-  id=insert();sqlite.prepare("UPDATE v5_music_gate_reviews SET status='analyzing',analysis_token='dead',analysis_attempts=3,analysis_lease_until=0 WHERE id=?").run(id);
+  id=insert();sqlite.prepare("UPDATE v5_music_gate_reviews SET status='analyzing',analysis_token='dead',analysis_attempts=3,analysis_lease_until=0,evidence_json='{\"analysis_stage\":\"reading_source\"}' WHERE id=?").run(id);
   await api.runMusicGateAnalysis(env,mock);assert.equal(review(id).status,'review_required');
   assert.equal(review(id).analysis_error,'ANALYSIS_LEASE_EXPIRED');
   id=insert();sqlite.prepare("UPDATE v5_music_gate_reviews SET status='analyzing',analysis_token='dead',analysis_attempts=1,analysis_lease_until=0 WHERE id=?").run(id);
@@ -194,7 +194,7 @@ async function main(){
   await assert.rejects(api.requestMusicGateRetry(env,2,leaseRetryId),/REVIEW_NOT_FOUND/);
   const retry=await api.requestMusicGateRetry(env,1,leaseRetryId);assert.equal(retry.review_status,'pending_analysis');
   assert.equal(review(leaseRetryId).analysis_attempts,0);assert.equal(JSON.parse(review(leaseRetryId).evidence_json).manual_retry_count,1);
-  await assert.rejects(api.requestMusicGateRetry(env,1,leaseRetryId),/ANALYSIS_NOT_RETRYABLE/);
+  assert.equal((await api.requestMusicGateRetry(env,1,leaseRetryId)).review_status,'pending_analysis');
   await api.runMusicGateAnalysis(env,mock);
   assert.equal(JSON.parse(review(leaseRetryId).evidence_json).analysis_stage,'finished');
   assert.equal(JSON.parse(review(leaseRetryId).evidence_json).manual_retry_count,1);
@@ -203,6 +203,25 @@ async function main(){
   const stages=[];await api.analyzeGateAudio(audio,{apiKey:'fixture',model:'gemini-fixture',onStage:async stage=>stages.push(stage)},async()=>response());
   assert.deepEqual(stages,['encoding_audio','requesting_ai','reading_ai_response','validating_ai_output']);
   console.log('PASS stage checkpoints and explicit owner retry: wrong owner denied, one retry cycle, no re-upload, bounded reset');
+
+
+  const recoveredId=insert();
+  sqlite.prepare("UPDATE v5_music_gate_reviews SET status='review_required',analysis_error='ANALYSIS_LEASE_EXPIRED',analysis_attempts=3,evidence_json=? WHERE id=?").run(JSON.stringify({analysis_stage:'queued',manual_retry_count:1}),recoveredId);
+  await api.recoverUnstartedMusicGateAnalyses(env);
+  assert.equal(review(recoveredId).status,'pending_analysis');assert.equal(review(recoveredId).analysis_attempts,0);
+  assert.equal(JSON.parse(review(recoveredId).evidence_json).cas_metadata_recovered,1);
+  assert.equal(JSON.parse(review(recoveredId).evidence_json).manual_retry_count,1);
+  await api.runMusicGateAnalysis(env,mock);
+  assert.equal(JSON.parse(review(recoveredId).evidence_json).analysis_stage,'finished');
+  assert.equal(JSON.parse(review(recoveredId).evidence_json).cas_metadata_recovered,1);
+  const changed=await db.prepare('UPDATE v5_music_gate_reviews SET analysis_attempts=analysis_attempts+1 WHERE id=?').bind(recoveredId).run();
+  assert.equal(changed.meta.changes,2); // review update plus its audit trigger, matching D1 metadata
+  sqlite.prepare("UPDATE v5_music_gate_reviews SET status='review_required',analysis_error='ANALYSIS_LEASE_EXPIRED',evidence_json=? WHERE id=?").run(JSON.stringify({analysis_stage:'queued',cas_metadata_recovered:1,manual_retry_count:1}),recoveredId);
+  await api.recoverUnstartedMusicGateAnalyses(env);assert.equal(review(recoveredId).status,'review_required');
+  const manualId=insert();
+  sqlite.prepare("UPDATE v5_music_gate_reviews SET status='review_required',analysis_error='ANALYSIS_LEASE_EXPIRED',evidence_json=? WHERE id=?").run(JSON.stringify({submitted_by_admin_user_id:2}),manualId);
+  await api.recoverUnstartedMusicGateAnalyses(env);assert.equal(review(manualId).status,'review_required');
+  console.log('PASS D1 total_changes audit semantics: RETURNING CAS, automatic recovery once, no human evidence or real-start recovery');
 
   console.log('ALL MUSIC GATE INTEGRATION CHECKS PASSED (mock provider; live inference not tested)');
 }

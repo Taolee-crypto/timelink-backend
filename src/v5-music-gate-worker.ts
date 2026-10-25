@@ -8,6 +8,29 @@ type Job={id:string;user_id:number;source_key:string;source_sha256:string;
 function retryCount(encoded:string|null):number {
   try{return JSON.parse(encoded||'{}').manual_retry_count===1?1:0;}catch{return 0;}
 }
+function metadataRecoveryCount(encoded:string|null):number {
+  try{return JSON.parse(encoded||'{}').cas_metadata_recovered===1?1:0;}catch{return 0;}
+}
+/** Repair only expired jobs that never reached the first analysis checkpoint.
+ * A durable marker prevents repeated recovery. Completed inference, human evidence,
+ * approvals, rejections and jobs that actually started source processing are excluded.
+ */
+export async function recoverUnstartedMusicGateAnalyses(env:Env) {
+  const valid="CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END";
+  await env.DB.prepare(`UPDATE v5_music_gate_reviews SET status='pending_analysis',analysis_attempts=0,
+    analysis_token=NULL,analysis_lease_until=NULL,analysis_next_at=0,analysis_error=NULL,
+    reasons_json='["SYSTEM_RECOVERY_D1_CHANGE_METADATA"]',evidence_sha256=NULL,
+    evidence_json=json_set(${valid},'$.cas_metadata_recovered',1,'$.analysis_stage','queued'),
+    updated_at=datetime('now') WHERE id IN (
+      SELECT id FROM v5_music_gate_reviews WHERE status='review_required' AND analysis_error='ANALYSIS_LEASE_EXPIRED'
+      AND COALESCE(json_extract(${valid},'$.analysis_stage'),'') IN ('','queued','claimed')
+      AND COALESCE(json_extract(${valid},'$.cas_metadata_recovered'),0)=0
+      AND json_type(${valid},'$.audio_analysis') IS NULL
+      AND json_extract(${valid},'$.submitted_by_admin_user_id') IS NULL
+      AND COALESCE(json_extract(${valid},'$.analysis_complete'),0)=0
+      ORDER BY created_at,id LIMIT 20
+    )`).run();
+}
 export function retryableMusicGateError(code:string|null):boolean {
   return ['ANALYSIS_LEASE_EXPIRED','AI_NETWORK_ERROR','INVALID_AI_OUTPUT','INVALID_AI_RESPONSE',
     'INCOMPLETE_AI_RESPONSE','ANALYSIS_STORAGE_ERROR','AI_HTTP_429','AI_HTTP_408'].includes(code||'')||/^AI_HTTP_5[0-9]{2}$/.test(code||'');
@@ -46,6 +69,7 @@ export async function runMusicGateAnalysis(env:Env, request:typeof fetch=fetch) 
     reasons_json='["ANALYSIS_LEASE_EXPIRED"]',updated_at=datetime('now')
     WHERE status='analyzing' AND analysis_token IS NOT NULL AND analysis_lease_until<=?`)
     .bind(MAX_ATTEMPTS,now).run();
+  await recoverUnstartedMusicGateAnalyses(env);
   const job=await env.DB.prepare(`SELECT id,user_id,source_key,source_sha256,registration_mode,analysis_attempts,evidence_json
     FROM v5_music_gate_reviews WHERE status='pending_analysis' AND analysis_attempts<? AND analysis_next_at<=?
     ORDER BY created_at,id LIMIT 1`).bind(MAX_ATTEMPTS,now).first<Job>();
@@ -53,20 +77,21 @@ export async function runMusicGateAnalysis(env:Env, request:typeof fetch=fetch) 
   const token=crypto.randomUUID(),attempt=Number(job.analysis_attempts)+1;
   const claimed=await env.DB.prepare(`UPDATE v5_music_gate_reviews SET status='analyzing',analysis_token=?,
     analysis_lease_until=?,analysis_attempts=analysis_attempts+1,analysis_error=NULL,updated_at=datetime('now')
-    WHERE id=? AND status='pending_analysis' AND analysis_attempts=? AND analysis_next_at<=?`)
-    .bind(token,now+180,job.id,job.analysis_attempts,now).run();
-  if(Number(claimed.meta?.changes)!==1)return {processed:0,state:'claim_conflict'};
+    WHERE id=? AND status='pending_analysis' AND analysis_attempts=? AND analysis_next_at<=? RETURNING id`)
+    .bind(token,now+180,job.id,job.analysis_attempts,now).first<{id:string}>();
+  if(claimed?.id!==job.id)return {processed:0,state:'claim_conflict'};
   const manualRetryCount=retryCount(job.evidence_json);
+  const metadataRecovered=metadataRecoveryCount(job.evidence_json);
   let stage='claimed';
   const progress=async (next:string)=>{
     stage=next;
     const value=JSON.stringify({pipeline_version:MUSIC_GATE_PIPELINE_VERSION,source_sha256:job.source_sha256,
-      analysis_complete:false,analysis_stage:stage,stage_updated_at:new Date().toISOString(),manual_retry_count:manualRetryCount});
+      analysis_complete:false,analysis_stage:stage,stage_updated_at:new Date().toISOString(),manual_retry_count:manualRetryCount,cas_metadata_recovered:metadataRecovered});
     const digest=await hashBytes(new TextEncoder().encode(value));
     const result=await env.DB.prepare(`UPDATE v5_music_gate_reviews SET evidence_json=?,evidence_sha256=?,
-      classifier_version=?,updated_at=datetime('now') WHERE id=? AND status='analyzing' AND analysis_token=? AND analysis_lease_until>?`)
-      .bind(value,digest,MUSIC_GATE_PIPELINE_VERSION,job.id,token,Math.floor(Date.now()/1000)).run();
-    if(Number(result.meta?.changes)!==1)throw new GateAnalysisError('ANALYSIS_LEASE_LOST',false);
+      classifier_version=?,updated_at=datetime('now') WHERE id=? AND status='analyzing' AND analysis_token=? AND analysis_lease_until>? RETURNING id`)
+      .bind(value,digest,MUSIC_GATE_PIPELINE_VERSION,job.id,token,Math.floor(Date.now()/1000)).first<{id:string}>();
+    if(result?.id!==job.id)throw new GateAnalysisError('ANALYSIS_LEASE_LOST',false);
   };
   let evidence:Record<string,unknown>,reasons:string[],errorCode:string|null=null,retry=false;
   try {
@@ -89,7 +114,7 @@ export async function runMusicGateAnalysis(env:Env, request:typeof fetch=fetch) 
     if(a.music_probability<0.98&&a.speech_probability<0.98)reasons.push('UNCERTAIN_AUDIO_CLASSIFICATION');
     // Generative audio understanding cannot replace a decoder or independent rights search.
     reasons.push('INDEPENDENT_DECODE_REQUIRED','FINGERPRINT_VERIFICATION_UNAVAILABLE','CATALOG_VERIFICATION_UNAVAILABLE');
-    evidence={pipeline_version:MUSIC_GATE_PIPELINE_VERSION,provider:'gemini',analysis_stage:'finished',manual_retry_count:manualRetryCount,
+    evidence={pipeline_version:MUSIC_GATE_PIPELINE_VERSION,provider:'gemini',analysis_stage:'finished',manual_retry_count:manualRetryCount,cas_metadata_recovered:metadataRecovered,
       requested_model:env.MUSIC_GATE_GEMINI_MODEL,model_version:result.modelVersion,response_id:result.responseId,
       source_sha256:job.source_sha256,source_bytes:audio.length,registration_mode:job.registration_mode,
       analyzed_at:new Date().toISOString(),analysis_complete:a.audio_understood&&a.full_audio_reviewed,
@@ -99,7 +124,7 @@ export async function runMusicGateAnalysis(env:Env, request:typeof fetch=fetch) 
     const problem=error instanceof GateAnalysisError?error:new GateAnalysisError('ANALYSIS_STORAGE_ERROR',true);
     errorCode=problem.code;retry=problem.retryable&&attempt<MAX_ATTEMPTS;
     reasons=[problem.code];
-    evidence={pipeline_version:MUSIC_GATE_PIPELINE_VERSION,source_sha256:job.source_sha256,analysis_stage:stage,manual_retry_count:manualRetryCount,
+    evidence={pipeline_version:MUSIC_GATE_PIPELINE_VERSION,source_sha256:job.source_sha256,analysis_stage:stage,manual_retry_count:manualRetryCount,cas_metadata_recovered:metadataRecovered,
       analysis_complete:false,error:problem.code,attempt,automatic_approval:false,
       rights_verified:false,rewards_approved:false};
   }
@@ -108,10 +133,10 @@ export async function runMusicGateAnalysis(env:Env, request:typeof fetch=fetch) 
   const saved=await env.DB.prepare(`UPDATE v5_music_gate_reviews SET status=?,reasons_json=?,
     classifier_version=?,evidence_json=?,evidence_sha256=?,analysis_error=?,analysis_token=NULL,
     analysis_lease_until=NULL,analysis_next_at=?,updated_at=datetime('now')
-    WHERE id=? AND status='analyzing' AND analysis_token=? AND source_sha256=? AND analysis_lease_until>?`)
+    WHERE id=? AND status='analyzing' AND analysis_token=? AND source_sha256=? AND analysis_lease_until>? RETURNING id`)
     .bind(next,JSON.stringify(reasons),MUSIC_GATE_PIPELINE_VERSION,encoded,digest,errorCode,
-      now+Math.min(3600,60*2**attempt),job.id,token,job.source_sha256,Math.floor(Date.now()/1000)).run();
-  return Number(saved.meta?.changes)===1?{processed:1,state:next,error:errorCode}:{processed:0,state:'lease_lost'};
+      now+Math.min(3600,60*2**attempt),job.id,token,job.source_sha256,Math.floor(Date.now()/1000)).first<{id:string}>();
+  return saved?.id===job.id?{processed:1,state:next,error:errorCode}:{processed:0,state:'lease_lost'};
 }
 
 /** A single explicit owner retry for infrastructure failures. No approval or sanctions. */
@@ -120,6 +145,8 @@ export async function requestMusicGateRetry(env:Env,userId:number,id:string) {
     FROM v5_music_gate_reviews WHERE id=? AND user_id=?`).bind(id,userId)
     .first<{status:string;source_sha256:string;evidence_json:string|null;evidence_sha256:string|null;analysis_error:string|null}>();
   if(!record)throw Error('REVIEW_NOT_FOUND');
+  if(['pending_analysis','analyzing'].includes(record.status)&&retryCount(record.evidence_json)>=1)
+    return {ok:true,review_id:id,review_status:record.status,analysis_status:record.status==='analyzing'?'analyzing':'queued',retry_available:false};
   if(record.status!=='review_required'||!retryableMusicGateError(record.analysis_error))throw Error('ANALYSIS_NOT_RETRYABLE');
   if(retryCount(record.evidence_json)>=1)throw Error('ANALYSIS_RETRY_EXHAUSTED');
   const evidence=JSON.stringify({pipeline_version:MUSIC_GATE_PIPELINE_VERSION,source_sha256:record.source_sha256,
@@ -129,8 +156,13 @@ export async function requestMusicGateRetry(env:Env,userId:number,id:string) {
   const result=await env.DB.prepare(`UPDATE v5_music_gate_reviews SET status='pending_analysis',analysis_attempts=0,
     analysis_token=NULL,analysis_lease_until=NULL,analysis_next_at=0,analysis_error=NULL,reasons_json='["OWNER_REQUESTED_SYSTEM_RETRY"]',
     evidence_json=?,evidence_sha256=?,updated_at=datetime('now') WHERE id=? AND user_id=? AND status='review_required'
-    AND analysis_error=? AND COALESCE(evidence_sha256,'')=?`)
-    .bind(evidence,digest,id,userId,record.analysis_error,record.evidence_sha256||'').run();
-  if(Number(result.meta?.changes)!==1)throw Error('ANALYSIS_RETRY_CONFLICT');
+    AND analysis_error=? AND COALESCE(evidence_sha256,'')=? RETURNING id`)
+    .bind(evidence,digest,id,userId,record.analysis_error,record.evidence_sha256||'').first<{id:string}>();
+  if(result?.id!==id){
+    const latest=await env.DB.prepare('SELECT status,evidence_json FROM v5_music_gate_reviews WHERE id=? AND user_id=?').bind(id,userId).first<{status:string;evidence_json:string|null}>();
+    if(latest&&['pending_analysis','analyzing'].includes(latest.status)&&retryCount(latest.evidence_json)>=1)
+      return {ok:true,review_id:id,review_status:latest.status,analysis_status:latest.status==='analyzing'?'analyzing':'queued',retry_available:false};
+    throw Error('ANALYSIS_RETRY_CONFLICT');
+  }
   return {ok:true,review_id:id,review_status:'pending_analysis',analysis_status:'queued',analysis_stage:'queued',retry_available:false};
 }
