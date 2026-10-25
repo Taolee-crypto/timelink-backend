@@ -329,6 +329,28 @@ router.post('/channels', async (c) => {
         atomic:[channelInsert,...salesStatements],metadata:{service:'channel_open',fee_tl:finalFee}});
     }else await c.env.DB.batch([channelInsert,...salesStatements]);
 
+    // Store welcome top-up: 42,500 TL personal signup + 57,500 TL store bonus.
+    // A user receives this top-up only once, regardless of store count.
+    await assertTLAtomScale(c.env.DB);
+    const welcomeKey = 'v5-store-welcome-user-' + auth.id;
+    const priorWelcome = await c.env.DB.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?')
+      .bind(welcomeKey).first<any>();
+    if (!priorWelcome) {
+      const bonusAtoms = tlToAtoms(57500);
+      const destination = await ensureLedgerAccount(c.env.DB,'user',auth.id,'TL','wallet_bonus');
+      const source = await ensureLedgerAccount(c.env.DB,'system','v5-store-welcome','TL','issuance');
+      await postLedgerTransaction(c.env.DB,{
+        idempotencyKey:welcomeKey,transactionType:'store_welcome_bonus',source:'v5_promotion',
+        referenceType:'user',referenceId:String(auth.id),
+        description:'스토어 가입 추가 축하금 57,500 TL',
+        metadata:{non_redeemable:true,store_welcome:true},
+        issuanceStatements:[c.env.DB.prepare('UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?')
+          .bind(bonusAtoms,source)],
+        lines:[{accountId:source,assetCode:'TL',amountAtoms:-bonusAtoms},
+          {accountId:destination,assetCode:'TL',amountAtoms:bonusAtoms}]
+      });
+    }
+
     // ⭐ 체험 구독 생성
     if (trial) {
       const ins = await c.env.DB.prepare(
