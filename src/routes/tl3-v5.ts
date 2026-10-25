@@ -239,22 +239,8 @@ router.post('/manufacture', async (c) => {
     await ensureD1Storage(c.env.DB);
 
     const sourceHash = hex(await sha256(raw));
-    // The V5 manufacture endpoint receives MP3 bytes directly, bypassing legacy release routes.
-    // Bind clearance to the server-calculated hash and authenticated uploader, never a client review ID.
-    let gateRecord: {id:string;status:string}|null = null;
-    try {
-      gateRecord = await c.env.DB.prepare(
-        "SELECT id,status FROM v5_music_gate_reviews WHERE user_id=? AND source_sha256=? AND status='approved' ORDER BY decided_at DESC LIMIT 1"
-      ).bind(userId,sourceHash).first<{id:string;status:string}>();
-    } catch (e) {
-      console.error('[V5_MUSIC_GATE_MANUFACTURE]',e);
-      return c.json({ok:false,code:'MUSIC_GATE_NOT_READY',error:'음원 심사 시스템을 사용할 수 없습니다.'},503);
-    }
-    if(!gateRecord) return c.json({
-      ok:false,code:'MUSIC_GATE_APPROVAL_REQUIRED',
-      error:'MP3 원본의 음원 심사가 완료되어야 TL3로 변환할 수 있습니다.',
-      source_sha256:sourceHash
-    },409);
+    // AI screening is advisory only. Authentication, source hashing, MP3 validation
+    // and rights declarations remain enforced independently of AI availability/results.
     // Rights evidence is embedded inside the encrypted V5 manifest.
     // Imported catalogue metadata is informational, never proof of ownership.
     const spotifyReference=await c.env.DB.prepare('SELECT metadata_json FROM tl_creator_spotify_metadata WHERE file_id=? AND user_id=?')

@@ -66,7 +66,7 @@ export async function musicGateHealth(env:Env) {
     const last=await env.DB.prepare('SELECT created_at,to_status FROM v5_music_gate_audit ORDER BY id DESC LIMIT 1')
       .first<{created_at:string;to_status:string}>();
     return {ok:true,pipeline_version:MUSIC_GATE_PIPELINE_VERSION,...config,schema_ready:true,
-      ready:config.enabled&&config.providerConfigured,automatic_approval_enabled:false,
+      ready:config.enabled&&config.providerConfigured,automatic_approval_enabled:false,upload_requires_ai_approval:false,screening_mode:'profanity_advisory',
       last_event_at:last?.created_at||null,last_event_status:last?.to_status||null};
   }catch {return {ok:false,pipeline_version:MUSIC_GATE_PIPELINE_VERSION,...config,
     schema_ready:false,ready:false,automatic_approval_enabled:false};}
@@ -131,14 +131,9 @@ export async function runMusicGateAnalysis(env:Env, request:typeof fetch=fetch) 
     const result=await analyzeGateAudio(audio,{apiKey:env.MUSIC_GATE_GEMINI_API_KEY!,model:env.MUSIC_GATE_GEMINI_MODEL!,onStage:progress},request);
     await progress('saving_result');
     const a=result.analysis;
-    reasons=[...a.risk_signals.map(s=>'AI_RISK_'+s.toUpperCase())];
-    if(!a.audio_understood||!a.full_audio_reviewed||a.unsafe_content==='unknown')reasons.push('INCOMPLETE_AUDIO_UNDERSTANDING');
-    if(a.music_probability<0.98&&a.speech_probability<0.98)reasons.push('UNCERTAIN_AUDIO_CLASSIFICATION');
-    // The AI intake gate checks whether the uploaded audio is plausibly music.
-    // Catalog and rights verification belong to a separate release/payout workflow.
-    // Do not pretend that an independent decoder or fingerprint service ran.
-    const autoApproved = reasons.length === 0 && a.audio_understood === true &&
-      a.full_audio_reviewed === true && a.unsafe_content === 'clear' &&
+    // Advisory profanity screening only; these results do not gate manufacture.
+    reasons=a.risk_signals.includes('profanity')?['AI_RISK_PROFANITY']:[];
+    const autoApproved = a.audio_understood && a.full_audio_reviewed && a.unsafe_content === 'clear' &&
       a.music_probability >= 0.98 && a.risk_signals.length === 0;
     evidence={pipeline_version:MUSIC_GATE_PIPELINE_VERSION,provider:'gemini',analysis_stage:'finished',manual_retry_count:manualRetryCount,cas_metadata_recovered:metadataRecovered,fetch_redirect_recovered:redirectRecovered,
       requested_model:env.MUSIC_GATE_GEMINI_MODEL,model_version:result.modelVersion,response_id:result.responseId,

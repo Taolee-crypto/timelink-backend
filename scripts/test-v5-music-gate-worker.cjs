@@ -119,8 +119,8 @@ async function main(){
   assert.equal(JSON.parse(review(id).evidence_json).automatic_approval,true);
   console.log('PASS cancelled/expired work cannot overwrite decisions; dead workers recover');
 
-  id=insert();await api.runMusicGateAnalysis(env,async()=>response({...clear,unsafe_content:'suspected',risk_signals:['targeted_harassment']}));
-  assert.ok(JSON.parse(review(id).reasons_json).includes('AI_RISK_TARGETED_HARASSMENT'));
+  id=insert();await api.runMusicGateAnalysis(env,async()=>response({...clear,unsafe_content:'suspected',risk_signals:['profanity']}));
+  assert.ok(JSON.parse(review(id).reasons_json).includes('AI_RISK_PROFANITY'));
   assert.equal(review(id).status,'review_required');
   id=insert();await api.runMusicGateAnalysis(env,async()=>response(clear,{promptFeedback:{blockReason:'SAFETY'},candidates:[]}));
   assert.equal(review(id).analysis_error,'AI_SAFETY_BLOCKED');
