@@ -220,7 +220,7 @@ router.post('/channels', async (c) => {
   const images = JSON.stringify(body.images || []);
   const playlist = JSON.stringify(body.playlist || []);
   const schedules = JSON.stringify(body.schedules || []);
-  const trial = !!body.trial;
+  const trial = false; // V5 store membership is free, not a time-limited trial.
   const trialDays = Math.max(1, Math.min(180, Number(body.trial_days) || 90));
   const discountCode = String(body.discount_code || '').trim().toUpperCase();
 
@@ -254,11 +254,7 @@ router.post('/channels', async (c) => {
   }
 
   // V5: store registration is free; legacy paid channel signup is retired.
-  let channelFee = 0;
-  try {
-    const feeRow = await c.env.DB.prepare("SELECT value FROM tl_settings WHERE key='cafe_channel_fee'").first<any>();
-    // Legacy cafe_channel_fee setting is ignored for free store registration.
-  } catch(_) {}
+  const channelFee = 0; // Retired paid cafe signup; do not read legacy fee settings.
 
   // ⭐ 할인 코드 검증
   let finalFee = channelFee;
