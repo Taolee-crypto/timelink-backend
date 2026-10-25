@@ -66,7 +66,7 @@ export async function analyzeGateAudio(
   await config.onStage?.('requesting_ai');
   try {
     response=await request(`https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`,{
-      method:'POST',redirect:'error',signal:AbortSignal.timeout(60000),
+      method:'POST',redirect:'manual',signal:AbortSignal.timeout(60000),
       headers:{'Content-Type':'application/json','x-goog-api-key':config.apiKey},
       body:JSON.stringify({
         systemInstruction:{parts:[{text:
@@ -87,6 +87,7 @@ export async function analyzeGateAudio(
       })
     });
   }catch { throw new GateAnalysisError('AI_NETWORK_ERROR',true); }
+  if(response.status>=300&&response.status<400)throw new GateAnalysisError('AI_REDIRECT_REJECTED',false);
   if(!response.ok)throw new GateAnalysisError(`AI_HTTP_${response.status}`,
     response.status===429||response.status===408||response.status>=500);
   let payload:any;

@@ -17,6 +17,7 @@ jobs:
       - run: npm ci
       - run: npx --no-install tsc --noEmit
       - run: node scripts/test-v5-music-gate-worker.cjs
+      - run: node scripts/test-v5-music-gate-workerd.cjs
       - run: node scripts/test-v5-trace-remediation.cjs
       - run: node scripts/test-v5-signup-policy.cjs
       - run: node scripts/test-v5-trace-d1.cjs

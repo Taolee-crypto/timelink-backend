@@ -46,7 +46,7 @@ const review=id=>sqlite.prepare('SELECT * FROM v5_music_gate_reviews WHERE id=?'
 const mock=async(url,init)=>{
   calls++;assert.equal(new URL(url).hostname,'generativelanguage.googleapis.com');
   assert.equal(init.headers['x-goog-api-key'],env.MUSIC_GATE_GEMINI_API_KEY);
-  assert.equal(init.redirect,'error');
+  assert.equal(init.redirect,'manual');
   const body=JSON.parse(init.body);
   assert.deepEqual(Buffer.from(body.contents[0].parts[0].inlineData.data,'base64'),audio);
   return response();
@@ -222,6 +222,22 @@ async function main(){
   sqlite.prepare("UPDATE v5_music_gate_reviews SET status='review_required',analysis_error='ANALYSIS_LEASE_EXPIRED',evidence_json=? WHERE id=?").run(JSON.stringify({submitted_by_admin_user_id:2}),manualId);
   await api.recoverUnstartedMusicGateAnalyses(env);assert.equal(review(manualId).status,'review_required');
   console.log('PASS D1 total_changes audit semantics: RETURNING CAS, automatic recovery once, no human evidence or real-start recovery');
+
+
+  await assert.rejects(api.analyzeGateAudio(audio,{apiKey:'fixture',model:'gemini-fixture'},async()=>new Response(null,{status:302,headers:{Location:'https://unexpected.invalid'}})),/AI_REDIRECT_REJECTED/);
+  console.log('PASS Worker-compatible manual redirect handling never follows a credentials-bearing request');
+
+
+  const redirectId=insert();
+  sqlite.prepare("UPDATE v5_music_gate_reviews SET status='review_required',analysis_error='AI_NETWORK_ERROR',analysis_attempts=3,evidence_json=? WHERE id=?").run(JSON.stringify({analysis_stage:'requesting_ai',manual_retry_count:1}),redirectId);
+  await api.recoverInvalidRedirectMusicGateAnalyses(env);
+  assert.equal(review(redirectId).status,'pending_analysis');
+  await api.runMusicGateAnalysis(env,mock);
+  assert.equal(JSON.parse(review(redirectId).evidence_json).fetch_redirect_recovered,1);
+  assert.equal(JSON.parse(review(redirectId).evidence_json).analysis_stage,'finished');
+  sqlite.prepare("UPDATE v5_music_gate_reviews SET status='review_required',analysis_error='AI_NETWORK_ERROR',evidence_json=? WHERE id=?").run(JSON.stringify({analysis_stage:'requesting_ai',fetch_redirect_recovered:1}),redirectId);
+  await api.recoverInvalidRedirectMusicGateAnalyses(env);assert.equal(review(redirectId).status,'review_required');
+  console.log('PASS one-time recovery of pre-transmission Worker redirect failures preserves the existing review');
 
   console.log('ALL MUSIC GATE INTEGRATION CHECKS PASSED (mock provider; live inference not tested)');
 }

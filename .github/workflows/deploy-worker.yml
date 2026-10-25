@@ -44,6 +44,9 @@ jobs:
       - name: Verify Music Gate analysis and review integration
         run: node scripts/test-v5-music-gate-worker.cjs
 
+      - name: Verify Music Gate in the actual Cloudflare runtime
+        run: node scripts/test-v5-music-gate-workerd.cjs
+
       - name: Validate Worker bundle
         run: npx wrangler deploy --dry-run --outdir .wrangler-dist
 
