@@ -1234,6 +1234,7 @@ router.get('/live/:djId{[0-9]+}/now', async (c) => {
   if (!dj.is_live) return c.json({ ok: false, error: '방송 중 아님', is_live: false }, 200);
   if(await enforceDjDailyLimit(c.env.DB,djId))return c.json({ok:false,code:'DJ_DAILY_LIMIT',error:'DJ 일일 방송 6시간 제한',is_live:false},200);
 
+  const remainingBroadcastMs=Math.max(0,21600000-await djDailyAirtime(c.env.DB,djId,Date.now()));
   const track=dj.live_current_track_id?await djTrack(c.env.DB,String(dj.live_current_track_id)):null;
   const now = Date.now();
   const elapsedMs = dj.live_current_started_at
@@ -1243,6 +1244,7 @@ router.get('/live/:djId{[0-9]+}/now', async (c) => {
   return c.json({
     ok: true,
     is_live: true,
+    remaining_broadcast_ms: remainingBroadcastMs,
     dj: {
       id: dj.id,
       dj_name: dj.dj_name,
