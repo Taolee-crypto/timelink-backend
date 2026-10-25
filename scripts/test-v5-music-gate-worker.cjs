@@ -117,9 +117,11 @@ async function main(){
   assert.equal(review(id).status,'review_required');
   id=insert();await api.runMusicGateAnalysis(env,async()=>response(clear,{promptFeedback:{blockReason:'SAFETY'},candidates:[]}));
   assert.equal(review(id).analysis_error,'AI_SAFETY_BLOCKED');
-  for(const value of [{...clear,music_probability:NaN},{...clear,risk_signals:['invented']},
-    {...clear,risk_signals:['credible_threat']},{...clear,unsafe_content:'suspected'}])
+  for(const value of [{...clear,music_probability:NaN},{...clear,risk_signals:['invented']}])
       assert.throws(()=>api.validateAudioAnalysis(value),/INVALID_AI_OUTPUT/);
+  const contradictory=api.validateAudioAnalysis({...clear,risk_signals:['profanity']});
+  assert.equal(contradictory.unsafe_content,'suspected');assert.equal(contradictory.provider_unsafe_content,'clear');assert.deepEqual(contradictory.risk_signals,['profanity']);
+  assert.deepEqual(api.validateAudioAnalysis({...clear,unsafe_content:'suspected'}).risk_signals,['uncertain_context']);
   await assert.rejects(api.analyzeGateAudio(audio,{apiKey:'fixture',model:'gemini-fixture'},async()=>response(clear,{candidates:[{finishReason:'MAX_TOKENS'}]})),/INCOMPLETE_AI_RESPONSE/);
   await assert.rejects(api.analyzeGateAudio(audio,{apiKey:'fixture',model:'gemini-fixture'},async()=>new Response('x'.repeat(65537))),/INVALID_AI_RESPONSE/);
   await assert.rejects(api.analyzeGateAudio(audio,{apiKey:'fixture',model:'gemini-fixture'},async()=>{throw Error('secret upstream message')}),/AI_NETWORK_ERROR/);

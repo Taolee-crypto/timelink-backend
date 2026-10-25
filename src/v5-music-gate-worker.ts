@@ -147,7 +147,7 @@ export async function runMusicGateAnalysis(env:Env, request:typeof fetch=fetch) 
     errorCode=problem.code;retry=problem.retryable&&attempt<MAX_ATTEMPTS;
     reasons=[problem.code];
     evidence={pipeline_version:MUSIC_GATE_PIPELINE_VERSION,source_sha256:job.source_sha256,analysis_stage:stage,manual_retry_count:manualRetryCount,cas_metadata_recovered:metadataRecovered,fetch_redirect_recovered:redirectRecovered,
-      analysis_complete:false,error:problem.code,attempt,automatic_approval:false,
+      analysis_complete:false,error:problem.code,analysis_detail:problem.detail||null,attempt,automatic_approval:false,
       rights_verified:false,rewards_approved:false};
   }
   const encoded=JSON.stringify(evidence),digest=await hashBytes(new TextEncoder().encode(encoded));
