@@ -175,6 +175,18 @@ async function main(){
   assert.equal(diagnostic.analysis_status,'not_started');assert.equal(diagnostic.analysis_error,null);
   console.log('PASS owner diagnostics distinguish real inference, provider errors and missing checks without raw evidence');
 
+
+  res=await api.worker.fetch(new Request('https://fixture.test/api/v1/music-gate/reviews',{headers:{Authorization:'Bearer '+token}}),env,{});
+  assert.equal(res.status,200);const history=await res.json();assert.equal(history.account_id,1);
+  assert.ok(history.reviews.some(r=>r.review_id===id));assert.ok(!history.reviews.some(r=>r.review_id===other));
+  assert.ok(!JSON.stringify(history).includes('source_key'));assert.ok(!JSON.stringify(history).includes('evidence_json'));
+  assert.ok(history.reviews.length<=20);
+  res=await api.worker.fetch(new Request('https://fixture.test/api/v1/music-gate/reviews'),env,{});
+  assert.equal(res.status,401);
+  res=await api.worker.fetch(new Request('https://fixture.test/api/v1/music-gate/reviews/'+other,{headers:{Authorization:'Bearer '+token}}),env,{});
+  assert.equal(res.status,404);const absent=await res.json();assert.equal(absent.account_id,1);assert.equal(absent.error,'REVIEW_NOT_FOUND');
+  console.log('PASS recent reviews: current account only, bounded history, no private evidence and indistinguishable foreign/missing IDs');
+
   console.log('ALL MUSIC GATE INTEGRATION CHECKS PASSED (mock provider; live inference not tested)');
 }
 main().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>{sqlite.close();fs.rmSync(temp,{recursive:true,force:true})});

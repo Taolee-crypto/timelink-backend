@@ -1159,6 +1159,24 @@ app.post('/api/upload/mp3', async (c) => {
   }catch(e:any){ return c.json({ok:false,error:e?.message||'MP3 저장 실패'},500); }
 });
 
+// Recent review history is owner-scoped; never search another user's records.
+app.get('/api/v1/music-gate/reviews', async c => {
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
+  const user=token?await verifyToken(token,c.env.JWT_SECRET).catch(()=>null):null;
+  const userId=Number(user?.sub||0);
+  if(!Number.isSafeInteger(userId)||userId<=0)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+  try {
+    const result=await c.env.DB.prepare(
+      'SELECT id,status,registration_mode,source_sha256,reasons_json,evidence_json,analysis_error,analysis_attempts,created_at,updated_at FROM v5_music_gate_reviews WHERE user_id=? ORDER BY created_at DESC,id DESC LIMIT 20'
+    ).bind(userId).all<any>();
+    return c.json({ok:true,account_id:userId,reviews:(result.results||[]).map(record=>({
+      review_id:record.id,review_status:record.status,registration_mode:record.registration_mode,
+      created_at:record.created_at,updated_at:record.updated_at,
+      can_convert_tl3:record.status==='approved',can_publish:false,...creatorMusicGateDetails(record)
+    }))});
+  }catch {return c.json({ok:false,error:'MUSIC_GATE_SCHEMA_NOT_READY'},503);}
+});
+
 // Authenticated Creator Studio polling: expose only the caller's own gate status.
 app.get('/api/v1/music-gate/reviews/:id', async (c) => {
   const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
@@ -1171,7 +1189,7 @@ app.get('/api/v1/music-gate/reviews/:id', async (c) => {
     const record=await c.env.DB.prepare(
       'SELECT id,status,registration_mode,source_sha256,reasons_json,evidence_json,analysis_error,analysis_attempts,created_at,updated_at FROM v5_music_gate_reviews WHERE id=? AND user_id=?'
     ).bind(id,userId).first<any>();
-    if(!record)return c.json({ok:false,error:'REVIEW_NOT_FOUND'},404);
+    if(!record)return c.json({ok:false,error:'REVIEW_NOT_FOUND',account_id:userId,message:'현재 로그인 계정에서 이 심사 기록을 찾을 수 없습니다. 내 심사 목록을 확인하세요.'},404);
     return c.json({ok:true,review_id:record.id,review_status:record.status,
       registration_mode:record.registration_mode,can_convert_tl3:record.status==='approved',
       ...creatorMusicGateDetails(record),can_publish:false,created_at:record.created_at,updated_at:record.updated_at});
