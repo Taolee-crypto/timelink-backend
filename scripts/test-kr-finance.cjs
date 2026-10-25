@@ -35,6 +35,18 @@ await assert.rejects(post({template:'manual',source_key:'bad:1',accounting_revie
 assert.throws(()=>raw.prepare('UPDATE v5_kr_lines SET amount_krw=0 WHERE journal_id=?').run(first.id),/IMMUTABLE/);
 await ctx.closeKrPeriod(db,{month:'2026-09',reconciled:true,reason:'대사 및 검토 완료'},33);
 await assert.rejects(post({template:'expense',source_key:'expense:closed',amount_krw:1000,vat_type:'exempt'}),/마감/);
+await assert.rejects(post({template:'expense',source_key:'future:1',business_date:'2100-01-01',amount_krw:1000,vat_type:'exempt'}),/미래/);
+const exp=await post({template:'expense',source_key:'expense:oct',business_date:'2026-10-25',amount_krw:1000,vat_type:'exempt'});
+assert.equal((await ctx.readKrFinance(db,'2026-09')).summary.booked_profit_krw,17909);
+assert.equal((await ctx.readKrFinance(db,'2026-09')).summary.bank_krw,29310);
+await post({template:'reversal',source_key:'reversal:'+exp.id,reverses:exp.id,business_date:'2026-10-25'});
+assert.equal((await ctx.readKrFinance(db,'2026-10')).summary.bank_krw,29310);
+const originalRights=raw.prepare("SELECT id FROM v5_kr_journals WHERE source_key='rights:1'").get().id;
+await assert.rejects(post({template:'reversal',source_key:'reversal:'+originalRights,reverses:originalRights,business_date:'2026-10-25'}),/잔액/);
+await post({template:'manual',source_key:'prepay:2026',business_date:'2026-10-25',accounting_reviewed:true,lines:[{account:'national_prepaid',amount_krw:1000},{account:'opening_equity',amount_krw:-1000}]});
+await post({template:'corporate_accrual',source_key:'corporate:2026',business_date:'2026-10-25',year:2026,entity_type:'ordinary',national_base_krw:100000,local_base_krw:100000,national_prepaid_krw:1000});
+r=await ctx.readKrFinance(db,'2026-10');assert.equal(r.summary.corporate_national_krw,9000);assert.equal(r.summary.corporate_local_krw,1000);assert.equal(r.summary.booked_cost_krw,11000);
+assert.equal(Number(r.accounts.find(a=>a.code==='national_prepaid').balance_krw),0);
 assert.equal(raw.prepare("SELECT COUNT(*) n FROM v5_kr_journals WHERE status='draft'").get().n,0);
 assert.equal(raw.prepare("SELECT SUM(amount_krw) n FROM v5_kr_lines").get().n,0);
 assert.equal(raw.prepare('SELECT tl_granted FROM tl_payments WHERE id=7').get().tl_granted,115000);

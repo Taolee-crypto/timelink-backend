@@ -75,7 +75,9 @@ async function accountBalance(db:D1Database,account:string,uid:number|null=null)
  const r=await db.prepare("SELECT COALESCE(SUM(l.amount_krw),0) amount FROM v5_kr_lines l JOIN v5_kr_journals j ON j.id=l.journal_id WHERE j.status='posted' AND l.account=? AND (? IS NULL OR j.user_id=?)").bind(account,uid,uid).first<any>();return Number(r?.amount||0);
 }
 export async function postKrJournal(db:D1Database,input:KrInput,actor:number){
- const businessDate=date(input.business_date),description=text(input.description),evidence=text(input.evidence),template=text(input.template,2,30);
+ const businessDate=date(input.business_date);
+ if(businessDate>new Date(Date.now()+9*3600000).toISOString().slice(0,10))fail('미래 회계일에는 기표할 수 없습니다.');
+ const description=text(input.description),evidence=text(input.evidence),template=text(input.template,2,30);
  const uid=userId(input.user_id),policy=await readKrPolicy(db);let key=text(input.source_key,4,160);
  if(!/^[a-zA-Z0-9:_./-]+$/.test(key))fail('원거래 키는 영문·숫자·:_./-만 사용하세요.');
  const fingerprint=canonical(input);
@@ -169,7 +171,7 @@ export async function readKrFinance(db:D1Database,month:string){
  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))fail('조회 월 확인 필요');
  const policy=await readKrPolicy(db);
  const result=await db.batch([
- db.prepare(`SELECT a.code,a.name,a.kind,COALESCE(SUM(CASE WHEN j.status='posted' THEN l.amount_krw ELSE 0 END),0) balance_krw FROM v5_kr_accounts a LEFT JOIN v5_kr_lines l ON l.account=a.code LEFT JOIN v5_kr_journals j ON j.id=l.journal_id GROUP BY a.code ORDER BY a.kind,a.code`),
+ db.prepare(`SELECT a.code,a.name,a.kind,COALESCE(SUM(CASE WHEN j.status='posted' AND substr(j.business_date,1,7)<=? THEN l.amount_krw ELSE 0 END),0) balance_krw FROM v5_kr_accounts a LEFT JOIN v5_kr_lines l ON l.account=a.code LEFT JOIN v5_kr_journals j ON j.id=l.journal_id GROUP BY a.code ORDER BY a.kind,a.code`).bind(month),
  db.prepare(`SELECT a.code,a.kind,COALESCE(SUM(l.amount_krw),0) balance_krw FROM v5_kr_lines l JOIN v5_kr_accounts a ON a.code=l.account JOIN v5_kr_journals j ON j.id=l.journal_id WHERE j.status='posted' AND substr(j.business_date,1,7)=? GROUP BY a.code`).bind(month),
  db.prepare("SELECT j.* FROM v5_kr_journals j WHERE j.status='posted' ORDER BY j.business_date DESC,j.created_at DESC LIMIT 100"),
  db.prepare('SELECT * FROM v5_kr_tax_profiles ORDER BY user_id LIMIT 200'),
