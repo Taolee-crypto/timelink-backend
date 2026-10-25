@@ -78,6 +78,37 @@ payment.post('/v5/premium/prepare',async c=>{
  }catch{return c.json({ok:false,error:'PREPARATION_UNAVAILABLE'},503);}
 });
 
+// Premium orders: cash is a simulated test payment; TL_P uses the real V5 ledger.
+payment.post('/v5/premium/checkout',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null);
+ const prices:Record<string,number>={trial:5000,basic:15000,focused:30000,premium:50000};
+ const ids=b?.file_ids,plan=String(b?.plan||''),method=String(b?.method||'');
+ if(!Array.isArray(ids)||ids.length<1||ids.length>30||ids.some((x:any)=>!Number.isSafeInteger(x)||x<1)||new Set(ids).size!==ids.length||!Object.hasOwn(prices,plan)||!['cash','tl'].includes(method)||b?.rights_accepted!==true||typeof b?.request_id!=='string'||!/^[a-zA-Z0-9_-]{16,100}$/.test(b.request_id))return c.json({ok:false,error:'INVALID_REQUEST'},400);
+ const orderId='v5promo_'+uid+'_'+b.request_id,amount=prices[plan]*ids.length*(method==='tl'?2:1);
+ try{
+  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS v5_premium_orders(order_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,method TEXT NOT NULL,plan TEXT NOT NULL,file_ids_json TEXT NOT NULL,amount INTEGER NOT NULL,status TEXT NOT NULL,created_at TEXT DEFAULT (datetime('now')))`).run();
+  const existing=await c.env.DB.prepare('SELECT * FROM v5_premium_orders WHERE order_id=?').bind(orderId).first<any>();
+  if(existing){if(existing.user_id!=uid||existing.method!==method||existing.plan!==plan||existing.file_ids_json!==JSON.stringify(ids))return c.json({ok:false,error:'ORDER_CONFLICT'},409);return c.json({ok:true,order_id:orderId,status:existing.status,amount:existing.amount,replayed:true});}
+  const matches=await c.env.DB.prepare(`SELECT COUNT(DISTINCT f.id) n FROM tl_files f JOIN tl3_v5_releases v ON v.file_id=f.id WHERE f.id IN (${ids.map(()=>'?').join(',')}) AND f.user_id=? AND f.shared=1 AND v.status='sealed' AND COALESCE(f.revenue_held,0)=0`).bind(...ids,Number(uid)).first<any>();
+  if(Number(matches?.n)!==ids.length)return c.json({ok:false,error:'TRACK_NOT_ELIGIBLE'},403);
+  const status=method==='cash'?'simulated_paid_pending_broadcast':'funded_pending_broadcast';
+  const insert=c.env.DB.prepare('INSERT INTO v5_premium_orders(order_id,user_id,method,plan,file_ids_json,amount,status) VALUES(?,?,?,?,?,?,?)').bind(orderId,Number(uid),method,plan,JSON.stringify(ids),amount,status);
+  if(method==='cash'){
+   // Explicitly simulated: never contacts a payment provider or claims real funds.
+   await insert.run();return c.json({ok:true,order_id:orderId,status,amount,currency:'KRW',simulated:true});
+  }
+  await assertTLAtomScale(c.env.DB);
+  const from=await ensureLedgerAccount(c.env.DB,'user',uid,'TL','wallet_paid');
+  const to=await ensureLedgerAccount(c.env.DB,'escrow',orderId,'TL','premium_budget');
+  const atoms=tlToAtoms(amount);
+  const balance=await c.env.DB.prepare('SELECT available_atoms FROM v3_economy_balances WHERE account_id=?').bind(from).first<any>();
+  if(Number(balance?.available_atoms||0)<atoms)return c.json({ok:false,error:'INSUFFICIENT_TL_P',required_tl:amount},409);
+  await postLedgerTransaction(c.env.DB,{idempotencyKey:'premium:'+orderId,transactionType:'premium_budget_reserve',source:'premium_tl',referenceType:'premium_order',referenceId:orderId,actorUserId:uid,description:'TL PREMIUM 홍보 예산 보관',metadata:{plan,file_ids:ids,amount},lines:[{accountId:from,assetCode:'TL',amountAtoms:-atoms},{accountId:to,assetCode:'TL',amountAtoms:atoms}],atomicStatements:[insert]});
+  return c.json({ok:true,order_id:orderId,status,amount,currency:'TL',simulated:false});
+ }catch(e:any){console.error('[PREMIUM_CHECKOUT]',e);return c.json({ok:false,error:'CHECKOUT_FAILED'},503);}
+});
+
 /* ──────────────────────────────────────────────────
    결제 내역 테이블 생성 (첫 요청 시 자동)
    CREATE TABLE tl_payments (
