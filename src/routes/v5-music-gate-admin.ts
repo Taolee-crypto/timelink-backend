@@ -2,8 +2,54 @@ import { Hono } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 import { decideInitialGate } from '../v5-ai-music-gate-automation-policy';
+import { musicGateHealth, runMusicGateAnalysis } from '../v5-music-gate-worker';
 
 const router = new Hono<{ Bindings: Env }>();
+
+// Length differences are authorization failures, not configuration failures.
+function serviceStatus(env:Env,supplied:string):403|503|null {
+  const expected=env.MUSIC_GATE_WORKER_SECRET||'';
+  if(expected.length<32)return 503;
+  const encoder=new TextEncoder(),a=encoder.encode(expected),b=encoder.encode(supplied);
+  let diff=a.length^b.length;
+  for(let i=0;i<a.length;i++)diff|=a[i]^(b[i]||0);
+  return diff===0?null:403;
+}
+
+router.get('/automation/health',async c=>{
+  const status=serviceStatus(c.env,c.req.header('X-Music-Gate-Worker-Secret')||'');
+  if(status)return c.json({ok:false,error:status===503?'SERVICE_UNAVAILABLE':'SERVICE_FORBIDDEN'},status);
+  const health=await musicGateHealth(c.env);
+  return c.json(health,health.ready?200:503);
+});
+router.post('/automation/run',async c=>{
+  const status=serviceStatus(c.env,c.req.header('X-Music-Gate-Worker-Secret')||'');
+  if(status)return c.json({ok:false,error:status===503?'SERVICE_UNAVAILABLE':'SERVICE_FORBIDDEN'},status);
+  try {
+    const result=await runMusicGateAnalysis(c.env);
+    return c.json({ok:!['not_configured','schema_not_ready'].includes(result.state),...result},
+      ['not_configured','schema_not_ready'].includes(result.state)?503:200);
+  }catch {return c.json({ok:false,error:'ANALYSIS_CYCLE_UNAVAILABLE'},503);}
+});
+
+router.get('/reviews/:id',async c=>{
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
+  const payload=token?await verifyToken(token,c.env.JWT_SECRET).catch(()=>null):null;
+  const actor=Number(payload?.sub||0);
+  if(!Number.isSafeInteger(actor)||actor<=0)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const admin=await c.env.DB.prepare('SELECT role,is_active FROM users WHERE id=?').bind(actor).first<{role:string;is_active:number}>();
+  if(admin?.is_active!==1||String(admin.role).toLowerCase()!=='admin')return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const id=c.req.param('id');
+  if(!/^[a-f0-9-]{36}$/i.test(id))return c.json({ok:false,error:'INVALID_REVIEW_ID'},400);
+  try {
+    const review=await c.env.DB.prepare(`SELECT id,user_id,source_sha256,registration_mode,status,
+      reasons_json,classifier_version,evidence_json,evidence_sha256,analysis_attempts,analysis_error,
+      reviewer_user_id,reviewer_note,created_at,updated_at,decided_at FROM v5_music_gate_reviews WHERE id=?`).bind(id).first();
+    if(!review)return c.json({ok:false,error:'REVIEW_NOT_FOUND'},404);
+    const audit=await c.env.DB.prepare('SELECT * FROM v5_music_gate_audit WHERE review_id=? ORDER BY id DESC LIMIT 100').bind(id).all();
+    return c.json({ok:true,review,audit:audit.results||[]});
+  }catch {return c.json({ok:false,error:'MUSIC_GATE_SCHEMA_NOT_READY'},503);}
+});
 
 router.get('/reviews', async (c) => {
   const token = (c.req.header('Authorization') || '').replace(/^Bearer /i, '').trim();
@@ -110,6 +156,8 @@ router.post('/reviews/:id/analysis',async c=>{
       fingerprint_matches:body!.fingerprint_matches,catalog_match:body!.catalog_match,
       submitted_by_admin_user_id:actor
     });
+    const evidenceDigest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
+      new TextEncoder().encode(evidence))),n=>n.toString(16).padStart(2,'0')).join('');
     // Only administrator-submitted, complete and unambiguous results can take the
     // initial automated clearance path. This is NOT live AI inference.
     const outcome=decideInitialGate({
@@ -126,8 +174,8 @@ router.post('/reviews/:id/analysis',async c=>{
     const suggestedOutcome=outcome;
     const nextStatus=autoClear?'approved':'review_required';
     const result=await c.env.DB.prepare(
-      "UPDATE v5_music_gate_reviews SET status=?,classifier_version=?,evidence_json=?,reviewer_user_id=?,reviewer_note=?,decided_at=CASE WHEN ?='approved' THEN datetime('now') ELSE NULL END,updated_at=datetime('now') WHERE id=? AND source_sha256=? AND status IN ('pending_analysis','analyzing')"
-    ).bind(nextStatus,version,evidence,autoClear?actor:null,
+      "UPDATE v5_music_gate_reviews SET status=?,classifier_version=?,evidence_json=?,evidence_sha256=?,analysis_token=NULL,analysis_lease_until=NULL,reviewer_user_id=?,reviewer_note=?,decided_at=CASE WHEN ?='approved' THEN datetime('now') ELSE NULL END,updated_at=datetime('now') WHERE id=? AND source_sha256=? AND status IN ('pending_analysis','analyzing')"
+    ).bind(nextStatus,version,evidence,evidenceDigest,autoClear?actor:null,
       autoClear?'Automated technical clearance from administrator-submitted analysis; rights not verified':null,
       nextStatus,id,hash).run();
     if(Number(result.meta?.changes||0)!==1)return c.json({ok:false,error:'ANALYSIS_CONFLICT'},409);
@@ -143,13 +191,8 @@ router.post('/reviews/:id/analysis',async c=>{
  * Never returns original audio or authorizes a publication.
  */
 router.get('/automation/pending', async c=>{
-  const expected=String((c.env as Env & {MUSIC_GATE_WORKER_SECRET?:string}).MUSIC_GATE_WORKER_SECRET||'');
-  const supplied=String(c.req.header('X-Music-Gate-Worker-Secret')||'');
-  if(expected.length<32||supplied.length!==expected.length)
-    return c.json({ok:false,error:'SERVICE_UNAVAILABLE'},503);
-  const a=new TextEncoder().encode(expected),b=new TextEncoder().encode(supplied);
-  let diff=0;for(let i=0;i<a.length;i++)diff|=a[i]^b[i];
-  if(diff!==0)return c.json({ok:false,error:'SERVICE_FORBIDDEN'},403);
+  const status=serviceStatus(c.env,c.req.header('X-Music-Gate-Worker-Secret')||'');
+  if(status)return c.json({ok:false,error:status===503?'SERVICE_UNAVAILABLE':'SERVICE_FORBIDDEN'},status);
   try {
     const rows=await c.env.DB.prepare(
       "SELECT id,user_id,source_key,source_sha256,registration_mode,created_at FROM v5_music_gate_reviews WHERE status='pending_analysis' ORDER BY created_at ASC LIMIT 20"

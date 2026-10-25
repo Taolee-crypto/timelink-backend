@@ -2,6 +2,10 @@ export interface Env {
   DB: D1Database;
   R2?: R2Bucket;
   JWT_SECRET: string;
+  MUSIC_GATE_WORKER_SECRET?: string;
+  MUSIC_GATE_ANALYSIS_ENABLED?: string;
+  MUSIC_GATE_GEMINI_API_KEY?: string;
+  MUSIC_GATE_GEMINI_MODEL?: string;
   CENTRAL_BROADCAST_WORKER_SECRET?: string;
   RESEND_API_KEY: string;
   ENVIRONMENT: string;

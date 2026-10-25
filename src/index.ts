@@ -8,6 +8,7 @@ import tl3V5Router from './routes/tl3-v5';
 import centralBroadcastV5Router from './routes/central-broadcast-v5';
 import tiloV5ApprovalsRouter from './routes/tilo-v5-approvals';
 import v5MusicGateAdminRouter from './routes/v5-music-gate-admin';
+import { musicGateHealth, runMusicGateAnalysis } from './v5-music-gate-worker';
 import tl3PlayerSessionRouter from './tl3-player-session';
 
 import { cors } from 'hono/cors';
@@ -458,6 +459,10 @@ app.route('/api/v5/central-broadcast', centralBroadcastV5Router);
 // Admin review only; no TL payouts are triggered by these routes.
 app.route('/api/admin/tilo-v5', tiloV5ApprovalsRouter);
 app.route('/api/admin/v5/music-gate', v5MusicGateAdminRouter);
+app.get('/api/v1/music-gate/health', async c => {
+  const health=await musicGateHealth(c.env);
+  return c.json(health,health.ready?200:503);
+});
 app.route('/api/v1/users', usersRouter);
 app.route('/api/v3/economy', economyV3Router);
 app.route('/api/v3/music', musicV3Router);
@@ -1155,7 +1160,7 @@ app.post('/api/upload/mp3', async (c) => {
 
 // Authenticated Creator Studio polling: expose only the caller's own gate status.
 app.get('/api/v1/music-gate/reviews/:id', async (c) => {
-  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
   const user=token?await verifyToken(token,c.env.JWT_SECRET).catch(()=>null):null;
   const userId=Number(user?.sub||0);
   if(!Number.isSafeInteger(userId)||userId<=0)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
@@ -4935,5 +4940,6 @@ export default {
   fetch: app.fetch.bind(app),
   async scheduled(_event:ScheduledEvent,env:Env,ctx:ExecutionContext) {
     ctx.waitUntil(refreshTiloCountryClocks(env.DB).catch(error=>console.error('[TILO_CLOCK]',error)));
+    ctx.waitUntil(runMusicGateAnalysis(env).catch(()=>console.error('[MUSIC_GATE_WORKER] ANALYSIS_CYCLE_FAILED')));
   }
 };
