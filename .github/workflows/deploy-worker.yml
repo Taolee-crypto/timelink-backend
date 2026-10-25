@@ -49,6 +49,9 @@ jobs:
       - name: Verify sales managers, owner-controlled stores and cafe service ledger
         run: node scripts/test-sales-managers.cjs
 
+      - name: Verify partner settlement, tax and ledger integration
+        run: node scripts/test-sales-finance.cjs
+
       - name: Verify Korean accounting, tax and closing invariants
         run: node scripts/test-kr-finance.cjs
 

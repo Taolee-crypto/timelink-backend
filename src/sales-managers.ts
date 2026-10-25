@@ -1,5 +1,5 @@
 import {assertTLAtomScale,ensureLedgerAccount,postLedgerTransaction,tlToAtoms,atomsToTl} from './economy-ledger';
-export const SALES_TERMS_VERSION='sales-20261026-v1';
+export const SALES_TERMS_VERSION='sales-20261026-v2';
 type Input=Record<string,any>;
 function bad(s:string):never{throw Error(s);}
 function str(v:any,min=1,max=500){if(typeof v!=='string'||v.trim().length<min||v.length>max)bad('필수 입력값을 확인하세요.');return v.trim();}
@@ -9,10 +9,10 @@ export function salesTerms(p:Input){return{version:SALES_TERMS_VERSION,policy_ve
  '영업 매니저는 가입 국가 내에서 독점 구역 없이 매장 유치와 관리 업무를 수행합니다. DJ는 방송을 제작·운영합니다.',
  '가입비는 표시한 영업 참여·초기 지원의 대가입니다. 자발적 중도 탈퇴 시 원칙적으로 환급하지 않되 법령상 반환 사유와 회사의 계약 불이행 등에 대한 권리는 배제하지 않습니다.',
  '가입 권리의 제3자 양도는 당사자가 매수자와 가격을 협의하고 회사의 자격 확인·계약 승계 등록을 거칩니다. 회사는 재매입·양도가격·수익을 보장하지 않습니다.',
- '매장 방송 서비스 TL 비용의 50%는 영업 매니저와 DJ의 배분 재원이고 나머지 50%는 플랫폼 몫입니다. 이 비용에서 창작자 몫을 추가 배분하지 않으며 음원 사용 보상은 별도입니다.',
+ '유료 재원으로 지불한 매장 방송 서비스 TL 비용의 50%는 영업 매니저와 DJ의 배분 재원이고 나머지 50%는 플랫폼 몫입니다. 이 비용에서 창작자 몫을 추가 배분하지 않으며 음원 사용 보상은 별도입니다.',
  '현재 배분은 영업 매니저 '+(p.manager_bps/100)+'%, DJ '+(p.dj_bps/100)+'%입니다. 관리자 변경은 변경 이후 거래에 적용하고 기존 지급 기록은 유지합니다.',
  '상점주는 담당 매니저 변경을 요청할 수 있습니다. 담당 매니저 변경 이후의 거래부터 새 담당자에게 배분합니다.',
- '현금 재원에서 발생한 배분과 광고·보너스 재원의 배분을 구분하며 후자는 내부 사용 전용입니다. 현금 정산 시 신원·세무 확인 및 원천징수 등이 적용될 수 있습니다.',
+ '가입 선물·광고·보너스 TL 사용에는 매니저와 DJ의 새 보수를 배분하지 않습니다. 유료 재원 배분의 현금 정산에는 계약상 자격·원화 평가·신원·세무 확인과 원천징수 등이 적용될 수 있습니다.',
  '현재 입금 안내는 테스트용 가상 입금 참조번호이며 실제 은행 계좌가 아닙니다. 실제 송금하지 마세요. 테스트 입금은 현금 매출로 기록되지 않습니다.',
  '회원 계정의 서명과 동의 시각, 계약 내용 및 서명 해시를 함께 기록하는 전자서명 방식에 동의합니다.'
 ]};}
@@ -98,7 +98,7 @@ export async function settleCafeService(db:D1Database,input:{payerId:number;chan
   const row=rows.find(r=>r.bucket===bucket);if(!row||left<=0)continue;const take=Math.min(left,Number(row.available_atoms));if(take<=0)continue;left-=take;origin[bucket]=take;
   guards.push(db.prepare("SELECT CASE WHEN EXISTS(SELECT 1 FROM v3_economy_balances WHERE account_id=? AND version=? AND available_atoms>=?) THEN 1 ELSE json_extract('invalid','$') END").bind(row.id,row.version,take));
   add(row.id,-take);
-  const pool=Math.floor(take/2),m=Math.floor(pool*p.manager_bps/5000),d=pool-m,platform=take-pool;
+  const pool=bucket==='wallet_paid'?Math.floor(take/2):0,m=Math.floor(pool*p.manager_bps/5000),d=pool-m,platform=take-pool;
   mt+=m;dt+=d;pt+=platform;if(bucket==='wallet_paid'){if(manager)mp+=m;if(dj)dp+=d;}
   const payoutBucket=bucket==='wallet_paid'?'wallet_paid':'wallet_bonus';
   add(await ensureLedgerAccount(db,manager?'user':'escrow',manager?manager.user_id:input.channelId,'TL',manager?payoutBucket:'cafe_manager_pending_'+bucket),m);

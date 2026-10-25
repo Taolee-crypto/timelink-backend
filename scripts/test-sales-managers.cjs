@@ -21,7 +21,7 @@ function makeFixture(){
 }
 async function seedMember(f,uid,country='KR'){
  const p=await f.core.salesPolicy(f.db);
- await f.core.signSalesContract(f.db,uid,{expected_version:p.version,terms_version:'sales-20261026-v1',display_name:'Manager '+uid,country,signature:[[1,1],[20,15],[40,22],[90,60],[180,90]],accept:true});
+ await f.core.signSalesContract(f.db,uid,{expected_version:p.version,terms_version:'sales-20261026-v2',display_name:'Manager '+uid,country,signature:[[1,1],[20,15],[40,22],[90,60],[180,90]],accept:true});
  await f.core.simulateSalesDeposit(f.db,uid);await f.core.reviewSalesMember(f.db,{user_id:uid,state:'active',reason:'테스트 입금 확인'},99);
 }
 async function makeHttp(f){
@@ -48,8 +48,8 @@ async function run(){
  const paid=await c.ensureLedgerAccount(db,'user',1,'TL','wallet_paid'),ad=await c.ensureLedgerAccount(db,'user',1,'TL','wallet_ad');
  raw.prepare('UPDATE v3_economy_balances SET available_atoms=? WHERE account_id=?').run(1000000000,paid);raw.prepare('UPDATE v3_economy_balances SET available_atoms=? WHERE account_id=?').run(1000000,ad);
  const charge=(key,atoms,managerId=2,djUserId=3,atomic=[])=>c.settleCafeService(db,{payerId:1,channelId:'store1',amountAtoms:atoms,key,managerId,djUserId,atomic});
- let result=await charge('test:bonus',1000000);assert.equal(result.manager_revenue,25);assert.equal(result.dj_revenue,25);assert.equal(result.platform_revenue,50);assert.equal(result.creator_revenue,0);
- assert.equal((await c.cafeWallet(db,2)).tl_b,25);assert.equal((await c.cafeWallet(db,2)).tl_p,0);
+ let result=await charge('test:bonus',1000000);assert.equal(result.manager_revenue,0);assert.equal(result.dj_revenue,0);assert.equal(result.platform_revenue,100);assert.equal(result.creator_revenue,0);
+ assert.equal((await c.cafeWallet(db,2)).tl_b,0);assert.equal((await c.cafeWallet(db,2)).tl_p,0);
  result=await charge('test:paid',2000000);assert.equal((await c.cafeWallet(db,2)).tl_p,50);assert.equal(result.creator_revenue,0);
  assert.equal((await charge('test:paid',2000000)).replayed,true);
  assert.equal(raw.prepare('SELECT tl_p FROM users WHERE id=1').get().tl_p,999999);
