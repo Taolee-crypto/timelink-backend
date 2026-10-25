@@ -1,3 +1,4 @@
+import {readSalesFinance,createSalesSettlement,transitionSalesSettlement} from '../sales-finance';
 import {Hono} from 'hono';
 import type {Env} from '../types';
 import {verifyToken} from '../auth';
@@ -58,6 +59,29 @@ router.post('/stores/:id/renew',async c=>{
  const result=await settleCafeService(c.env.DB,{payerId:uid,channelId:id,amountAtoms:tlToAtoms(p.monthly_fee_tl),key:'cafe:renew:'+id+':'+b.request_id,managerId:link?.manager_user_id,djUserId:link?.dj_user_id,guards,atomic:[c.env.DB.prepare('UPDATE cafe_channels SET expires_at=?,updated_at=? WHERE channel_id=?').bind(expiry,Date.now(),id)],metadata:{service:'monthly_broadcast',expires_at:expiry}});
  return c.json({ok:true,...result});
  }catch(e:any){return c.json({ok:false,error:e.message,current:e.current,required:e.required},e.status===402?402:409);}
+});
+router.get('/admin/finance',async c=>{
+ if(c.get('salesUser').role!=='admin')return c.json({ok:false,error:'관리자 권한 필요'},403);
+ try{return c.json(await readSalesFinance(c.env.DB,c.req.query('month')||new Date(Date.now()+9*3600000).toISOString().slice(0,7)));}catch(e:any){return c.json({ok:false,error:e.message},503);}
+});
+router.get('/admin/payments/:id',async c=>{
+ if(c.get('salesUser').role!=='admin')return c.json({ok:false,error:'관리자 권한 필요'},403);
+ const payment=await c.env.DB.prepare(`SELECT p.*,c.name store_name,m.display_name manager_name,d.dj_name,t.status ledger_status,t.metadata_json,j.id accounting_journal_id FROM v5_sales_payments p LEFT JOIN cafe_channels c ON c.channel_id=p.channel_id LEFT JOIN v5_sales_members m ON m.user_id=p.manager_user_id LEFT JOIN dj_profiles d ON d.user_id=p.dj_user_id LEFT JOIN v3_economy_transactions t ON t.id=p.ledger_transaction_id LEFT JOIN v5_kr_journals j ON j.source_key='sales:service:'||p.id AND j.status='posted' WHERE p.id=?`).bind(c.req.param('id')).first();
+ return payment?c.json({ok:true,payment}):c.json({ok:false,error:'원거래 없음'},404);
+});
+router.get('/admin/settlements/:id',async c=>{
+ if(c.get('salesUser').role!=='admin')return c.json({ok:false,error:'관리자 권한 필요'},403);
+ const id=c.req.param('id'),settlement=await c.env.DB.prepare('SELECT * FROM v5_sales_settlements WHERE id=?').bind(id).first();if(!settlement)return c.json({ok:false,error:'정산 없음'},404);
+ const [items,events]=await Promise.all([c.env.DB.prepare('SELECT i.*,p.channel_id,p.ledger_transaction_id,c.name store_name FROM v5_sales_settlement_items i JOIN v5_sales_payments p ON p.id=i.payment_id LEFT JOIN cafe_channels c ON c.channel_id=p.channel_id WHERE i.settlement_id=?').bind(id).all(),c.env.DB.prepare('SELECT * FROM v5_sales_settlement_events WHERE settlement_id=? ORDER BY created_at,id').bind(id).all()]);
+ return c.json({ok:true,settlement,items:items.results||[],events:events.results||[]});
+});
+router.post('/admin/settlements',async c=>{
+ if(c.get('salesUser').role!=='admin')return c.json({ok:false,error:'관리자 권한 필요'},403);
+ try{return c.json({ok:true,...await createSalesSettlement(c.env.DB,await c.req.json(),c.get('salesUser').id)});}catch(e:any){return c.json({ok:false,error:e.message},400);}
+});
+router.post('/admin/settlements/:id/:action',async c=>{
+ if(c.get('salesUser').role!=='admin')return c.json({ok:false,error:'관리자 권한 필요'},403);
+ try{return c.json({ok:true,...await transitionSalesSettlement(c.env.DB,c.req.param('id'),c.req.param('action'),await c.req.json(),c.get('salesUser').id)});}catch(e:any){return c.json({ok:false,error:e.message},400);}
 });
 router.get('/admin',async c=>{
  if(c.get('salesUser').role!=='admin')return c.json({ok:false,error:'관리자 권한 필요'},403);

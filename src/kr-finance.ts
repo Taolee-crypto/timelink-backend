@@ -30,12 +30,13 @@ export function krWithholding(input:KrInput,profile:KrInput){
  if(base!==expectedBase)fail('부가세 구분에 맞는 원천징수 기준액을 입력하세요.');
  const taxFloor=(v:number)=>Math.floor(v/10)*10;
  let n=0,l=0,method='';
+ if(profile.income_type==='business_taxable'&&profile.vat_type!=='taxable10')fail('과세 사업자 용역은 과세 구분 확인 필요');
  if(profile.income_type==='business_personal'){n=taxFloor(base*3/100);l=taxFloor(n/10);method='사업소득 3% + 지방소득세';}
- else if(profile.income_type==='other_author'){
+ else if(['other_author','other_service'].includes(profile.income_type)){
   const income=base-Math.floor(base*60/100);
   if(input.single_case_confirmed!==true)fail('기타소득은 건별 합산 및 필요경비 60% 적용 여부를 확인하세요.');
-  n=income<=50000?0:taxFloor(income*20/100);l=taxFloor(n/10);method='저작자 기타소득: 필요경비 60%·건별 과세최저한';
- }else if(profile.income_type==='domestic_corporation'){method='내국법인 저작권료: 개인 원천세 미적용';}
+  n=income<=50000?0:taxFloor(income*20/100);l=taxFloor(n/10);method='확인된 기타소득: 필요경비 60%·건별 과세최저한';
+ }else if(['domestic_corporation','business_taxable'].includes(profile.income_type)){method='검토된 사업자 용역·내국법인: 개인 원천세 미적용';}
  else if(profile.income_type==='nonresident'){
   if(!Number.isInteger(profile.national_bps)||!Number.isInteger(profile.local_bps))fail('비거주자 조세조약·국세·지방세 검토 세율이 필요합니다.');
   n=taxFloor(base*profile.national_bps/10000);l=taxFloor(base*profile.local_bps/10000);method='비거주자 검토 세율';
@@ -59,7 +60,7 @@ export async function saveKrPolicy(db:D1Database,input:KrInput,actor:number){
 export async function saveKrProfile(db:D1Database,input:KrInput,actor:number){
  const uid=userId(input.user_id,true)!,reason=text(input.reason),evidence=text(input.evidence);
  if(!await db.prepare('SELECT id FROM users WHERE id=?').bind(uid).first())fail('회원 없음');
- if(!['unclassified','business_personal','other_author','domestic_corporation','nonresident'].includes(input.income_type)||!['unknown','exempt','taxable10','outside'].includes(input.vat_type))fail('소득·부가세 유형 확인 필요');
+ if(!['unclassified','business_personal','other_author','other_service','business_taxable','domestic_corporation','nonresident'].includes(input.income_type)||!['unknown','exempt','taxable10','outside'].includes(input.vat_type))fail('소득·부가세 유형 확인 필요');
  const rates=['national_bps','local_bps'].map(k=>input[k]==null?null:money(input[k],true));
  if(rates.some(v=>v!=null&&v>10000)||(rates[0]||0)+(rates[1]||0)>10000)fail('세율 합계를 확인하세요.');
  if(input.verified===true&&(input.income_type==='unclassified'||input.vat_type==='unknown'||(input.income_type==='nonresident'&&rates.some(v=>v==null))))fail('미확정 분류를 확인 완료로 저장할 수 없습니다.');
@@ -134,10 +135,11 @@ export async function postKrJournal(db:D1Database,input:KrInput,actor:number){
   gross=money(input.amount_krw);if(!['withholding_national','withholding_local','corporate_national','corporate_local'].includes(input.tax_account))fail('국세·지방세 계정 확인 필요');
   cover(input.tax_account,gross,true);add(input.tax_account,gross);add('bank',-gross);
  }else if(template==='reversal'){
-  const old=await db.prepare("SELECT id,user_id FROM v5_kr_journals WHERE id=? AND status='posted'").bind(text(input.reverses,1,100)).first<any>();
+  const old=await db.prepare("SELECT id,user_id,template FROM v5_kr_journals WHERE id=? AND status='posted'").bind(text(input.reverses,1,100)).first<any>();
   if(!old||uid!==old.user_id||key!=='reversal:'+old.id)fail('역분개 원전표 확인 필요');
+  if(old.template==='sales_partner')fail('파트너 정산 전표는 영업관리의 정산 취소·정정 절차를 사용하세요.');
   lines=((await db.prepare('SELECT account,-amount_krw amount_krw FROM v5_kr_lines WHERE journal_id=? ORDER BY id').bind(old.id).all<KrLine>()).results||[]);
-  for(const line of lines){if(['prepaid','creator_payable','rights_held','vat_output','withholding_national','withholding_local','corporate_national','corporate_local','other_payable'].includes(line.account)&&line.amount_krw>0)cover(line.account,line.amount_krw,true,['prepaid','creator_payable'].includes(line.account)?uid:null);}
+  for(const line of lines){if(['prepaid','creator_payable','manager_payable','dj_payable','rights_held','vat_output','withholding_national','withholding_local','corporate_national','corporate_local','other_payable'].includes(line.account)&&line.amount_krw>0)cover(line.account,line.amount_krw,true,['prepaid','creator_payable'].includes(line.account)?uid:null);}
  }else if(template==='manual'){
   if(input.accounting_reviewed!==true||!Array.isArray(input.lines)||input.lines.length<2||input.lines.length>30)fail('회계 검토한 차변·대변 전표가 필요합니다.');
   lines=input.lines.map((l:KrLine)=>{if(!Number.isSafeInteger(l.amount_krw)||!l.amount_krw)fail('원화 정수 확인 필요');money(Math.abs(l.amount_krw));return{account:String(l.account),amount_krw:l.amount_krw};});
@@ -185,10 +187,10 @@ export async function readKrFinance(db:D1Database,month:string){
  const due=(code:string)=>-balance(code)||0;
  const revenues=-monthly.filter(a=>a.kind==='revenue').reduce((n,a)=>n+Number(a.balance_krw),0),costs=monthly.filter(a=>a.kind==='expense').reduce((n,a)=>n+Number(a.balance_krw),0);
  const vatPosition=due('vat_output')-balance('vat_input');
- const protectedNeeds=['prepaid','creator_payable','rights_held','withholding_national','withholding_local','corporate_national','corporate_local','other_payable'].reduce((n,a)=>n+Math.max(0,due(a)),0)+Math.max(0,vatPosition);
+ const protectedNeeds=['prepaid','creator_payable','manager_payable','dj_payable','rights_held','withholding_national','withholding_local','corporate_national','corporate_local','other_payable'].reduce((n,a)=>n+Math.max(0,due(a)),0)+Math.max(0,vatPosition);
  return{ok:true,ledger_version:'V5',jurisdiction:'KR',currency:'KRW',as_of:new Date().toISOString(),month,policy,accounts,
  summary:{bank_krw:policy.opening_confirmed?balance('bank'):null,restricted_cash_krw:policy.opening_confirmed?balance('restricted_cash'):null,
- pg_receivable_krw:due('pg_receivable')*-1,prepaid_liability_krw:due('prepaid'),creator_payable_krw:due('creator_payable'),rights_held_krw:due('rights_held'),
+ pg_receivable_krw:due('pg_receivable')*-1,prepaid_liability_krw:due('prepaid'),creator_payable_krw:due('creator_payable'),manager_payable_krw:due('manager_payable'),dj_payable_krw:due('dj_payable'),rights_held_krw:due('rights_held'),
  booked_revenue_krw:revenues,booked_cost_krw:costs,booked_profit_krw:revenues-costs,vat_position_krw:vatPosition,
  withholding_national_krw:due('withholding_national'),withholding_local_krw:due('withholding_local'),
  corporate_national_krw:due('corporate_national'),corporate_local_krw:due('corporate_local'),
