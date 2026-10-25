@@ -868,6 +868,23 @@ router.post('/broadcast/start', async (c) => {
   return c.json({ ok: true, session_id: result.meta?.last_row_id || 0, started_at: now });
 });
 
+// Close a DJ broadcast when the six-hour daily airtime budget is exhausted.
+// The current live session is counted only once, regardless of store listeners.
+async function enforceDjDailyLimit(db: D1Database, djId: number): Promise<boolean> {
+  const now = Date.now();
+  const start = new Date(now); start.setUTCHours(0,0,0,0);
+  const midnight = start.getTime();
+  const usage = await db.prepare(
+    'SELECT COALESCE(SUM(MAX(0, MIN(COALESCE(ended_at, ?), ?) - MAX(started_at, ?))),0) AS ms FROM dj_sessions WHERE dj_id=? AND started_at<? AND COALESCE(ended_at,?)>?'
+  ).bind(now,now,midnight,djId,now,now,midnight).first<any>();
+  if(Number(usage?.ms||0)<21600000)return false;
+  await db.batch([
+    db.prepare('UPDATE dj_profiles SET is_live=0,live_listener_count=0,updated_at=? WHERE id=? AND is_live=1').bind(now,djId),
+    db.prepare('UPDATE dj_sessions SET ended_at=?,last_heartbeat=? WHERE dj_id=? AND ended_at IS NULL').bind(now,now,djId)
+  ]);
+  return true;
+}
+
 // ── POST /api/dj-cafe/broadcast/next — 다음 곡 ──
 router.post('/broadcast/next', async (c) => {
   const auth = await authUser(c);
@@ -876,6 +893,7 @@ router.post('/broadcast/next', async (c) => {
 
   const dj = await c.env.DB.prepare("SELECT id, is_live, live_current_track_idx, broadcast_set FROM dj_profiles WHERE user_id=? AND status='active'").bind(auth.id).first<any>();
   if (!dj || !dj.is_live) return c.json({ ok: false, error: '방송 중이 아닙니다' }, 400);
+  if(await enforceDjDailyLimit(c.env.DB,Number(dj.id)))return c.json({ok:false,code:'DJ_DAILY_LIMIT',error:'하루 6시간 방송 제한으로 방송이 종료되었습니다.'},403);
 
   let set = null;
   try { set = JSON.parse(dj.broadcast_set || 'null'); } catch(e) {}
