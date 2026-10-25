@@ -253,10 +253,11 @@ router.post('/channels', async (c) => {
     });}catch(e:any){return c.json({ok:false,error:e.message},400);}
   }
 
-  let channelFee = 50000;
+  // V5: store registration is free; legacy paid channel signup is retired.
+  let channelFee = 0;
   try {
     const feeRow = await c.env.DB.prepare("SELECT value FROM tl_settings WHERE key='cafe_channel_fee'").first<any>();
-    if (feeRow?.value) channelFee = Number(feeRow.value) || 50000;
+    // Legacy cafe_channel_fee setting is ignored for free store registration.
   } catch(_) {}
 
   // ⭐ 할인 코드 검증
