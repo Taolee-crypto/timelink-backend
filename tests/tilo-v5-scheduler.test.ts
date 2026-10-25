@@ -30,3 +30,13 @@ const otherRandom=planTiloBroadcast(tracks.map(t=>({...t,eligiblePromotion:false
 assert.notDeepEqual(fallback.selections.map(s=>s.track.fileId),otherRandom.selections.map(s=>s.track.fileId));
 assert.throws(()=>planTiloBroadcast(tracks,{promotedMs:0,ordinaryMs:0},60000,[],[],()=>1));
 console.log('PASS TILO: promotion priority without quota, random ordinary fallback, repeat guards');
+
+// After all six premium songs, use unheard ordinary songs before any replay.
+const fullCatalogue=Array.from({length:11},(_,i)=>({fileId:i+1,artist:'Artist',durationMs:60000,campaignId:i<6?i+100:null,eligiblePromotion:i<6}));
+const rotation=planTiloBroadcast(fullCatalogue,{promotedMs:0,ordinaryMs:0},900000,[],[],()=>0.4);
+assert.equal(rotation.selections.length,11);
+assert.equal(new Set(rotation.selections.map(s=>s.track.fileId)).size,11);
+assert(rotation.selections.slice(0,6).every(s=>s.kind==='promoted'));
+assert(rotation.selections.slice(6).every(s=>s.kind==='ordinary'));
+assert.equal(rotation.unfilledMs,240000,'do not fill the remainder by repeating premium tracks');
+console.log('PASS full catalogue rotation: six premium then five unheard ordinary tracks, no replay');
