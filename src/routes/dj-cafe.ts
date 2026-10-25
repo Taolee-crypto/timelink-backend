@@ -834,6 +834,15 @@ router.post('/broadcast/start', async (c) => {
   }
 
   if(Number(dj.is_live)===1)return c.json({ok:true,already_live:true});
+  // Maximum six broadcast hours per DJ per UTC day; count elapsed airtime,
+  // never multiply by the number of stores receiving the same broadcast.
+  const dayStart = new Date(); dayStart.setUTCHours(0,0,0,0);
+  const dayEnd = dayStart.getTime() + 86400000;
+  const usage = await c.env.DB.prepare(
+    'SELECT COALESCE(SUM(MAX(0, MIN(COALESCE(ended_at, ?), ?) - MAX(started_at, ?))),0) AS ms FROM dj_sessions WHERE dj_id=? AND started_at<? AND COALESCE(ended_at,?)>?'
+  ).bind(Date.now(),dayEnd,dayStart.getTime(),dj.id,dayEnd,Date.now(),dayStart.getTime()).first<any>();
+  if(Number(usage?.ms||0)>=21600000)return c.json({ok:false,code:'DJ_DAILY_LIMIT',error:'DJ 방송은 하루 최대 6시간입니다.'},403);
+
 
   // First currently eligible V5 track; publication is rechecked on every transition.
   let firstIdx = -1;
