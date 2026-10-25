@@ -84,10 +84,14 @@ payment.post('/v5/premium/prepare',async c=>{
       !['owner','authorized_agent','licensee'].includes(String(rights.rights_role))||
       !['master_recording','distribution_license','delegated_scope'].includes(String(rights.rights_scope)))
      return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'V5_CREATOR_RIGHTS_DECLARATION_REQUIRED'},403);
-   const gate=await c.env.DB.prepare(`SELECT 1 AS approved FROM v5_music_gate_reviews g
+   const gate=await c.env.DB.prepare(`SELECT g.status FROM v5_music_gate_reviews g
      JOIN tl3_v5_releases v ON v.source_sha256=g.source_sha256
-     WHERE v.file_id=? AND g.user_id=? AND g.status='approved' LIMIT 1`).bind(fileId,Number(userId)).first();
-   if(!gate)return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'V5_MUSIC_GATE_APPROVAL_REQUIRED'},403);
+     WHERE v.file_id=? AND g.user_id=? ORDER BY g.updated_at DESC LIMIT 1`).bind(fileId,Number(userId)).first<any>();
+   if(!gate)return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'V5_MUSIC_GATE_REVIEW_NOT_FOUND',next_action:'OPERATOR_REVIEW_LEGACY_RELEASE'},403);
+   if(gate.status!=='approved')return c.json({ok:false,error:'NOT_ELIGIBLE',
+     reason:gate.status==='review_required'?'V5_MUSIC_GATE_OPERATOR_REVIEW_REQUIRED':
+       gate.status==='rejected'?'V5_MUSIC_GATE_REJECTED':'V5_MUSIC_GATE_REVIEW_PENDING',
+     review_status:String(gate.status)},403);
    return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'REVIEW_REQUIRED'},403);
   }
   const amount=amounts[plan];
