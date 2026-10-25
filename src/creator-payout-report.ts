@@ -31,7 +31,7 @@ WITH valid_settlements AS (
  FROM v3_economy_accounts a JOIN v3_economy_balances b ON b.account_id=a.id
  WHERE a.owner_type='escrow' AND a.asset_code='TL' AND a.bucket LIKE 'self_play_creator_share_%' GROUP BY a.owner_id
 )
-SELECT u.id,u.username,u.email,COALESCE(t.track_count,0) AS track_count,
+SELECT u.id,u.username,u.email,u.role,COALESCE(t.track_count,0) AS track_count,
  COALESCE(e.earned_atoms,0) AS earned_atoms,COALESCE(e.playback_atoms,0) AS playback_atoms,
  COALESCE(e.broadcast_atoms,0) AS broadcast_atoms,COALESCE(w.wallet_atoms,0) AS wallet_atoms,
  COALESCE(h.self_held_atoms,0) AS self_held_atoms
@@ -103,7 +103,7 @@ export async function readCreatorPayoutReport(db:D1Database,userId?:number){
  if(paidByUser.size)warnings.push('기존 지급 완료 기록은 V5 원장 거래 연결이 없어 지급 검증이 필요합니다.');
  const creators=rows.map(r=>({
   id:Number(r.id),username:String(r.username||''),email:String(r.email||''),track_count:Number(r.track_count),
-  total_earned:tl(r.earned_atoms),playback_earned_tl:tl(r.playback_atoms),broadcast_earned_tl:tl(r.broadcast_atoms),
+  total_earned:tl(r.earned_atoms),personal_display_tl:tl(Number(r.earned_atoms)+(!userId&&String(r.role||'').toLowerCase()==='admin'?Number(r.self_held_atoms):0)),playback_earned_tl:tl(r.playback_atoms),broadcast_earned_tl:tl(r.broadcast_atoms),
   self_play_held_tl:tl(r.self_held_atoms),tl_balance:tl(r.wallet_atoms),
   total_exchanged:paidByUser.has(Number(r.id))?null:0,reported_paid_tl:paidByUser.get(Number(r.id))||0,
   payout_verified:!paidByUser.has(Number(r.id)),cash_redeemable_tl:null,tracks:trackDetails.filter(t=>t.user_id===Number(r.id))
@@ -112,7 +112,7 @@ export async function readCreatorPayoutReport(db:D1Database,userId?:number){
  return {ok:true,ledger_version:'V5',read_only:true,as_of:new Date().toISOString(),creators,
   requests:requests.map(r=>({...r,verification_status:'legacy_record_not_ledger_verified'})),
   platform:userId?undefined:{music_revenue_tl:tl((results[4].results?.[0] as any)?.atoms)},tracks:trackDetails,
-  summary:{creator_count:creators.length,earned_tl:tl(earned),self_play_held_tl:tl(held),
+  summary:{creator_count:creators.length,earned_tl:tl(earned),personal_display_tl:creators.reduce((n,r)=>Number((n+r.personal_display_tl).toFixed(4)),0),self_play_held_tl:tl(held),
    pending_request_count:requests.filter(r=>r.status==='pending').length,request_count:requests.length,
    unpaid_tl:null,cash_redeemable_tl:null},warnings,basis:'posted_balanced_v5_creator_credit_entries',
   note:'창작 수익은 실제 수취인의 V5 원장 입금액입니다. 충전·보너스·본인 재생 보류금은 수익에서 제외합니다. 현금 환전 가능액은 별도 기여도 및 정산 검토 후 확정합니다.'};

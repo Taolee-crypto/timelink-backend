@@ -3,8 +3,8 @@ const {stripTypeScriptTypes}=require('node:module'),{DatabaseSync}=require('node
 const dbi=new DatabaseSync(':memory:');let writes=0;
 const db={prepare(sql){let args=[];const s={bind(...values){args=values;return s},async first(){return dbi.prepare(sql).get(...args)||null},async all(){return {results:dbi.prepare(sql).all(...args)}},async run(){writes++;return dbi.prepare(sql).run(...args)}};return s},async batch(items){return Promise.all(items.map(s=>s.all()))}};
 dbi.exec(`
-CREATE TABLE users(id INTEGER,username TEXT,email TEXT);
-INSERT INTO users VALUES(1,'Admin Creator','admin@fixture'),(2,'Creator','creator@fixture'),(3,'Collaborator','split@fixture');
+CREATE TABLE users(id INTEGER,username TEXT,email TEXT,role TEXT DEFAULT 'user');
+INSERT INTO users(id,username,email) VALUES(1,'Admin Creator','admin@fixture'),(2,'Creator','creator@fixture'),(3,'Collaborator','split@fixture');
 CREATE TABLE v3_economy_assets(asset_code TEXT,decimals INTEGER);INSERT INTO v3_economy_assets VALUES('TL',4);
 CREATE TABLE v3_economy_accounts(id TEXT,owner_type TEXT,owner_id TEXT,asset_code TEXT,bucket TEXT,status TEXT DEFAULT 'active');
 CREATE TABLE v3_economy_balances(account_id TEXT,available_atoms INTEGER,held_atoms INTEGER);
@@ -35,8 +35,9 @@ const context={console,Date,Number,String,Map,Set,JSON};vm.createContext(context
 const code=stripTypeScriptTypes(fs.readFileSync('src/creator-payout-report.ts','utf8'),{mode:'transform'}).replace(/^export /gm,'');
 vm.runInContext(code,context);
 async function main(){
+ dbi.prepare("UPDATE users SET role='admin' WHERE id=1").run();
  let r=await context.readCreatorPayoutReport(db);
- assert.equal(r.summary.earned_tl,140);assert.equal(r.platform.music_revenue_tl,90);
+ assert.equal(r.summary.earned_tl,140);assert.equal(r.summary.personal_display_tl,210);assert.equal(r.creators.find(c=>c.id===1).personal_display_tl,105);assert.equal(r.platform.music_revenue_tl,90);
  assert.equal(r.summary.self_play_held_tl,70);assert.equal(r.creators.length,3);
  assert.equal(r.creators.find(c=>c.id===1).total_earned,35);assert.equal(r.creators.find(c=>c.id===1).tl_balance,1000);
  assert.equal(r.creators.find(c=>c.id===3).total_earned,35);
