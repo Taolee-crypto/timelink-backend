@@ -1,3 +1,4 @@
+import creatorEarningsRouter from './routes/creator-earnings';
 import {readCreatorSplit} from './creator-split-policy';
 import creatorContributorsRouter from './routes/creator-contributors';
 import { searchSpotifyCatalogue,spotifyCatalogueDetails,storeCreatorSpotifyReference,SpotifyCatalogueError } from './spotify-catalogue';
@@ -479,6 +480,7 @@ app.route('/api/v1', scoreRouter);
 app.route('/api/v1/shareplace', shareplaceRouter);
 // SharePlace legacy endpoint: 기존 프론트엔드가 사용하는 /api/shares 경로를 유지한다.
 app.route('/api/shares', shareplaceRouter);
+app.route('/api/creator',creatorEarningsRouter);
 app.route('/api/admin', adminRouter);
 app.route('/api/admin', adminMembersRouter);
 app.route('/api/cafe', cafeRouter);

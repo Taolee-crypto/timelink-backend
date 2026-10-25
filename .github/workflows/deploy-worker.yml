@@ -45,6 +45,9 @@ jobs:
       - name: Verify Music Gate analysis and review integration
         run: node scripts/test-v5-music-gate-worker.cjs
 
+      - name: Verify creator earnings and owner isolation
+        run: node scripts/test-creator-payout-report.cjs
+
       - name: Verify DJ V5 library and station workflow
         run: node scripts/test-dj-v5-center.cjs
 

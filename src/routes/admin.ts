@@ -1,3 +1,4 @@
+import {readCreatorPayoutReport} from '../creator-payout-report';
 import { permittedStationTracks } from '../tilo-station';
 import { REWARD_RULES,readRewardPolicy,validateRewardRules } from '../v5-reward-policy';
 import { currentTiloSlot,tiloLocalShow,TILO_ZONES,type TiloCountry } from '../tilo-server-timeline';
@@ -661,8 +662,8 @@ router.get('/revenue',async c=>{
 });
 router.get('/creators/payouts',async c=>{
   if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
-  return c.json({ok:false,code:'PAYOUT_SOURCE_NOT_VERIFIED',
-    error:'크리에이터 정산 원장과 지급 상태 검증 후 조회를 제공합니다.'},503);
+  try{return c.json(await readCreatorPayoutReport(c.env.DB));}
+  catch(error:any){console.error('[CREATOR_PAYOUT_REPORT]',error);return c.json({ok:false,code:'CREATOR_REPORT_UNAVAILABLE',error:'V5 창작 수익 원장을 조회하지 못했습니다.',detail:String(error?.message||'')},503);}
 });
 
 
