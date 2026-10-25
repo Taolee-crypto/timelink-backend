@@ -966,8 +966,13 @@ router.get('/live-djs', async (c) => {
      LIMIT 100`
   ).all();
 
+  // Expired DJs must not remain discoverable as live broadcasts.
+  const activeResults=[];
+  for(const dj of (results||[])){
+    if(!(await enforceDjDailyLimit(c.env.DB,Number((dj as any).id))))activeResults.push(dj);
+  }
   // 현재 재생 중인 곡 정보 추가
-  const djs = (results || []).map(function(d: any) {
+  const djs = activeResults.map(function(d: any) {
     return {
       id: d.id,
       dj_name: d.dj_name,
@@ -1218,6 +1223,7 @@ router.get('/live/:djId{[0-9]+}/now', async (c) => {
 
   if (!dj) return c.json({ ok: false, error: 'DJ 없음' }, 404);
   if (!dj.is_live) return c.json({ ok: false, error: '방송 중 아님', is_live: false }, 200);
+  if(await enforceDjDailyLimit(c.env.DB,djId))return c.json({ok:false,code:'DJ_DAILY_LIMIT',error:'DJ 일일 방송 6시간 제한',is_live:false},200);
 
   const track=dj.live_current_track_id?await djTrack(c.env.DB,String(dj.live_current_track_id)):null;
   const now = Date.now();
