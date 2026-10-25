@@ -67,7 +67,18 @@ payment.post('/v5/premium/prepare',async c=>{
       AND v.status='sealed' AND r.status='released'
       AND r.rights_confirmed=1 AND COALESCE(f.revenue_held,0)=0
     LIMIT 1`).bind(fileId,Number(userId)).first();
-  if(!owned)return c.json({ok:false,error:'NOT_ELIGIBLE'},403);
+  if(!owned){
+   // Report a specific eligibility gate without exposing another member's asset.
+   const f=await c.env.DB.prepare('SELECT id,shared,COALESCE(revenue_held,0) AS revenue_held FROM tl_files WHERE id=? AND user_id=? LIMIT 1').bind(fileId,Number(userId)).first<any>();
+   if(!f)return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'FILE_NOT_OWNED_OR_NOT_FOUND'},403);
+   if(Number(f.shared)!==1)return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'FILE_NOT_SHARED'},403);
+   if(Number(f.revenue_held)!==0)return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'REVENUE_HELD'},403);
+   const v=await c.env.DB.prepare('SELECT status FROM tl3_v5_releases WHERE file_id=? LIMIT 1').bind(fileId).first<any>();
+   if(!v||v.status!=='sealed')return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'V5_RELEASE_NOT_SEALED'},403);
+   const rights=await c.env.DB.prepare('SELECT status,rights_confirmed FROM tl3_releases WHERE file_id=? LIMIT 1').bind(fileId).first<any>();
+   if(!rights||rights.status!=='released'||Number(rights.rights_confirmed)!==1)return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'RIGHTS_RELEASE_NOT_CONFIRMED'},403);
+   return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'REVIEW_REQUIRED'},403);
+  }
   const amount=amounts[plan];
   return c.json({ok:true,method,plan,file_id:fileId,
     amount_krw:method==='cash'?amount:null,
