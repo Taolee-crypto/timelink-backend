@@ -59,6 +59,7 @@ jobs:
       - name: Verify Creator catalogue import and contributor payouts
         run: |
           node scripts/test-spotify-catalogue.cjs
+          node scripts/test-spotify-workerd.cjs
           node scripts/test-creator-contributors.cjs
 
       - name: Validate Worker bundle

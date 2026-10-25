@@ -3378,7 +3378,7 @@ async function getSpotifyToken(env: Env): Promise<string> {
       'Authorization': 'Basic ' + btoa((env as any).SPOTIFY_CLIENT_ID + ':' + (env as any).SPOTIFY_CLIENT_SECRET),
       'Content-Type': 'application/x-www-form-urlencoded'
     },
-    signal:AbortSignal.timeout(8000),redirect:'error',
+    signal:AbortSignal.timeout(8000),redirect:'manual',
     body: 'grant_type=client_credentials'
   });
   const d: any = await r.json();

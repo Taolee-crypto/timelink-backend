@@ -12,7 +12,7 @@ router.use('*',async(c,next)=>{
 const configured=(e:Env)=>!!(e.TWILIO_ACCOUNT_SID&&e.TWILIO_AUTH_TOKEN&&e.TWILIO_VERIFY_SERVICE_SID);
 async function provider(e:Env,resource:string,data:Record<string,string>){
  if(!configured(e))throw new Error('PHONE_VERIFICATION_NOT_CONFIGURED');
- const r=await fetch('https://verify.twilio.com/v2/Services/'+e.TWILIO_VERIFY_SERVICE_SID+'/'+resource,{method:'POST',headers:{Authorization:'Basic '+btoa(e.TWILIO_ACCOUNT_SID+':'+e.TWILIO_AUTH_TOKEN),'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data),signal:AbortSignal.timeout(12000),redirect:'error'});
+ const r=await fetch('https://verify.twilio.com/v2/Services/'+e.TWILIO_VERIFY_SERVICE_SID+'/'+resource,{method:'POST',headers:{Authorization:'Basic '+btoa(e.TWILIO_ACCOUNT_SID+':'+e.TWILIO_AUTH_TOKEN),'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data),signal:AbortSignal.timeout(12000),redirect:'manual'});
  if(!r.ok){await r.body?.cancel();throw new Error('PHONE_PROVIDER_UNAVAILABLE');}return r.json() as Promise<any>;
 }
 router.get('/phone/status',async c=>{

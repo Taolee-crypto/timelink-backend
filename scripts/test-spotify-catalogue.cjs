@@ -9,7 +9,7 @@ const id='A'.repeat(22),albumId='B'.repeat(22),artistId='C'.repeat(22);
 const track={id,name:'Selected recording',artists:[{id:artistId,name:'Artist',external_urls:{spotify:'https://open.spotify.com/artist/'+artistId}}],duration_ms:183456,external_ids:{isrc:'KRTEST2600001'},external_urls:{spotify:'https://open.spotify.com/track/'+id},explicit:false,disc_number:1,track_number:2,album:{id:albumId,name:'Album',images:[{url:'https://i.scdn.co/image/fixture'}],release_date:'2026-10-25',release_date_precision:'day',total_tracks:10}};
 let calls=[],denyAlbum=false,denyAll=false;
 global.fetch=async(url,options)=>{
- calls.push(url);assert.equal(options.headers.Authorization,'Bearer test-token');
+ calls.push(url);assert.equal(options.redirect,'manual');assert.equal(options.headers.Authorization,'Bearer test-token');
  assert.equal(new URL(url).hostname,'api.spotify.com');
  if(denyAll)return new Response('{}',{status:429});
  if(url.includes('/search?'))return Response.json({tracks:{items:[track]}});

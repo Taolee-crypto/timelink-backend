@@ -17,7 +17,7 @@ async function readObject(response:Response):Promise<Obj>{
  return parsed;
 }
 async function get(token:string,path:string){
- return readObject(await fetch('https://api.spotify.com/v1/'+path,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(8000),redirect:'error'}));
+ return readObject(await fetch('https://api.spotify.com/v1/'+path,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(8000),redirect:'manual'}));
 }
 export function mapSpotifyTrack(t:Obj){
  const album=t.album||{},artists=list(t.artists);
