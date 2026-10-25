@@ -45,6 +45,9 @@ jobs:
       - name: Verify Music Gate analysis and review integration
         run: node scripts/test-v5-music-gate-worker.cjs
 
+      - name: Verify V5 certificate fee calculations and atomic payment
+        run: node scripts/test-v5-certificate-fees.cjs
+
       - name: Verify paid self-play creator income and historical release
         run: node scripts/test-self-play-income.cjs
 

@@ -1,3 +1,4 @@
+import {certificateFeeQuote,chargeCertificateFee,ServiceFeeError,CERTIFICATE_ISSUE_FEE,CERTIFICATE_DOWNLOAD_FEE} from './v5-certificate-fees';
 import creatorEarningsRouter from './routes/creator-earnings';
 import {readCreatorSplit} from './creator-split-policy';
 import creatorContributorsRouter from './routes/creator-contributors';
@@ -2876,6 +2877,13 @@ app.get('/api/v1/assets/:asset_id', async (c) => {
   }
 });
 
+app.get('/api/v1/certification/quote',async c=>{
+ const session=await storageUser(c);const userId=Number(session?.sub||0);
+ if(!Number.isSafeInteger(userId)||userId<=0)return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+ try{return c.json(await certificateFeeQuote(c.env.DB,userId));}
+ catch(error){return c.json({ok:false,error:'V5 지갑 잔액을 조회하지 못했습니다.'},503);}
+});
+
 // POST /api/v1/assets/:asset_id/certify — 증명서 발행
 app.post('/api/v1/assets/:asset_id/certify', async (c) => {
   try {
@@ -2894,57 +2902,11 @@ app.post('/api/v1/assets/:asset_id/certify', async (c) => {
     const existCert = await c.env.DB.prepare(
       "SELECT cert_no FROM tl_asset_certs WHERE asset_id=? AND status='active' LIMIT 1"
     ).bind(assetId).first<any>();
-    if (existCert) return c.json({ok:true, cert_no: existCert.cert_no, already: true});
+    if (existCert) return c.json({ok:true, cert_no: existCert.cert_no, already: true, fee_paid: 0});
 
-    // CERT_FEE_V1: 증명서 발행 수수료 5,000 TL
-    const CERT_FEE = 5000;
-
-    const u = await c.env.DB.prepare(
-      'SELECT tl, tl_a, tl_b, tl_p FROM users WHERE id=? AND is_active=1'
-    ).bind(Number(payload.sub)).first<any>();
-    if (!u) return c.json({ok:false,error:'사용자 없음'},401);
-
-    const tlA = Number(u.tl_a || 0), tlB = Number(u.tl_b || 0), tlP = Number(u.tl_p || 0);
-    const totalBal = tlA + tlB + tlP;
-    if (totalBal < CERT_FEE) {
-      return c.json({
-        ok: false,
-        code: 'TL_INSUFFICIENT',
-        error: 'TL 부족',
-        required: CERT_FEE,
-        balance: totalBal,
-        breakdown: { tl_a: tlA, tl_b: tlB, tl_p: tlP }
-      }, 402);
-    }
-
-    // 차감: tl_a → tl_b → tl_p
-    let remain = CERT_FEE;
-    let fromA = 0, fromB = 0, fromP = 0;
-    if (remain > 0 && tlA > 0) { fromA = Math.min(tlA, remain); remain -= fromA; }
-    if (remain > 0 && tlB > 0) { fromB = Math.min(tlB, remain); remain -= fromB; }
-    if (remain > 0 && tlP > 0) { fromP = Math.min(tlP, remain); remain -= fromP; }
-    const totalPaid = fromA + fromB + fromP;
-    const newA = tlA - fromA, newB = tlB - fromB, newP = tlP - fromP;
-    const newTotal = newA + newB + newP;
-
-    // users 업데이트
-    await c.env.DB.prepare(`
-      UPDATE users SET
-        tl_a = ?, tl_b = ?, tl_p = ?, tl = ?,
-        total_tl_spent = COALESCE(total_tl_spent,0) + ?
-      WHERE id=?
-    `).bind(newA, newB, newP, newTotal, totalPaid, Number(payload.sub)).run();
-
-    // transactions 기록
-    try {
-      await c.env.DB.prepare(`
-        INSERT INTO transactions(user_id, file_id, tx_type, amount, balance_after, note)
-        VALUES (?, ?, 'cert_fee', ?, ?, ?)
-      `).bind(
-        Number(payload.sub), a.file_id, -totalPaid, newTotal,
-        `증명서 발행 수수료 (a:${fromA} b:${fromB} p:${fromP})`
-      ).run();
-    } catch(_){}
+    const CERT_FEE=CERTIFICATE_ISSUE_FEE;
+    const quote=await certificateFeeQuote(c.env.DB,Number(payload.sub));
+    if(!quote.can_afford)return c.json({ok:false,code:'TL_INSUFFICIENT',error:'TL 부족',required:CERT_FEE,balance:quote.wallet.tl_total},402);
 
     const certNo = await nextCertNo(c.env.DB);
 
@@ -2973,25 +2935,26 @@ app.post('/api/v1/assets/:asset_id/certify', async (c) => {
     const verifyUrl = origin + '/api/v1/certs/' + certNo + '/verify';
     const qrData = 'https://timelink.digital/cert/' + certNo;
 
-    await c.env.DB.prepare(`
-      INSERT INTO tl_asset_certs (cert_no, asset_id, snapshot_json, asset_hash,
-        valuation_at_issue, revenue_at_issue, plays_at_issue,
-        issued_by, verify_url, qr_data, cert_hash,
-        fee_tl, fee_paid_from, fee_breakdown)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `).bind(
-      certNo, assetId, snapshotJson, String(a.asset_hash||''),
-      Number(a.valuation_tl||0), Number(a.lifetime_revenue_tl||0), Number(a.lifetime_plays||0),
-      Number(payload.sub), verifyUrl, qrData, certHash,
-      totalPaid,
-      `a:${fromA},b:${fromB},p:${fromP}`,
-      JSON.stringify({tl_a:fromA, tl_b:fromB, tl_p:fromP, total: totalPaid})
-    ).run();
-
-    // 이벤트
-    await c.env.DB.prepare(
-      "INSERT INTO tl_asset_events (asset_id, cert_no, event_type, event_data, actor_user_id) VALUES (?,?,'certified',?,?)"
-    ).bind(assetId, certNo, JSON.stringify({cert_hash: certHash, fee_paid: totalPaid, fee_breakdown:{tl_a:fromA,tl_b:fromB,tl_p:fromP}}), Number(payload.sub)).run().catch(()=>{});
+    let payment;
+    try{
+      payment=await chargeCertificateFee(c.env.DB,{
+        userId:Number(payload.sub),feeTl:CERT_FEE,kind:'issue',reference:certNo,idempotencyKey:'cert-issue:'+assetId+':'+certNo,
+        guards:[c.env.DB.prepare(`SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM tl_asset_certs WHERE asset_id=? AND status='active')
+          THEN 1 ELSE json_extract('invalid','$') END`).bind(assetId)],
+        atomicStatements:[
+          c.env.DB.prepare(`INSERT INTO tl_asset_certs(cert_no,asset_id,snapshot_json,asset_hash,valuation_at_issue,revenue_at_issue,plays_at_issue,
+            issued_by,verify_url,qr_data,cert_hash,fee_tl,fee_paid_from,fee_breakdown) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .bind(certNo,assetId,snapshotJson,String(a.asset_hash||''),Number(a.valuation_tl||0),Number(a.lifetime_revenue_tl||0),Number(a.lifetime_plays||0),
+            Number(payload.sub),verifyUrl,qrData,certHash,CERT_FEE,'V5 economic ledger',JSON.stringify({total:CERT_FEE,ledger_version:'V5'})),
+          c.env.DB.prepare("INSERT INTO tl_asset_events(asset_id,cert_no,event_type,event_data,actor_user_id) VALUES(?,?,'certified',?,?)")
+            .bind(assetId,certNo,JSON.stringify({cert_hash:certHash,fee_paid:CERT_FEE,ledger_version:'V5'}),Number(payload.sub))
+        ]});
+    }catch(error){
+      const existing=await c.env.DB.prepare("SELECT cert_no FROM tl_asset_certs WHERE asset_id=? AND status='active' LIMIT 1").bind(assetId).first<any>();
+      if(existing)return c.json({ok:true,cert_no:existing.cert_no,already:true,fee_paid:0});
+      if(error instanceof ServiceFeeError)return c.json({ok:false,code:error.code,error:error.code==='TL_INSUFFICIENT'?'TL 부족':'사용자 계정 확인 필요',required:error.required,balance:error.balance},error.code==='TL_INSUFFICIENT'?402:401);
+      throw error;
+    }
 
     return c.json({
       ok: true,
@@ -3001,9 +2964,9 @@ app.post('/api/v1/assets/:asset_id/certify', async (c) => {
       verify_url: verifyUrl,
       qr_data: qrData,
       issued_at: new Date().toISOString(),
-      fee_paid: totalPaid,
-      fee_breakdown: { tl_a: fromA, tl_b: fromB, tl_p: fromP },
-      balance: { tl_a: newA, tl_b: newB, tl_p: newP, total: newTotal }
+      fee_paid: payment.fee_paid,
+      fee_breakdown: payment.fee_breakdown,
+      balance: payment.balance
     });
   } catch(e:any) {
     try {
@@ -3090,7 +3053,7 @@ app.get('/api/v1/certs/:cert_no/verify', async (c) => {
 // CERT_DOWNLOAD_V1 — 증명서 다운로드 (1,000 TL / 365일)
 // ═══════════════════════════════════════════════════════════════
 
-const CERT_DOWNLOAD_FEE = 1000;
+const CERT_DOWNLOAD_FEE = CERTIFICATE_DOWNLOAD_FEE;
 const CERT_DOWNLOAD_DAYS = 365;
 
 // POST /api/v1/certs/:cert_no/download — 1,000 TL 결제 + 토큰 발급
@@ -3132,47 +3095,8 @@ app.post('/api/v1/certs/:cert_no/download', async (c) => {
       });
     }
 
-    // TL 잔액 확인 + 차감 (tl_a → tl_b → tl_p)
-    const u = await c.env.DB.prepare(
-      'SELECT tl, tl_a, tl_b, tl_p FROM users WHERE id=? AND is_active=1'
-    ).bind(userId).first<any>();
-    if (!u) return c.json({ok:false,error:'사용자 없음'},401);
-
-    const tlA = Number(u.tl_a || 0), tlB = Number(u.tl_b || 0), tlP = Number(u.tl_p || 0);
-    const totalBal = tlA + tlB + tlP;
-    if (totalBal < CERT_DOWNLOAD_FEE) {
-      return c.json({
-        ok: false,
-        code: 'TL_INSUFFICIENT',
-        error: 'TL 부족',
-        required: CERT_DOWNLOAD_FEE,
-        balance: totalBal
-      }, 402);
-    }
-
-    let remain = CERT_DOWNLOAD_FEE;
-    let fromA = 0, fromB = 0, fromP = 0;
-    if (remain > 0 && tlA > 0) { fromA = Math.min(tlA, remain); remain -= fromA; }
-    if (remain > 0 && tlB > 0) { fromB = Math.min(tlB, remain); remain -= fromB; }
-    if (remain > 0 && tlP > 0) { fromP = Math.min(tlP, remain); remain -= fromP; }
-    const totalPaid = fromA + fromB + fromP;
-    const newA = tlA - fromA, newB = tlB - fromB, newP = tlP - fromP;
-    const newTotal = newA + newB + newP;
-
-    await c.env.DB.prepare(`
-      UPDATE users SET
-        tl_a = ?, tl_b = ?, tl_p = ?, tl = ?,
-        total_tl_spent = COALESCE(total_tl_spent,0) + ?
-      WHERE id=?
-    `).bind(newA, newB, newP, newTotal, totalPaid, userId).run();
-
-    // transactions
-    try {
-      await c.env.DB.prepare(`
-        INSERT INTO transactions(user_id, tx_type, amount, balance_after, note)
-        VALUES (?, 'cert_download', ?, ?, ?)
-      `).bind(userId, -totalPaid, newTotal, `증명서 다운로드 ${certNo} (a:${fromA} b:${fromB} p:${fromP})`).run();
-    } catch(_){}
+    const quote=await certificateFeeQuote(c.env.DB,userId);
+    if(quote.wallet.tl_total<CERT_DOWNLOAD_FEE)return c.json({ok:false,code:'TL_INSUFFICIENT',error:'TL 부족',required:CERT_DOWNLOAD_FEE,balance:quote.wallet.tl_total},402);
 
     // 토큰 생성
     const tokenBytes = new Uint8Array(32);
@@ -3182,28 +3106,32 @@ app.post('/api/v1/certs/:cert_no/download', async (c) => {
     // 365일 후 만료
     const expiresAt = new Date(Date.now() + CERT_DOWNLOAD_DAYS*24*3600*1000).toISOString();
 
-    await c.env.DB.prepare(`
-      INSERT INTO tl_cert_downloads (cert_no, user_id, token, fee_tl, fee_breakdown, expires_at)
-      VALUES (?,?,?,?,?,?)
-    `).bind(
-      certNo, userId, token, totalPaid,
-      JSON.stringify({tl_a:fromA, tl_b:fromB, tl_p:fromP, total: totalPaid}),
-      expiresAt
-    ).run();
-
-    // 이벤트
-    await c.env.DB.prepare(
-      "INSERT INTO tl_asset_events (asset_id, cert_no, event_type, event_data, actor_user_id) VALUES (?,?,'downloaded',?,?)"
-    ).bind(cert.asset_id, certNo, JSON.stringify({fee: totalPaid, expires_at: expiresAt}), userId).run().catch(()=>{});
+    let payment;
+    try{
+      payment=await chargeCertificateFee(c.env.DB,{userId,feeTl:CERT_DOWNLOAD_FEE,kind:'download',reference:certNo,idempotencyKey:'cert-download:'+certNo+':'+userId+':'+token,
+        guards:[c.env.DB.prepare(`SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM tl_cert_downloads
+          WHERE cert_no=? AND user_id=? AND status='active' AND expires_at>?) THEN 1 ELSE json_extract('invalid','$') END`).bind(certNo,userId,now)],
+        atomicStatements:[
+          c.env.DB.prepare('INSERT INTO tl_cert_downloads(cert_no,user_id,token,fee_tl,fee_breakdown,expires_at) VALUES(?,?,?,?,?,?)')
+            .bind(certNo,userId,token,CERT_DOWNLOAD_FEE,JSON.stringify({total:CERT_DOWNLOAD_FEE,ledger_version:'V5'}),expiresAt),
+          c.env.DB.prepare("INSERT INTO tl_asset_events(asset_id,cert_no,event_type,event_data,actor_user_id) VALUES(?,?,'downloaded',?,?)")
+            .bind(cert.asset_id,certNo,JSON.stringify({fee:CERT_DOWNLOAD_FEE,expires_at:expiresAt,ledger_version:'V5'}),userId)
+        ]});
+    }catch(error){
+      const active=await c.env.DB.prepare("SELECT token,expires_at,download_count FROM tl_cert_downloads WHERE cert_no=? AND user_id=? AND status='active' AND expires_at>? ORDER BY id DESC LIMIT 1").bind(certNo,userId,now).first<any>();
+      if(active)return c.json({ok:true,already:true,cert_no:certNo,download_token:active.token,expires_at:active.expires_at,download_count:Number(active.download_count||0),fee_charged:0});
+      if(error instanceof ServiceFeeError)return c.json({ok:false,code:error.code,error:'수수료 결제를 확인해 주세요.',required:error.required,balance:error.balance},error.code==='TL_INSUFFICIENT'?402:401);
+      throw error;
+    }
 
     return c.json({
       ok: true,
       cert_no: certNo,
       download_token: token,
       expires_at: expiresAt,
-      fee_paid: totalPaid,
-      fee_breakdown: { tl_a: fromA, tl_b: fromB, tl_p: fromP },
-      balance: { tl_a: newA, tl_b: newB, tl_p: newP, total: newTotal }
+      fee_paid: payment.fee_paid,
+      fee_breakdown: payment.fee_breakdown,
+      balance: payment.balance
     });
   } catch(e:any) {
     try {
