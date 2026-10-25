@@ -303,7 +303,8 @@ router.post('/channels', async (c) => {
   }
 
   const now = Date.now();
-  const expiresAt = trial ? (now + trialDays * 24 * 60 * 60 * 1000) : (now + 30 * 24 * 60 * 60 * 1000);
+  // Free store membership does not expire after the old 30-day paid cycle.
+  const expiresAt = trial ? (now + trialDays * 24 * 60 * 60 * 1000) : Date.UTC(9999, 0, 1);
 
   try {
     // Channel creation and TL posting are committed together in one D1 batch.
