@@ -21,6 +21,7 @@ const db={prepare(sql){let args=[];const s={bind(...a){args=a;return s},
   async run(){const before=sqlite.prepare('SELECT total_changes() n').get().n;sqlite.prepare(sql).run(...args);return {meta:{changes:Number(sqlite.prepare('SELECT total_changes() n').get().n-before)}}}};return s;}};
 const base=fs.readFileSync('migrations/20261025_v5_ai_music_gate_reviews.sql','utf8');
 const migration=fs.readFileSync('migrations/20261025_v5_music_gate_analysis_worker.sql','utf8');
+const autoApprovalMigration=fs.readFileSync('migrations/20261025_v5_music_gate_ai_autoapproval.sql','utf8');
 const sha=b=>createHash('sha256').update(b).digest('hex');
 let calls=0;
 const clear={audio_understood:true,full_audio_reviewed:true,music_probability:0.99,
@@ -59,22 +60,26 @@ async function main(){
     INSERT INTO users VALUES(1,'user',1),(2,'admin',1),(3,'admin',0);
     CREATE TABLE tl_d1_objects(object_key TEXT PRIMARY KEY,size INTEGER,content_type TEXT,file_name TEXT,part_count INTEGER,status TEXT);
     CREATE TABLE tl_d1_object_parts(object_key TEXT,part_number INTEGER,data BLOB,PRIMARY KEY(object_key,part_number));`);
-  const before=insert();sqlite.exec(migration);
+  const before=insert();sqlite.exec(migration);sqlite.exec(autoApprovalMigration);
   assert.equal(sqlite.prepare('SELECT count(*) n FROM v5_music_gate_audit WHERE review_id=?').get(before).n,1);
   assert.equal((await api.musicGateHealth(env)).ready,true);
   console.log('PASS configuration/schema guards and migration with existing review');
 
-  let result=await api.runMusicGateAnalysis(env,mock);assert.equal(result.state,'review_required');
+  let result=await api.runMusicGateAnalysis(env,mock);assert.equal(result.state,'approved');
   let row=review(before);assert.equal(row.analysis_attempts,1);assert.equal(row.reviewer_user_id,null);
+  assert.ok(row.decided_at);assert.equal(JSON.parse(row.evidence_json).automatic_approval,true);
+  assert.throws(()=>sqlite.prepare("UPDATE v5_music_gate_reviews SET status='approved',reviewer_user_id=NULL,decided_at=datetime('now') WHERE id=?").run(insert()),/MUSIC_GATE_APPROVAL_REQUIRES_VERIFIED_AI_OR_REVIEWER/);
   assert.equal(row.evidence_sha256,sha(row.evidence_json));
   let evidence=JSON.parse(row.evidence_json);assert.equal(evidence.audio_analysis.music_probability,0.99);
   assert.equal(evidence.fingerprint_matches,null);assert.equal(evidence.decoded,null);
   assert.equal(evidence.rights_verified,false);assert.equal(evidence.rewards_approved,false);
-  assert.equal((await api.runMusicGateAnalysis(env,mock)).state,'idle');assert.equal(calls,1);
+  // Consume the queued pre-migration review; otherwise it precedes the negative fixtures.
+  assert.equal((await api.runMusicGateAnalysis(env,mock)).state,'approved');assert.equal(calls,2);
   assert.throws(()=>sqlite.exec('DELETE FROM v5_music_gate_audit'),/IMMUTABLE/);
   assert.throws(()=>sqlite.exec("UPDATE v5_music_gate_audit SET to_status='approved'"),/IMMUTABLE/);
   console.log('PASS full-byte inference transport, hash-bound evidence, no fabricated checks, immutable audit');
 
+  calls=1; // Keep the original fixture's provider-call baseline after the two valid approvals.
   let id=insert({hash:'a'.repeat(64)});await api.runMusicGateAnalysis(env,mock);
   assert.equal(review(id).analysis_error,'SOURCE_HASH_MISMATCH');assert.equal(calls,1);
   id=insert({key:'tracks/u99/foreign.mp3'});await api.runMusicGateAnalysis(env,mock);
@@ -109,7 +114,9 @@ async function main(){
   await api.runMusicGateAnalysis(env,mock);assert.equal(review(id).status,'review_required');
   assert.equal(review(id).analysis_error,'ANALYSIS_LEASE_EXPIRED');
   id=insert();sqlite.prepare("UPDATE v5_music_gate_reviews SET status='analyzing',analysis_token='dead',analysis_attempts=1,analysis_lease_until=0 WHERE id=?").run(id);
-  await api.runMusicGateAnalysis(env,mock);assert.equal(review(id).status,'review_required');assert.equal(review(id).analysis_attempts,2);
+  await api.runMusicGateAnalysis(env,mock);assert.equal(review(id).status,'approved');assert.equal(review(id).analysis_attempts,2);
+  assert.equal(review(id).analysis_error,null);
+  assert.equal(JSON.parse(review(id).evidence_json).automatic_approval,true);
   console.log('PASS cancelled/expired work cannot overwrite decisions; dead workers recover');
 
   id=insert();await api.runMusicGateAnalysis(env,async()=>response({...clear,unsafe_content:'suspected',risk_signals:['targeted_harassment']}));

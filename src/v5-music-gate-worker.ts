@@ -134,14 +134,19 @@ export async function runMusicGateAnalysis(env:Env, request:typeof fetch=fetch) 
     reasons=[...a.risk_signals.map(s=>'AI_RISK_'+s.toUpperCase())];
     if(!a.audio_understood||!a.full_audio_reviewed||a.unsafe_content==='unknown')reasons.push('INCOMPLETE_AUDIO_UNDERSTANDING');
     if(a.music_probability<0.98&&a.speech_probability<0.98)reasons.push('UNCERTAIN_AUDIO_CLASSIFICATION');
-    // Generative audio understanding cannot replace a decoder or independent rights search.
-    reasons.push('INDEPENDENT_DECODE_REQUIRED','FINGERPRINT_VERIFICATION_UNAVAILABLE','CATALOG_VERIFICATION_UNAVAILABLE');
+    // The AI intake gate checks whether the uploaded audio is plausibly music.
+    // Catalog and rights verification belong to a separate release/payout workflow.
+    // Do not pretend that an independent decoder or fingerprint service ran.
+    const autoApproved = reasons.length === 0 && a.audio_understood === true &&
+      a.full_audio_reviewed === true && a.unsafe_content === 'clear' &&
+      a.music_probability >= 0.98 && a.risk_signals.length === 0;
     evidence={pipeline_version:MUSIC_GATE_PIPELINE_VERSION,provider:'gemini',analysis_stage:'finished',manual_retry_count:manualRetryCount,cas_metadata_recovered:metadataRecovered,fetch_redirect_recovered:redirectRecovered,
       requested_model:env.MUSIC_GATE_GEMINI_MODEL,model_version:result.modelVersion,response_id:result.responseId,
       source_sha256:job.source_sha256,source_bytes:audio.length,registration_mode:job.registration_mode,
       analyzed_at:new Date().toISOString(),analysis_complete:a.audio_understood&&a.full_audio_reviewed,
       audio_analysis:a,decoded:null,fingerprint_matches:null,catalog_match:'unavailable',
-      automatic_approval:false,rights_verified:false,rewards_approved:false};
+      automatic_approval:autoApproved,rights_verified:false,rewards_approved:false,
+      auto_approval_basis:autoApproved?'verified_source_hash_and_complete_ai_audio_screening':null};
   }catch(error) {
     const problem=error instanceof GateAnalysisError?error:new GateAnalysisError('ANALYSIS_STORAGE_ERROR',true);
     errorCode=problem.code;retry=problem.retryable&&attempt<MAX_ATTEMPTS;
@@ -151,12 +156,13 @@ export async function runMusicGateAnalysis(env:Env, request:typeof fetch=fetch) 
       rights_verified:false,rewards_approved:false};
   }
   const encoded=JSON.stringify(evidence),digest=await hashBytes(new TextEncoder().encode(encoded));
-  const next=retry?'pending_analysis':'review_required';
+  const next=retry?'pending_analysis':(!errorCode && evidence.automatic_approval===true?'approved':'review_required');
   const saved=await env.DB.prepare(`UPDATE v5_music_gate_reviews SET status=?,reasons_json=?,
+    decided_at=CASE WHEN ?='approved' THEN datetime('now') ELSE decided_at END,
     classifier_version=?,evidence_json=?,evidence_sha256=?,analysis_error=?,analysis_token=NULL,
     analysis_lease_until=NULL,analysis_next_at=?,updated_at=datetime('now')
     WHERE id=? AND status='analyzing' AND analysis_token=? AND source_sha256=? AND analysis_lease_until>? RETURNING id`)
-    .bind(next,JSON.stringify(reasons),MUSIC_GATE_PIPELINE_VERSION,encoded,digest,errorCode,
+    .bind(next,JSON.stringify(reasons),next,MUSIC_GATE_PIPELINE_VERSION,encoded,digest,errorCode,
       now+Math.min(3600,60*2**attempt),job.id,token,job.source_sha256,Math.floor(Date.now()/1000)).first<{id:string}>();
   return saved?.id===job.id?{processed:1,state:next,error:errorCode}:{processed:0,state:'lease_lost'};
 }
