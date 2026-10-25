@@ -459,7 +459,7 @@ router.post('/session-license/:id', async (c) => {
       return c.json({ok:false,code:'BROADCAST_RIGHTS_REQUIRED',error:'TILO 계정·국가별 파일 권한·방송권 확인이 필요합니다.'},403);
     // V3 track pools are the canonical source for newly charged playback TL.
     // Do not gate V5 licenses against the legacy tl_user_files cache.
-    const trackPools = isBroadcast||requestedDjMonitor?{ad:0n,bonus:0n,paid:0n}:await getTrackPoolBalances(c.env.DB,userId,String(release.share_id));
+    const trackPools = isBroadcast||requestedDjMonitor?{ad:0,bonus:0,paid:0}:await getTrackPoolBalances(c.env.DB,userId,String(release.share_id));
     const trackBalanceAtoms = trackPools.ad + trackPools.bonus + trackPools.paid;
     const trackBalanceTl = atomsToTl(trackBalanceAtoms);
     if (!isBroadcast && !requestedDjMonitor && trackBalanceAtoms <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:trackBalanceTl},402);
