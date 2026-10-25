@@ -3,7 +3,7 @@ import { assertTLAtomScale, ensureLedgerAccount, postLedgerTransaction, tlToAtom
 /** Called only after provider verification. The payment receipt and wallet
  * posting either both commit or both roll back. Package bonuses stay TL_B. */
 export async function creditVerifiedPayment(db:D1Database,input:{userId:string;method:string;
-  paymentId:string;orderId:string;paidTL:number;bonusTL:number;atomicStatements?:D1PreparedStatement[]}) {
+  paymentId:string;orderId:string;paidTL:number;bonusTL:number;paymentMode?:'live'|'test'|'unknown';atomicStatements?:D1PreparedStatement[]}) {
   await assertTLAtomScale(db);
   const {userId,method,paymentId,orderId,paidTL,bonusTL}=input;
   if(!Number.isSafeInteger(paidTL)||paidTL<=0||!Number.isSafeInteger(bonusTL)||bonusTL<0)
@@ -26,7 +26,7 @@ export async function creditVerifiedPayment(db:D1Database,input:{userId:string;m
     idempotencyKey:'v5-payment:'+method+':'+paymentId,transactionType:'payment_credit',source:'pg:'+method,
     referenceType:'payment',referenceId:paymentId,actorUserId:userId,
     description:'검증된 결제 TL_P 및 프로모션 TL_B 충전',
-    metadata:{user_id:userId,order_id:orderId,paid_tl:paidTL,bonus_tl:bonusTL},lines,
+    metadata:{user_id:userId,order_id:orderId,paid_tl:paidTL,bonus_tl:bonusTL,payment_mode:input.paymentMode||'unknown'},lines,
     issuanceStatements:[db.prepare('UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?')
       .bind(tlToAtoms(paidTL+bonusTL),source)],
     atomicStatements:[

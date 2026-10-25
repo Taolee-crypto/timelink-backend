@@ -1,3 +1,4 @@
+import {readAdminFinance} from '../admin-finance-report';
 import {readCreatorPayoutReport} from '../creator-payout-report';
 import { permittedStationTracks } from '../tilo-station';
 import { REWARD_RULES,readRewardPolicy,validateRewardRules } from '../v5-reward-policy';
@@ -655,10 +656,8 @@ router.get('/realtime',async c=>{
 });
 router.get('/revenue',async c=>{
   if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
-  // A financial figure must never be derived from an unverified payment/ledger schema.
-  return c.json({ok:false,code:'FINANCIAL_SOURCE_NOT_VERIFIED',
-    error:'결제 및 TL 원장 기준을 검증하기 전에는 재무 수치를 제공할 수 없습니다.',
-    as_of:new Date().toISOString()},503);
+  try{return c.json(await readAdminFinance(c.env.DB));}
+  catch(error:any){console.error('[ADMIN_FINANCE]',error);return c.json({ok:false,code:'FINANCE_UNAVAILABLE',error:'결제 영수증 집계 실패',detail:String(error?.message||'')},503);}
 });
 router.get('/creators/payouts',async c=>{
   if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
@@ -695,9 +694,9 @@ router.get('/finance/source-audit',async c=>{
       ? await db.prepare('SELECT asset_code,decimals FROM v3_economy_assets').all<{asset_code:string,decimals:number}>()
       : null;
     return c.json({ok:true,as_of:new Date().toISOString(),read_only:true,
-      verified_financial_totals:false,
+      verified_financial_totals:false,receipt_report_available:true,
       sources,assets:assetRows?.results||[],
-      next_step:'결제 상태·환불·정산 거래유형·TL 소수점 정밀도 검증 후 실제 집계 API 연결'});
+      next_step:'재무 현황에서 PG 영수증 매출 확인 가능. 환불·PG 입금액은 별도 대사 필요'});
   }catch(e:any){return c.json({ok:false,error:'재무 원천 테이블 검사 실패',detail:String(e?.message||'')},503);}
 });
 

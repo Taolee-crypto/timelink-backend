@@ -341,7 +341,7 @@ payment.post('/toss/confirm', async (c) => {
     const total_tl = paidAmount + bonus_tl;
 
     await creditVerifiedPayment(c.env.DB,{userId,method:'toss',paymentId:paymentKey,orderId,
-      paidTL:paidAmount,bonusTL:bonus_tl,atomicStatements:[c.env.DB.prepare(
+      paidTL:paidAmount,bonusTL:bonus_tl,paymentMode:TOSS_SECRET.startsWith('test_sk_')?'test':TOSS_SECRET.startsWith('live_sk_')?'live':'unknown',atomicStatements:[c.env.DB.prepare(
         "UPDATE tl_toss_orders SET status='success', payment_key=?, updated_at=datetime('now') WHERE order_id=? AND user_id=? AND status='ready'"
       ).bind(paymentKey,orderId,userId)]});
     const wallet=await readV5Wallet(c.env.DB,Number(userId));
@@ -527,7 +527,7 @@ payment.post('/stripe/confirm', async (c) => {
 
   const tlGranted = paidAmount;
   try {
-    await creditVerifiedPayment(c.env.DB,{userId,method:'stripe',paymentId:payment_intent_id,orderId:'',paidTL:tlGranted,bonusTL:0});
+    await creditVerifiedPayment(c.env.DB,{userId,method:'stripe',paymentId:payment_intent_id,orderId:'',paidTL:tlGranted,bonusTL:0,paymentMode:STRIPE_SECRET.startsWith('sk_test_')?'test':STRIPE_SECRET.startsWith('sk_live_')?'live':'unknown'});
     const wallet=await readV5Wallet(c.env.DB,Number(userId));
     const user={tl:wallet.tl_balance,tl_p:wallet.tl_p};
     return c.json({ success: true, tl_granted: tlGranted, tl_balance: user?.tl || 0, tl_p: user?.tl_p || 0 });
