@@ -836,12 +836,8 @@ router.post('/broadcast/start', async (c) => {
   if(Number(dj.is_live)===1)return c.json({ok:true,already_live:true});
   // Maximum six broadcast hours per DJ per UTC day; count elapsed airtime,
   // never multiply by the number of stores receiving the same broadcast.
-  const dayStart = new Date(); dayStart.setUTCHours(0,0,0,0);
-  const dayEnd = dayStart.getTime() + 86400000;
-  const usage = await c.env.DB.prepare(
-    'SELECT COALESCE(SUM(MAX(0, MIN(COALESCE(ended_at, ?), ?) - MAX(started_at, ?))),0) AS ms FROM dj_sessions WHERE dj_id=? AND started_at<? AND COALESCE(ended_at,?)>?'
-  ).bind(Date.now(),dayEnd,dayStart.getTime(),dj.id,dayEnd,Date.now(),dayStart.getTime()).first<any>();
-  if(Number(usage?.ms||0)>=21600000)return c.json({ok:false,code:'DJ_DAILY_LIMIT',error:'DJ 방송은 하루 최대 6시간입니다.'},403);
+  const usedMs=await djDailyAirtime(c.env.DB,Number(dj.id),Date.now());
+  if(usedMs>=21600000)return c.json({ok:false,code:'DJ_DAILY_LIMIT',error:'DJ 방송은 하루 최대 6시간입니다.'},403);
 
 
   // First currently eligible V5 track; publication is rechecked on every transition.
@@ -870,14 +866,27 @@ router.post('/broadcast/start', async (c) => {
 
 // Close a DJ broadcast when the six-hour daily airtime budget is exhausted.
 // The current live session is counted only once, regardless of store listeners.
+// Calculate the union of airtime intervals, never double-count overlapping sessions.
+async function djDailyAirtime(db:D1Database,djId:number,now:number):Promise<number>{
+  const midnight=new Date(now);midnight.setUTCHours(0,0,0,0);
+  const start=midnight.getTime();
+  const sessions=await db.prepare(
+    'SELECT started_at,ended_at FROM dj_sessions WHERE dj_id=? AND started_at<? AND COALESCE(ended_at,?)>? ORDER BY started_at'
+  ).bind(djId,now,now,start).all<any>();
+  let total=0,left=-1,right=-1;
+  for(const session of sessions.results||[]){
+    const s=Math.max(start,Number(session.started_at)),e=Math.min(now,Number(session.ended_at??now));
+    if(!Number.isFinite(s)||!Number.isFinite(e)||e<=s)continue;
+    if(left<0){left=s;right=e;}
+    else if(s<=right)right=Math.max(right,e);
+    else{total+=right-left;left=s;right=e;}
+  }
+  if(left>=0)total+=right-left;
+  return total;
+}
 async function enforceDjDailyLimit(db: D1Database, djId: number): Promise<boolean> {
-  const now = Date.now();
-  const start = new Date(now); start.setUTCHours(0,0,0,0);
-  const midnight = start.getTime();
-  const usage = await db.prepare(
-    'SELECT COALESCE(SUM(MAX(0, MIN(COALESCE(ended_at, ?), ?) - MAX(started_at, ?))),0) AS ms FROM dj_sessions WHERE dj_id=? AND started_at<? AND COALESCE(ended_at,?)>?'
-  ).bind(now,now,midnight,djId,now,now,midnight).first<any>();
-  if(Number(usage?.ms||0)<21600000)return false;
+  const now=Date.now();
+  if(await djDailyAirtime(db,djId,now)<21600000)return false;
   await db.batch([
     db.prepare('UPDATE dj_profiles SET is_live=0,live_listener_count=0,updated_at=? WHERE id=? AND is_live=1').bind(now,djId),
     db.prepare('UPDATE dj_sessions SET ended_at=?,last_heartbeat=? WHERE dj_id=? AND ended_at IS NULL').bind(now,now,djId)
