@@ -30,8 +30,8 @@ export async function creditVerifiedPayment(db:D1Database,input:{userId:string;m
     issuanceStatements:[db.prepare('UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?')
       .bind(tlToAtoms(paidTL+bonusTL),source)],
     atomicStatements:[
-      db.prepare(`INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,status)
-        VALUES (?,?,?,?,?,?,'success')`).bind(userId,method,paymentId,orderId,paidTL,paidTL+bonusTL),
+      db.prepare(`INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,bonus_tl,status)
+        VALUES (?,?,?,?,?,?,?,'success')`).bind(userId,method,paymentId,orderId,paidTL,paidTL+bonusTL,bonusTL),
       db.prepare('UPDATE users SET tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?').bind(paidTL,userId),
       ...(input.atomicStatements||[])]
   });
