@@ -135,25 +135,16 @@ router.post('/airtime/record', async c => {
   }catch{return c.json({ok:false,error:'INVALID_LOCAL_MONTH'},400);}
   try{
     const service=await c.env.DB.prepare(
-      "SELECT status FROM central_broadcast_service_accounts WHERE service_id=?"
-    ).bind(serviceId).first<{status:string}>();
+      "SELECT status,parent_admin_user_id FROM central_broadcast_service_accounts WHERE service_id=?"
+    ).bind(serviceId).first<{status:string;parent_admin_user_id:number}>();
     if(service?.status!=='active')return c.json({ok:false,error:'SERVICE_NOT_ACTIVE'},403);
-    const grant=await c.env.DB.prepare(`
-      SELECT 1 AS allowed FROM central_broadcast_service_file_grants sg
-      JOIN tl3_v5_releases v ON v.file_id=sg.file_id
-      JOIN tl_files f ON f.id=v.file_id
-      WHERE sg.service_id=? AND sg.country=? AND sg.file_id=? AND sg.status='active'
-        AND (sg.expires_at IS NULL OR sg.expires_at>?)
-        AND v.status='sealed' AND v.user_id=? AND f.shared=1
-        AND COALESCE(f.revenue_held,0)=0
-        AND EXISTS (SELECT 1 FROM central_broadcast_rights_grants rg
-          WHERE rg.file_id=? AND rg.creator_id=? AND rg.country=? AND rg.status='active'
-            AND (rg.expires_at IS NULL OR rg.expires_at>?))
-        AND EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=? AND cm.user_id=v.user_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved'))
-      LIMIT 1
-    `).bind(serviceId,country,fileId,endedAt,creatorId,fileId,creatorId,country,endedAt,fileId)
-      .first<{allowed:number}>();
-    if(!grant)return c.json({ok:false,error:'BROADCAST_RIGHTS_NOT_GRANTED'},403);
+    // Evidence uses the same V5 eligibility as playback. A premium payment
+    // or a legacy grant row is not required for ordinary broadcast music.
+    const permitted=await permittedStationTracks(c.env.DB,country,service.parent_admin_user_id);
+    const creator=await c.env.DB.prepare('SELECT user_id FROM tl3_v5_releases WHERE file_id=?')
+      .bind(fileId).first<{user_id:number}>();
+    if(!permitted.some(t=>t.file_id===fileId)||Number(creator?.user_id)!==creatorId)
+      return c.json({ok:false,error:'BROADCAST_RIGHTS_NOT_GRANTED'},403);
     const atoms=calculateCentralBroadcastAtoms(BigInt(audibleMs));
     const inserted=await c.env.DB.prepare(`
       INSERT OR IGNORE INTO tilo_v5_verified_airtime
@@ -175,7 +166,7 @@ router.post('/airtime/record', async c => {
     }
     return c.json({ok:true,replayed:false,posted:false,event_id:eventId,
       creator_atoms:Number(atoms.creatorAtoms),platform_atoms:Number(atoms.platformAtoms)});
-  }catch(e){console.error('[TILO_AIRTIME_RECORD]',e);return c.json({ok:false,error:'AIRTIME_STORAGE_UNAVAILABLE'},503);}
+  }catch(e){if(String(e).includes('TILO_AIRTIME_INTERVAL_OVERLAP'))return c.json({ok:false,error:'AIRTIME_INTERVAL_OVERLAP'},409);console.error('[TILO_AIRTIME_RECORD]',e);return c.json({ok:false,error:'AIRTIME_STORAGE_UNAVAILABLE'},503);}
 });
 
 /**

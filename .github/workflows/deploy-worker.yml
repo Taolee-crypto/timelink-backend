@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - "src/**"
+      - "scripts/prepare-tilo-schema.cjs"
       - "migrations/**"
       - "wrangler.toml"
       - "package.json"
@@ -47,6 +48,14 @@ jobs:
       - name: Verify Music Gate in the actual Cloudflare runtime
         run: node scripts/test-v5-music-gate-workerd.cjs
 
+      - name: Verify TILO station eligibility and evidence storage
+        run: |
+          node scripts/test-tilo-station-v5.cjs
+          node scripts/test-tilo-airtime-storage.cjs
+          node scripts/test-tilo-v5-contribution.cjs
+          npx --no-install esbuild tests/tilo-v5-scheduler.test.ts --bundle --platform=node --format=cjs --outfile=/tmp/tilo-scheduler-test.cjs
+          node /tmp/tilo-scheduler-test.cjs
+
       - name: Validate Worker bundle
         run: npx wrangler deploy --dry-run --outdir .wrangler-dist
 
@@ -63,6 +72,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/prepare-music-gate-schema.cjs
+
+      - name: Prepare and verify TILO evidence storage (no payout)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/prepare-tilo-schema.cjs
 
       - name: Deploy Worker to production
         env:
