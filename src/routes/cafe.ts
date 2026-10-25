@@ -450,6 +450,37 @@ router.put('/channels/:id', async (c) => {
   }
 });
 
+// Store DJ timetable: one source at a time, central radio otherwise.
+// Times are HH:mm in the store's local clock; schedule is explicitly selected by the owner.
+router.put('/channels/:id/dj-schedule',async c=>{
+  const auth=await authUser(c);
+  if(!auth)return c.json({ok:false,error:'인증 필요'},401);
+  await ensureCafeTables(c.env.DB);
+  const id=c.req.param('id');
+  const store=await c.env.DB.prepare('SELECT owner_id FROM cafe_channels WHERE channel_id=? AND status=?').bind(id,'active').first<any>();
+  if(!store)return c.json({ok:false,error:'스토어 없음'},404);
+  if(Number(store.owner_id)!==auth.id)return c.json({ok:false,error:'권한 없음'},403);
+  const body=await c.req.json<any>().catch(()=>({}));
+  if(!Array.isArray(body.slots)||body.slots.length>48)return c.json({ok:false,error:'편성표 형식 오류'},400);
+  const links=await c.env.DB.prepare('SELECT dj_id,manager_user_id FROM v5_sales_stores WHERE channel_id=?').bind(id).first<any>();
+  if(body.slots.length&&!links?.manager_user_id)return c.json({ok:false,error:'계약 매니저 연결이 필요합니다.'},400);
+  const normalized:any[]=[];
+  for(const slot of body.slots){
+    const djId=Number(slot.dj_id);
+    const start=String(slot.start||''),end=String(slot.end||'');
+    if(!Number.isSafeInteger(djId)||djId<=0||!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(start)||!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(end)||start>=end)
+      return c.json({ok:false,error:'DJ 및 방송 시간을 확인하세요.'},400);
+    const dj=await c.env.DB.prepare('SELECT id FROM dj_profiles WHERE id=? AND status=?').bind(djId,'active').first<any>();
+    if(!dj||djId!==Number(links.dj_id))return c.json({ok:false,error:'계약 매니저가 연결한 DJ만 편성할 수 있습니다.'},403);
+    normalized.push({dj_id:djId,start,end});
+  }
+  normalized.sort((a,b)=>a.start.localeCompare(b.start));
+  for(let i=1;i<normalized.length;i++)if(normalized[i].start<normalized[i-1].end)
+    return c.json({ok:false,error:'스토어 방송 시간대가 겹칩니다.'},400);
+  await c.env.DB.prepare('UPDATE cafe_channels SET schedules=?,updated_at=? WHERE channel_id=?').bind(JSON.stringify(normalized),Date.now(),id).run();
+  return c.json({ok:true,channel_id:id,schedules:normalized});
+});
+
 // ── DELETE /api/cafe/channels/:id ──
 router.delete('/channels/:id', async (c) => {
   const auth = await authUser(c);
