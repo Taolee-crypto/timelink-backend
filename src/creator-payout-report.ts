@@ -4,18 +4,19 @@ WITH valid_settlements AS (
  SELECT t.id,t.transaction_type FROM v3_economy_transactions t
  WHERE t.status='posted' AND (
   (t.transaction_type='track_playback_settlement' AND t.source='tl3_actual_playback') OR
+  (t.transaction_type='self_play_income_release' AND t.source='self_play_policy_v1') OR
   (t.transaction_type='central_broadcast_settlement' AND t.source='verified_central_broadcast') OR
   (t.transaction_type='tilo_v5_broadcast_settlement' AND t.source='tilo_verified_airtime'))
  AND EXISTS(SELECT 1 FROM v3_economy_entries e WHERE e.transaction_id=t.id AND e.asset_code='TL')
  AND NOT EXISTS(SELECT 1 FROM v3_economy_entries e WHERE e.transaction_id=t.id GROUP BY e.asset_code HAVING SUM(e.amount_atoms)<>0)
 ), earnings AS (
  SELECT a.owner_id AS user_id,SUM(e.amount_atoms) AS earned_atoms,
- SUM(CASE WHEN t.transaction_type='track_playback_settlement' THEN e.amount_atoms ELSE 0 END) AS playback_atoms,
- SUM(CASE WHEN t.transaction_type<>'track_playback_settlement' THEN e.amount_atoms ELSE 0 END) AS broadcast_atoms
+ SUM(CASE WHEN t.transaction_type IN ('track_playback_settlement','self_play_income_release') THEN e.amount_atoms ELSE 0 END) AS playback_atoms,
+ SUM(CASE WHEN t.transaction_type NOT IN ('track_playback_settlement','self_play_income_release') THEN e.amount_atoms ELSE 0 END) AS broadcast_atoms
  FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id AND a.asset_code=e.asset_code
  JOIN valid_settlements t ON t.id=e.transaction_id
  WHERE a.owner_type='user' AND e.asset_code='TL'
- AND ((t.transaction_type='track_playback_settlement' AND a.bucket IN ('wallet_paid','wallet_ad'))
+ AND ((t.transaction_type IN ('track_playback_settlement','self_play_income_release') AND a.bucket IN ('wallet_paid','wallet_ad'))
   OR(t.transaction_type='central_broadcast_settlement' AND a.bucket='broadcast_earnings')
   OR(t.transaction_type='tilo_v5_broadcast_settlement' AND a.bucket='tilo_creator_reward'))
  GROUP BY a.owner_id
@@ -51,7 +52,7 @@ export const CREATOR_TRACK_SQL=CREATOR_REPORT_CTE.slice(0,CREATOR_REPORT_CTE.ind
  FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id AND a.asset_code=e.asset_code
  JOIN valid_settlements v ON v.id=e.transaction_id JOIN v3_economy_transactions tx ON tx.id=v.id
  WHERE a.owner_type='user' AND e.asset_code='TL' AND
- ((v.transaction_type='track_playback_settlement' AND a.bucket IN ('wallet_paid','wallet_ad')) OR
+ ((v.transaction_type IN ('track_playback_settlement','self_play_income_release') AND a.bucket IN ('wallet_paid','wallet_ad')) OR
   (v.transaction_type='central_broadcast_settlement' AND a.bucket='broadcast_earnings') OR
   (v.transaction_type='tilo_v5_broadcast_settlement' AND a.bucket='tilo_creator_reward'))
  GROUP BY a.owner_id,file_id
@@ -112,8 +113,8 @@ export async function readCreatorPayoutReport(db:D1Database,userId?:number){
  return {ok:true,ledger_version:'V5',read_only:true,as_of:new Date().toISOString(),creators,
   requests:requests.map(r=>({...r,verification_status:'legacy_record_not_ledger_verified'})),
   platform:userId?undefined:{music_revenue_tl:tl((results[4].results?.[0] as any)?.atoms)},tracks:trackDetails,
-  summary:{creator_count:creators.length,earned_tl:tl(earned),personal_display_tl:creators.reduce((n,r)=>Number((n+r.personal_display_tl).toFixed(4)),0),self_play_held_tl:tl(held),
+  summary:{creator_count:creators.length,earned_tl:tl(earned),playback_earned_tl:tl(rows.reduce((n,r)=>n+Number(r.playback_atoms),0)),broadcast_earned_tl:tl(rows.reduce((n,r)=>n+Number(r.broadcast_atoms),0)),personal_display_tl:creators.reduce((n,r)=>Number((n+r.personal_display_tl).toFixed(4)),0),self_play_held_tl:tl(held),
    pending_request_count:requests.filter(r=>r.status==='pending').length,request_count:requests.length,
    unpaid_tl:null,cash_redeemable_tl:null},warnings,basis:'posted_balanced_v5_creator_credit_entries',
-  note:'창작 수익은 실제 수취인의 V5 원장 입금액입니다. 충전·보너스·본인 재생 보류금은 수익에서 제외합니다. 현금 환전 가능액은 별도 기여도 및 정산 검토 후 확정합니다.'};
+  note:'창작 수익은 실제 수취인의 V5 원장 입금액입니다. 충전·가입 보너스 자체는 수익이 아니며 실제 TL 사용으로 정산된 창작자 몫을 수익으로 집계합니다. 현금 환전 가능액은 별도 기여도 및 정산 검토 후 확정합니다.'};
 }

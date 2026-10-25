@@ -298,6 +298,17 @@ export async function settleTrackPlayback(
   await assertTLAtomScale(db);
   if(!Number.isSafeInteger(amountAtoms)||amountAtoms<=0) throw new Error('Invalid playback settlement amount');
   if(!Number.isSafeInteger(creatorId)||creatorId<=0) throw new Error('Track creator is unavailable');
+  const prior=await db.prepare('SELECT id,transaction_type,source,reference_id,actor_user_id,metadata_json FROM v3_economy_transactions WHERE idempotency_key=?').bind(idempotencyKey).first<any>();
+  if(prior){
+    let metadata:any={};try{metadata=JSON.parse(prior.metadata_json||'{}');}catch{}
+    if(prior.transaction_type!=='track_playback_settlement'||prior.source!=='tl3_actual_playback'||
+      String(prior.reference_id)!==String(shareId)||String(prior.actor_user_id)!==String(userId)||
+      Number(metadata.file_id)!==fileId||Number(metadata.amount_atoms)!==amountAtoms||
+      Number(metadata.played_seconds)!==playedSeconds)throw Error('Playback settlement idempotency conflict');
+    return {id:String(prior.id),replayed:true,amountAtoms,creatorShareAtoms:Number(metadata.creator_share_atoms||0),
+      platformShareAtoms:Number(metadata.platform_share_atoms||0),used:metadata.source_allocation||{paid:0,ad:0,bonus:0}};
+  }
+
   const rightsSplit=await readCreatorSplit(db,fileId);
   const balances=await getTrackPoolBalances(db,userId,shareId);
   if(balances.ad+balances.bonus+balances.paid<amountAtoms) throw new Error('INSUFFICIENT_TRACK_TL');
@@ -324,23 +335,20 @@ export async function settleTrackPlayback(
     const creatorBucket=source==='paid'?'wallet_paid':'wallet_ad';
     const platformAccount=await ensureLedgerAccount(db,'platform','timelink','TL','playback_revenue_'+source);
     add(pool,-consumed);add(platformAccount,platformPart);
-    if(userId===creatorId){
-      const held=await ensureLedgerAccount(db,'escrow',creatorId,'TL','self_play_creator_share_'+source);add(held,creatorPart);
-    }else if(rightsSplit){
+    if(rightsSplit){
       if(!rightsSplit.ready){
         const held=await ensureLedgerAccount(db,'escrow','track:'+fileId+':split:'+rightsSplit.version,'TL','creator_split_pending_'+source);
         add(held,creatorPart);
       }else{
         const allocated=allocateCreatorAtoms(creatorPart,rightsSplit.members.map(m=>({id:String(m.id),share_bps:Number(m.share_bps),recipient_user_id:Number(m.recipient_user_id)})));
         for(const part of allocated){
-          const self=part.recipient_user_id===userId;
-          const account=await ensureLedgerAccount(db,self?'escrow':'user',part.recipient_user_id,'TL',self?'self_play_creator_share_'+source:creatorBucket);
-          add(account,part.amount_atoms);if(!self)creatorCreditedAtoms+=part.amount_atoms;
+          const account=await ensureLedgerAccount(db,'user',part.recipient_user_id,'TL',creatorBucket);
+          add(account,part.amount_atoms);creatorCreditedAtoms+=part.amount_atoms;
         }
       }
     }else{
-      const creatorAccount=await ensureLedgerAccount(db,userId===creatorId?'escrow':'user',creatorId,'TL',userId===creatorId?'self_play_creator_share_'+source:creatorBucket);
-      add(creatorAccount,creatorPart);if(userId!==creatorId)creatorCreditedAtoms+=creatorPart;
+      const creatorAccount=await ensureLedgerAccount(db,'user',creatorId,'TL',creatorBucket);
+      add(creatorAccount,creatorPart);creatorCreditedAtoms+=creatorPart;
     }
     creatorShareAtoms+=creatorPart;platformShareAtoms+=platformPart;
   }
@@ -353,7 +361,7 @@ export async function settleTrackPlayback(
       amount_atoms:amountAtoms,creator_share_atoms:creatorShareAtoms,
       platform_share_atoms:platformShareAtoms,source_allocation:used,
       rights_split_version:rightsSplit?.version??null,rights_split_pending:!!rightsSplit&&!rightsSplit.ready,
-      self_play_held:userId===creatorId
+      self_play:userId===creatorId,self_play_held:false
     },
     lines:[...lineMap.values()],
     atomicStatements:[
