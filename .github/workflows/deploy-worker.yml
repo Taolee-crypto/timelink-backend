@@ -45,6 +45,9 @@ jobs:
       - name: Verify Music Gate analysis and review integration
         run: node scripts/test-v5-music-gate-worker.cjs
 
+      - name: Verify DJ V5 library and station workflow
+        run: node scripts/test-dj-v5-center.cjs
+
       - name: Verify Music Gate in the actual Cloudflare runtime
         run: node scripts/test-v5-music-gate-workerd.cjs
 

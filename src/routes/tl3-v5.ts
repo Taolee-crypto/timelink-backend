@@ -1,3 +1,4 @@
+import {authorizeDjMonitor} from '../dj-v5-library';
 import {readCreatorSplit} from '../creator-split-policy';
 import { ensureCentralBroadcastSchema } from '../central-broadcast-schema';
 import { permittedStationTracks } from '../tilo-station';
@@ -450,14 +451,18 @@ router.post('/session-license/:id', async (c) => {
     if (!release) return c.json({ok:false,error:'봉인된 TL3 V5 자산을 찾을 수 없습니다.'},404);
     const broadcastCountry=String(body?.broadcast_country||'').toUpperCase();
     const isBroadcast=!!broadcastCountry;
+    const requestedDjMonitor=body?.dj_monitor===true;
+    const djStationId=Number(body?.dj_station_id||0);
+    if(requestedDjMonitor&&(isBroadcast||!(await authorizeDjMonitor(c.env.DB,userId,djStationId,fileId))))
+      return c.json({ok:false,code:'DJ_MONITOR_DENIED',error:'본인이 현재 방송 중인 곡만 모니터링할 수 있습니다.'},403);
     if(isBroadcast && !(await authorizedTiloBroadcast(c.env.DB,userId,fileId,broadcastCountry)))
       return c.json({ok:false,code:'BROADCAST_RIGHTS_REQUIRED',error:'TILO 계정·국가별 파일 권한·방송권 확인이 필요합니다.'},403);
     // V3 track pools are the canonical source for newly charged playback TL.
     // Do not gate V5 licenses against the legacy tl_user_files cache.
-    const trackPools = await getTrackPoolBalances(c.env.DB,userId,String(release.share_id));
+    const trackPools = isBroadcast||requestedDjMonitor?{ad:0n,bonus:0n,paid:0n}:await getTrackPoolBalances(c.env.DB,userId,String(release.share_id));
     const trackBalanceAtoms = trackPools.ad + trackPools.bonus + trackPools.paid;
     const trackBalanceTl = atomsToTl(trackBalanceAtoms);
-    if (!isBroadcast && trackBalanceAtoms <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:trackBalanceTl},402);
+    if (!isBroadcast && !requestedDjMonitor && trackBalanceAtoms <= 0) return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 재생 권한을 발급할 수 없습니다.',asset_tl:trackBalanceTl},402);
     const masterKeys = resolveMasterKeyring(c.env);
     const releaseKeyId = String(release.key_id || 'legacy');
     const releaseMasterKey = masterKeys.keys[releaseKeyId];
@@ -493,7 +498,7 @@ router.post('/session-license/:id', async (c) => {
       player_id:playerId,user_id:userId,file_id:fileId,share_id:String(release.share_id),session_id:sessionId,
       expires_at:expiresAt,salt:b64u(salt),nonce:b64u(nonce),
       ephemeral_public_key:{kty:'EC',crv:'P-256',x:ephemeralPublic.x,y:ephemeralPublic.y},
-      wrapped_license:b64u(wrapped),aad_thumbprint:thumb,broadcast:isBroadcast,broadcast_country:isBroadcast?broadcastCountry:null});
+      wrapped_license:b64u(wrapped),aad_thumbprint:thumb,broadcast:isBroadcast,broadcast_country:isBroadcast?broadcastCountry:null,dj_monitor:requestedDjMonitor,dj_station_id:requestedDjMonitor?djStationId:null});
   } catch(e:any) {
     const message=String(e?.message||'TL3 V5 세션 라이선스 발급 실패');
     if(message.includes('V3_TL_ATOM_SCALE_NOT_READY')||/no such table|no such column/i.test(message))

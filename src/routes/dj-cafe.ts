@@ -1,3 +1,4 @@
+import {djLibrary,djTrack} from '../dj-v5-library';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../types';
@@ -19,21 +20,10 @@ async function authUser(c: Context<{ Bindings: Env }>): Promise<{id: number, use
 }
 
 
-// V5 DJ station opening is a paid entitlement, separate from a free DJ profile.
-// Only a trusted payment/admin settlement flow may insert an active entitlement.
-// This route deliberately never accepts client-declared payment success.
-async function requirePaidDjStation(db: D1Database, userId: number): Promise<boolean> {
-  await db.prepare(`CREATE TABLE IF NOT EXISTS dj_station_entitlements (
-    user_id INTEGER PRIMARY KEY,
-    payment_reference TEXT NOT NULL,
-    paid_at INTEGER NOT NULL,
-    valid_until INTEGER,
-    status TEXT NOT NULL DEFAULT 'active'
-  )`).run();
-  const row = await db.prepare(
-    "SELECT user_id FROM dj_station_entitlements WHERE user_id=? AND status='active' AND (valid_until IS NULL OR valid_until>?)"
-  ).bind(userId, Date.now()).first<any>();
-  return !!row;
+// DJ opening is free; a recorded agreement is required before going live.
+async function hasDjOpeningAgreement(db:D1Database,userId:number):Promise<boolean>{
+  await ensureDjOpeningAgreements(db);
+  return !!await db.prepare('SELECT user_id FROM dj_opening_agreements WHERE user_id=?').bind(userId).first();
 }
 
 // ── 테이블 보장 ──
@@ -179,12 +169,12 @@ router.post('/opening-agreement', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
   const body = await c.req.json<any>().catch(() => ({}));
-  if (body.terms_version !== DJ_OPENING_TERMS_VERSION || body.accept_terms !== true || body.accept_paid_opening !== true || body.accept_revenue_share !== true)
-    return c.json({ ok: false, error: '유료 개설 조건 및 수익배분 약관에 모두 동의해야 합니다.' }, 400);
+  if (body.terms_version !== DJ_OPENING_TERMS_VERSION || body.accept_terms !== true || body.accept_revenue_share !== true)
+    return c.json({ ok: false, error: '방송 운영 조건 및 수익 정산 안내에 동의해야 합니다.' }, 400);
   await ensureDjOpeningAgreements(c.env.DB);
   const now = Date.now();
   await c.env.DB.prepare('INSERT INTO dj_opening_agreements(user_id,terms_version,accepted_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET terms_version=excluded.terms_version, accepted_at=excluded.accepted_at').bind(auth.id, DJ_OPENING_TERMS_VERSION, now).run();
-  return c.json({ ok: true, agreed: true, terms_version: DJ_OPENING_TERMS_VERSION, accepted_at: now, payment_confirmed: false, station_activated: false });
+  return c.json({ ok: true, agreed: true, terms_version: DJ_OPENING_TERMS_VERSION, accepted_at: now, opening_fee_tl: 0, station_activated: true });
 });
 
 // Shared member profile. DJ profile retains separate broadcast-specific fields.
@@ -542,7 +532,7 @@ router.post('/session/start', async (c) => {
   const cafeChannelId = String(body.cafe_channel_id || '').trim();
 
   await ensureDJCafeTables(c.env.DB);
-  if (!(await requirePaidDjStation(c.env.DB, auth.id))) return c.json({ ok: false, code: 'DJ_STATION_PAYMENT_REQUIRED', error: 'DJ 방송국 유료 개설 확인 후 방송할 수 있습니다. 개설비 결제 및 승인 기능은 준비 중입니다.' }, 403);
+  if (!(await hasDjOpeningAgreement(c.env.DB, auth.id))) return c.json({ok:false,code:'DJ_AGREEMENT_REQUIRED',error:'방송 운영 조건에 먼저 동의해 주세요.'},403);
   const dj = await c.env.DB.prepare('SELECT id FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
   if (!dj) return c.json({ ok: false, error: 'DJ 프로필이 없습니다.' }, 400);
 
@@ -750,42 +740,15 @@ router.post('/select-files', async (c) => {
 });
 
 // ── GET /api/dj-cafe/my-files — 내가 업로드한 TL3 파일 ──
-router.get('/my-files', async (c) => {
-  const auth = await authUser(c);
-  if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
-  try {
-    const { results } = await c.env.DB.prepare(
-      `SELECT id, title, artist, album, category,
-              COALESCE(duration, 0) as duration,
-              COALESCE(file_tl, 0) as file_tl,
-              COALESCE(pulse, 0) as pulse,
-              COALESCE(cover_url, '') as cover_url,
-              COALESCE(content_kind, '') as content_kind,
-              COALESCE(release_mode, '') as release_mode,
-              COALESCE(stream_url, '') as stream_url,
-              0 as play_count,
-              0 as total_revenue,
-              created_at
-       FROM tl_shares
-       WHERE user_id = ?
-         AND (
-           lower(COALESCE(content_kind,'')) = 'tl3'
-           OR lower(COALESCE(release_mode,'')) LIKE 'tl3%'
-           OR EXISTS (
-             SELECT 1 FROM tl3_v5_releases v
-             WHERE v.status='sealed'
-               AND (CAST(v.share_id AS TEXT)=CAST(tl_shares.id AS TEXT)
-                    OR v.file_id IN (SELECT f.id FROM tl_files f WHERE f.stream_url=tl_shares.stream_url))
-           )
-         )
-       ORDER BY created_at DESC
-       LIMIT 200`
-    ).bind(auth.id).all();
-
-    return c.json({ ok: true, files: results || [] });
-  } catch (e: any) {
-    return c.json({ ok: false, error: e?.message || '파일 조회 실패' }, 500);
-  }
+router.get('/my-files', async c=>{
+  const auth=await authUser(c);if(!auth)return c.json({ok:false,error:'인증 필요'},401);
+  try{return c.json({ok:true,files:await djLibrary(c.env.DB,auth.id)});}
+  catch(error:any){return c.json({ok:false,error:error?.message||'파일 조회 실패'},500);}
+});
+router.get('/library', async c=>{
+  const auth=await authUser(c);if(!auth)return c.json({ok:false,error:'인증 필요'},401);
+  try{return c.json({ok:true,files:await djLibrary(c.env.DB),scheduling_policy:'promotion_first_random_fallback'});}
+  catch(error:any){return c.json({ok:false,error:error?.message||'공개 V5 곡 조회 실패'},500);}
 });
 
 // ══════════════════════════════════════════
@@ -793,56 +756,30 @@ router.get('/my-files', async (c) => {
 // ══════════════════════════════════════════
 
 // ── POST /api/dj-cafe/broadcast-set — 방송 세트 저장 ──
-router.post('/broadcast-set', async (c) => {
-  const auth = await authUser(c);
-  if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
-  const body = await c.req.json<any>().catch(() => ({}));
-  const name = String(body.name || '').trim();
-  const description = String(body.description || '').trim();
-  const mood = JSON.stringify(body.mood || []);
-  const tracks = JSON.stringify(body.tracks || []);
-
-  // 빈 세트도 허용 (삭제 용도)
-  if (!name && (!body.tracks || body.tracks.length === 0)) {
-    await c.env.DB.prepare('UPDATE dj_profiles SET broadcast_set=?, updated_at=? WHERE user_id=?')
-      .bind('null', Date.now(), auth.id).run();
-    return c.json({ ok: true, message: '세트 삭제됨' });
-  }
-  if (!name) return c.json({ ok: false, error: '세트 이름 필수' }, 400);
-  if (!Array.isArray(body.tracks) || body.tracks.length === 0) {
-    return c.json({ ok: false, error: '곡을 최소 1개 이상 선택하세요' }, 400);
-  }
-
+router.post('/broadcast-set',async c=>{
+  const auth=await authUser(c);if(!auth)return c.json({ok:false,error:'인증 필요'},401);
   await ensureDJCafeTables(c.env.DB);
-  const dj = await c.env.DB.prepare('SELECT id FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
-  if (!dj) return c.json({ ok: false, error: 'DJ 프로필 먼저 등록' }, 400);
-
-  // tl3만 필터 (방송 원칙)
-  const inputTracks = Array.isArray(body.tracks) ? body.tracks : [];
-  const filteredTracks: string[] = [];
-  for (const tid of inputTracks) {
-    const row = await c.env.DB.prepare(
-      "SELECT id FROM tl_shares WHERE id=? AND lower(COALESCE(content_kind,''))='tl3'"
-    ).bind(String(tid)).first<any>();
-    if (row) filteredTracks.push(String(tid));
+  const dj=await c.env.DB.prepare("SELECT id,is_live FROM dj_profiles WHERE user_id=? AND status='active'").bind(auth.id).first<any>();
+  if(!dj)return c.json({ok:false,error:'DJ 프로필을 먼저 등록해 주세요.'},400);
+  const body=await c.req.json<any>().catch(()=>({}));
+  if(!Array.isArray(body.tracks)||body.tracks.length>200)
+    return c.json({ok:false,error:'방송 세트는 최대 200곡까지 선택할 수 있습니다.'},400);
+  if(dj.is_live)return c.json({ok:false,error:'방송을 종료한 뒤 세트를 수정하거나 삭제해 주세요.'},409);
+  const name=String(body.name||'').trim().slice(0,100);
+  if(!name&&body.tracks.length===0){
+    await c.env.DB.prepare('UPDATE dj_profiles SET broadcast_set=?,updated_at=? WHERE user_id=?').bind('null',Date.now(),auth.id).run();
+    return c.json({ok:true,set:null,message:'세트 삭제됨'});
   }
-  if (filteredTracks.length === 0) {
-    return c.json({ ok: false, error: 'TL3 곡만 방송 세트에 넣을 수 있습니다' }, 400);
-  }
-
-  const setData = JSON.stringify({
-    name, description,
-    mood: JSON.parse(mood),
-    tracks: filteredTracks,
-    updated_at: Date.now()
-  });
-
-  const now = Date.now();
-  await c.env.DB.prepare(
-    'UPDATE dj_profiles SET broadcast_set=?, updated_at=? WHERE user_id=?'
-  ).bind(setData, now, auth.id).run();
-
-  return c.json({ ok: true, message: '방송 세트 저장 완료' });
+  if(!name||!body.tracks.length)return c.json({ok:false,error:'세트 이름과 곡을 입력해 주세요.'},400);
+  const ids=[...new Set<string>(body.tracks.map(String))];
+  const verified=await Promise.all(ids.map(id=>djTrack(c.env.DB,id)));
+  if(verified.some(t=>!t))return c.json({ok:false,code:'DJ_TRACK_UNAVAILABLE',error:'공개가 취소되었거나 방송할 수 없는 곡이 있습니다. 곡 목록을 새로고침해 주세요.'},409);
+  const tracks=verified.map(t=>String(t!.id));
+  const set={name,description:String(body.description||'').slice(0,1000),
+    mood:Array.isArray(body.mood)?body.mood.slice(0,12):[],tracks,updated_at:Date.now()};
+  await c.env.DB.prepare('UPDATE dj_profiles SET broadcast_set=?,updated_at=? WHERE user_id=?')
+    .bind(JSON.stringify(set),Date.now(),auth.id).run();
+  return c.json({ok:true,set,message:'방송 세트 저장 완료'});
 });
 
 // ── GET /api/dj-cafe/broadcast-set — 내 방송 세트 조회 ──
@@ -855,21 +792,12 @@ router.get('/broadcast-set', async (c) => {
   let set: { tracks?: string[]; [key: string]: any } | null = null;
   try { set = JSON.parse(row.broadcast_set || 'null') as { tracks?: string[]; [key: string]: any } | null; } catch(e) {}
   
-  // ⭐ tracks 문자열 배열 → track_details 객체 배열로 enrich
-  if (set && Array.isArray(set.tracks) && set.tracks.length > 0) {
-    try {
-      const placeholders = set.tracks.map(() => '?').join(',');
-      const { results } = await c.env.DB.prepare(
-        'SELECT id, title, artist, duration, cover_url, stream_url, file_tl, content_kind FROM tl_shares WHERE id IN (' + placeholders + ')'
-      ).bind(...set.tracks).all<{ id: string; title: string; artist: string; duration: number; cover_url: string | null; stream_url: string | null; file_tl: number; content_kind: string }>();
-      const map: Record<string, any> = {};
-      for (const t of (results || [])) map[t.id] = t;
-      set.track_details = set.tracks.map(id => map[id] || { id: id, title: id, missing: true });
-    } catch(e) {
-      set.track_details = set.tracks.map(id => ({ id: id, title: id, error: true }));
-    }
+  if(!set||!Array.isArray(set.tracks))set=null;
+  if(set&&Array.isArray(set.tracks)){
+    const details=await Promise.all(set.tracks.map(async id=>await djTrack(c.env.DB,String(id))||{id,title:'방송할 수 없는 곡',missing:true}));
+    set.track_details=details;set.tracks=details.map(track=>String(track.id));
   }
-  
+
   return c.json({ ok: true, set });
 });
 
@@ -893,9 +821,9 @@ router.post('/broadcast/start', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
   await ensureDJCafeTables(c.env.DB);
-  if (!(await requirePaidDjStation(c.env.DB, auth.id))) return c.json({ ok: false, code: 'DJ_STATION_PAYMENT_REQUIRED', error: 'DJ 방송국 유료 개설 확인 후 방송할 수 있습니다. 개설비 결제 및 승인 기능은 준비 중입니다.' }, 403);
+  if (!(await hasDjOpeningAgreement(c.env.DB, auth.id))) return c.json({ok:false,code:'DJ_AGREEMENT_REQUIRED',error:'방송 운영 조건에 먼저 동의해 주세요.'},403);
 
-  const dj = await c.env.DB.prepare('SELECT id, broadcast_set FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
+  const dj = await c.env.DB.prepare("SELECT id, is_live, broadcast_set FROM dj_profiles WHERE user_id=? AND status='active'").bind(auth.id).first<any>();
   if (!dj) return c.json({ ok: false, error: 'DJ 프로필 먼저 등록' }, 400);
 
   let set = null;
@@ -904,15 +832,15 @@ router.post('/broadcast/start', async (c) => {
     return c.json({ ok: false, error: '방송 세트를 먼저 저장하세요' }, 400);
   }
 
-  // 첫 tl3 곡 찾기 (mp3 스킵)
+  if(Number(dj.is_live)===1)return c.json({ok:true,already_live:true});
+
+  // First currently eligible V5 track; publication is rechecked on every transition.
   let firstIdx = -1;
   let firstTrack: string | null = null;
   for (let i = 0; i < set.tracks.length; i++) {
     const candidate = String(set.tracks[i]);
-    const row = await c.env.DB.prepare(
-      "SELECT id FROM tl_shares WHERE id=? AND lower(COALESCE(content_kind,''))='tl3'"
-    ).bind(candidate).first<any>();
-    if (row) { firstIdx = i; firstTrack = candidate; break; }
+    const row = await djTrack(c.env.DB,candidate);
+    if (row) { firstIdx = i; firstTrack = String(row.id); break; }
   }
   if (!firstTrack) return c.json({ ok: false, error: '세트에 TL3 곡이 없습니다' }, 400);
 
@@ -936,7 +864,7 @@ router.post('/broadcast/next', async (c) => {
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
   await ensureDJCafeTables(c.env.DB);
 
-  const dj = await c.env.DB.prepare('SELECT id, is_live, live_current_track_idx, broadcast_set FROM dj_profiles WHERE user_id=?').bind(auth.id).first<any>();
+  const dj = await c.env.DB.prepare("SELECT id, is_live, live_current_track_idx, broadcast_set FROM dj_profiles WHERE user_id=? AND status='active'").bind(auth.id).first<any>();
   if (!dj || !dj.is_live) return c.json({ ok: false, error: '방송 중이 아닙니다' }, 400);
 
   let set = null;
@@ -950,10 +878,8 @@ router.post('/broadcast/next', async (c) => {
   for (let i = 0; i < setLen; i++) {
     nextIdx = (nextIdx + 1) % setLen;
     const candidate = String(set.tracks[nextIdx]);
-    const row = await c.env.DB.prepare(
-      "SELECT id FROM tl_shares WHERE id=? AND lower(COALESCE(content_kind,''))='tl3'"
-    ).bind(candidate).first<any>();
-    if (row) { nextTrack = candidate; break; }
+    const row = await djTrack(c.env.DB,candidate);
+    if (row) { nextTrack = String(row.id); break; }
   }
   if (!nextTrack) return c.json({ ok: false, error: '세트에 TL3 곡이 없습니다' }, 400);
   const now = Date.now();
@@ -1256,17 +1182,7 @@ router.get('/live/:djId{[0-9]+}/now', async (c) => {
   if (!dj) return c.json({ ok: false, error: 'DJ 없음' }, 404);
   if (!dj.is_live) return c.json({ ok: false, error: '방송 중 아님', is_live: false }, 200);
 
-  // 현재 곡 정보 조회
-  let track = null;
-  if (dj.live_current_track_id) {
-    track = await c.env.DB.prepare(
-      `SELECT id, title, artist, album, category, duration,
-              cover_url, stream_url, preview_url, file_tl,
-              content_kind, release_mode
-       FROM tl_shares WHERE id=?`
-    ).bind(dj.live_current_track_id).first<any>();
-  }
-
+  const track=dj.live_current_track_id?await djTrack(c.env.DB,String(dj.live_current_track_id)):null;
   const now = Date.now();
   const elapsedMs = dj.live_current_started_at
     ? (now - Number(dj.live_current_started_at))
@@ -1286,14 +1202,14 @@ router.get('/live/:djId{[0-9]+}/now', async (c) => {
       id: track.id,
       title: track.title,
       artist: track.artist,
-      album: track.album,
+      file_id:track.file_id,version:5,
       category: track.category,
       duration: track.duration,
       cover_url: track.cover_url,
-      stream_url: track.stream_url || track.preview_url,
-      file_tl: track.file_tl,
+      stream_url: track.stream_url,
+      file_tl: 1,
       content_kind: track.content_kind,
-      release_mode: track.release_mode,
+      release_mode: 'tl3_v5',
       started_at: dj.live_current_started_at,
       elapsed_ms: elapsedMs
     } : null
