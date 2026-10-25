@@ -154,10 +154,15 @@ async function ensurePaymentTable(db: any) {
       merchant_uid TEXT,
       amount_krw INTEGER NOT NULL,
       tl_granted INTEGER NOT NULL,
+      bonus_tl INTEGER NOT NULL DEFAULT 0,
       status TEXT DEFAULT 'pending',
       created_at TEXT DEFAULT (datetime('now'))
     )
   `).run();
+  const columns = await db.prepare('PRAGMA table_info(tl_payments)').all();
+  if (!(columns.results || []).some((col: any) => col.name === 'bonus_tl')) {
+    await db.prepare('ALTER TABLE tl_payments ADD COLUMN bonus_tl INTEGER NOT NULL DEFAULT 0').run();
+  }
 }
 
 /* ══════════════════════════════════════════════════
@@ -542,7 +547,7 @@ payment.get('/history', async (c) => {
   await ensurePaymentTable(c.env.DB);
 
   const rows = await c.env.DB.prepare(
-    `SELECT method, amount_krw, tl_granted, status, created_at
+    `SELECT method, amount_krw, tl_granted, bonus_tl, status, created_at
      FROM tl_payments WHERE user_id=? ORDER BY created_at DESC LIMIT 20`
   ).bind(userId).all();
 
