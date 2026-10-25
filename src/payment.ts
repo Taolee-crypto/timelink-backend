@@ -104,6 +104,7 @@ payment.post('/v5/premium/checkout',async c=>{
   const atoms=tlToAtoms(amount);
   const balance=await c.env.DB.prepare('SELECT available_atoms FROM v3_economy_balances WHERE account_id=?').bind(from).first<any>();
   if(Number(balance?.available_atoms||0)<atoms)return c.json({ok:false,error:'INSUFFICIENT_TL_P',required_tl:amount},409);
+  await c.env.DB.prepare(`CREATE TRIGGER IF NOT EXISTS v5_premium_wallet_paid_nonnegative BEFORE UPDATE OF available_atoms ON v3_economy_balances WHEN NEW.available_atoms<0 AND EXISTS(SELECT 1 FROM v3_economy_accounts a WHERE a.id=NEW.account_id AND a.bucket='wallet_paid') BEGIN SELECT RAISE(ABORT,'INSUFFICIENT_TL_P'); END`).run();
   await postLedgerTransaction(c.env.DB,{idempotencyKey:'premium:'+orderId,transactionType:'premium_budget_reserve',source:'premium_tl',referenceType:'premium_order',referenceId:orderId,actorUserId:uid,description:'TL PREMIUM 홍보 예산 보관',metadata:{plan,file_ids:ids,amount},lines:[{accountId:from,assetCode:'TL',amountAtoms:-atoms},{accountId:to,assetCode:'TL',amountAtoms:atoms}],atomicStatements:[insert]});
   return c.json({ok:true,order_id:orderId,status,amount,currency:'TL',simulated:false});
  }catch(e:any){console.error('[PREMIUM_CHECKOUT]',e);return c.json({ok:false,error:'CHECKOUT_FAILED'},503);}
