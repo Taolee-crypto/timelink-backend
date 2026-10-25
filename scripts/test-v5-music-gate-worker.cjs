@@ -114,7 +114,9 @@ async function main(){
   await api.runMusicGateAnalysis(env,mock);assert.equal(review(id).status,'review_required');
   assert.equal(review(id).analysis_error,'ANALYSIS_LEASE_EXPIRED');
   id=insert();sqlite.prepare("UPDATE v5_music_gate_reviews SET status='analyzing',analysis_token='dead',analysis_attempts=1,analysis_lease_until=0 WHERE id=?").run(id);
-  await api.runMusicGateAnalysis(env,mock);assert.equal(review(id).status,'review_required');assert.equal(review(id).analysis_attempts,2);
+  await api.runMusicGateAnalysis(env,mock);assert.equal(review(id).status,'approved');assert.equal(review(id).analysis_attempts,2);
+  assert.equal(review(id).analysis_error,null);
+  assert.equal(JSON.parse(review(id).evidence_json).automatic_approval,true);
   console.log('PASS cancelled/expired work cannot overwrite decisions; dead workers recover');
 
   id=insert();await api.runMusicGateAnalysis(env,async()=>response({...clear,unsafe_content:'suspected',risk_signals:['targeted_harassment']}));
