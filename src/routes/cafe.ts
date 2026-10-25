@@ -327,6 +327,9 @@ router.post('/channels', async (c) => {
 
     // Store welcome top-up: 42,500 TL personal signup + 57,500 TL store bonus.
     // A user receives this top-up only once, regardless of store count.
+    // Channel was already created: do not turn a successful signup into an error if bonus posting fails.
+    // Ledger posting remains idempotent and can be retried separately.
+    try {
     await assertTLAtomScale(c.env.DB);
     const welcomeKey = 'v5-store-welcome-user-' + auth.id;
     const priorWelcome = await c.env.DB.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?')
@@ -345,6 +348,10 @@ router.post('/channels', async (c) => {
         lines:[{accountId:source,assetCode:'TL',amountAtoms:-bonusAtoms},
           {accountId:destination,assetCode:'TL',amountAtoms:bonusAtoms}]
       });
+    }
+
+    } catch (bonusError) {
+      console.error('[store-welcome] bonus posting pending for user', auth.id, bonusError);
     }
 
     // ⭐ 체험 구독 생성
