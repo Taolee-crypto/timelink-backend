@@ -187,6 +187,23 @@ async function main(){
   assert.equal(res.status,404);const absent=await res.json();assert.equal(absent.account_id,1);assert.equal(absent.error,'REVIEW_NOT_FOUND');
   console.log('PASS recent reviews: current account only, bounded history, no private evidence and indistinguishable foreign/missing IDs');
 
+
+  sqlite.exec("UPDATE v5_music_gate_reviews SET status='cancelled' WHERE status='pending_analysis'");
+  const leaseRetryId=insert();
+  sqlite.prepare("UPDATE v5_music_gate_reviews SET status='review_required',analysis_error='ANALYSIS_LEASE_EXPIRED',analysis_attempts=3 WHERE id=?").run(leaseRetryId);
+  await assert.rejects(api.requestMusicGateRetry(env,2,leaseRetryId),/REVIEW_NOT_FOUND/);
+  const retry=await api.requestMusicGateRetry(env,1,leaseRetryId);assert.equal(retry.review_status,'pending_analysis');
+  assert.equal(review(leaseRetryId).analysis_attempts,0);assert.equal(JSON.parse(review(leaseRetryId).evidence_json).manual_retry_count,1);
+  await assert.rejects(api.requestMusicGateRetry(env,1,leaseRetryId),/ANALYSIS_NOT_RETRYABLE/);
+  await api.runMusicGateAnalysis(env,mock);
+  assert.equal(JSON.parse(review(leaseRetryId).evidence_json).analysis_stage,'finished');
+  assert.equal(JSON.parse(review(leaseRetryId).evidence_json).manual_retry_count,1);
+  sqlite.prepare("UPDATE v5_music_gate_reviews SET status='review_required',analysis_error='ANALYSIS_LEASE_EXPIRED' WHERE id=?").run(leaseRetryId);
+  await assert.rejects(api.requestMusicGateRetry(env,1,leaseRetryId),/ANALYSIS_RETRY_EXHAUSTED/);
+  const stages=[];await api.analyzeGateAudio(audio,{apiKey:'fixture',model:'gemini-fixture',onStage:async stage=>stages.push(stage)},async()=>response());
+  assert.deepEqual(stages,['encoding_audio','requesting_ai','reading_ai_response','validating_ai_output']);
+  console.log('PASS stage checkpoints and explicit owner retry: wrong owner denied, one retry cycle, no re-upload, bounded reset');
+
   console.log('ALL MUSIC GATE INTEGRATION CHECKS PASSED (mock provider; live inference not tested)');
 }
 main().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>{sqlite.close();fs.rmSync(temp,{recursive:true,force:true})});

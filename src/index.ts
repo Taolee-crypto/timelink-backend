@@ -8,7 +8,7 @@ import tl3V5Router from './routes/tl3-v5';
 import centralBroadcastV5Router from './routes/central-broadcast-v5';
 import tiloV5ApprovalsRouter from './routes/tilo-v5-approvals';
 import v5MusicGateAdminRouter from './routes/v5-music-gate-admin';
-import { musicGateHealth, runMusicGateAnalysis } from './v5-music-gate-worker';
+import { musicGateHealth, runMusicGateAnalysis, requestMusicGateRetry } from './v5-music-gate-worker';
 import { creatorMusicGateDetails } from './v5-music-gate-public-details';
 import tl3PlayerSessionRouter from './tl3-player-session';
 
@@ -1175,6 +1175,22 @@ app.get('/api/v1/music-gate/reviews', async c => {
       can_convert_tl3:record.status==='approved',can_publish:false,...creatorMusicGateDetails(record)
     }))});
   }catch {return c.json({ok:false,error:'MUSIC_GATE_SCHEMA_NOT_READY'},503);}
+});
+
+app.post('/api/v1/music-gate/reviews/:id/retry',async c=>{
+  const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
+  const user=token?await verifyToken(token,c.env.JWT_SECRET).catch(()=>null):null;
+  const userId=Number(user?.sub||0),id=c.req.param('id');
+  if(!Number.isSafeInteger(userId)||userId<=0)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+  if(!/^[a-f0-9-]{36}$/i.test(id))return c.json({ok:false,error:'INVALID_REVIEW_ID'},400);
+  try{return c.json(await requestMusicGateRetry(c.env,userId,id));}
+  catch(error){
+    const code=error instanceof Error?error.message:'';
+    if(code==='REVIEW_NOT_FOUND')return c.json({ok:false,error:code},404);
+    if(['ANALYSIS_NOT_RETRYABLE','ANALYSIS_RETRY_EXHAUSTED','ANALYSIS_RETRY_CONFLICT'].includes(code))
+      return c.json({ok:false,error:code},409);
+    return c.json({ok:false,error:'ANALYSIS_RETRY_UNAVAILABLE'},503);
+  }
 });
 
 // Authenticated Creator Studio polling: expose only the caller's own gate status.

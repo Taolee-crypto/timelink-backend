@@ -18,7 +18,7 @@ const pendingChecks=new Set([
 const errorNames=new Set([
   'AI_NOT_CONFIGURED','AUDIO_ANALYSIS_SIZE_LIMIT','AI_NETWORK_ERROR','INVALID_AI_OUTPUT',
   'INVALID_AI_RESPONSE','AI_SAFETY_BLOCKED','INCOMPLETE_AI_RESPONSE','ANALYSIS_STORAGE_ERROR',
-  'INVALID_SOURCE_BINDING','SOURCE_NOT_FOUND','SOURCE_HASH_MISMATCH','ANALYSIS_LEASE_EXPIRED'
+  'INVALID_SOURCE_BINDING','SOURCE_NOT_FOUND','SOURCE_HASH_MISMATCH','ANALYSIS_LEASE_EXPIRED','ANALYSIS_LEASE_LOST'
 ]);
 function parse(value:string|null):unknown {try{return JSON.parse(value||'null');}catch{return null;}}
 export function creatorMusicGateDetails(record:MusicGateDetailsRecord) {
@@ -39,8 +39,15 @@ export function creatorMusicGateDetails(record:MusicGateDetailsRecord) {
   else if(evidence.submitted_by_admin_user_id)state='manual_evidence';
   const signals=modelEvidence&&Array.isArray(audio?.risk_signals)
     ?audio.risk_signals.filter((v):v is string=>typeof v==='string'&&riskNames.has(v)).slice(0,11):[];
+  const stages=new Set(['queued','claimed','reading_source','hashing_source','encoding_audio','requesting_ai',
+    'reading_ai_response','validating_ai_output','saving_result','finished']);
+  const stage=typeof evidence.analysis_stage==='string'&&stages.has(evidence.analysis_stage)?evidence.analysis_stage:'unknown';
+  const retryable=['ANALYSIS_LEASE_EXPIRED','AI_NETWORK_ERROR','INVALID_AI_OUTPUT','INVALID_AI_RESPONSE',
+    'INCOMPLETE_AI_RESPONSE','ANALYSIS_STORAGE_ERROR','AI_HTTP_429','AI_HTTP_408'].includes(error||'')||/^AI_HTTP_5[0-9]{2}$/.test(error||'');
   return {
     analysis_status:state,analysis_error:error,
+    analysis_stage:stage,retry_available:record.status==='review_required'&&retryable&&evidence.manual_retry_count!==1,
+    analysis_retry_count:evidence.manual_retry_count===1?1:0,
     analysis_attempts:Number.isSafeInteger(record.analysis_attempts)&&record.analysis_attempts>=0?record.analysis_attempts:0,
     risk_signals:state==='complete'||state==='incomplete'?[...new Set(signals)]:[],
     verification_pending:reasons.filter(v=>pendingChecks.has(v)),

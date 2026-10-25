@@ -38,14 +38,22 @@ export function validateAudioAnalysis(value:unknown):AudioAnalysis {
     unsafe_content:v.unsafe_content,risk_signals:[...new Set(v.risk_signals)],summary:v.summary};
 }
 export async function analyzeGateAudio(
-  audio:Uint8Array, config:{apiKey:string;model:string}, request:typeof fetch=fetch
+  audio:Uint8Array, config:{apiKey:string;model:string;onStage?:(stage:string)=>Promise<void>}, request:typeof fetch=fetch
 ):Promise<{analysis:AudioAnalysis;modelVersion:string;responseId:string|null}> {
   if(!config.apiKey||!/^gemini-[a-zA-Z0-9._-]{1,100}$/.test(config.model))
     throw new GateAnalysisError('AI_NOT_CONFIGURED',false);
   if(audio.byteLength===0||audio.byteLength>MAX_GATE_AUDIO_BYTES)
     throw new GateAnalysisError('AUDIO_ANALYSIS_SIZE_LIMIT',false);
-  let binary='';
-  for(let i=0;i<audio.length;i+=0x6000)binary+=String.fromCharCode(...audio.subarray(i,i+0x6000));
+  await config.onStage?.('encoding_audio');
+  // Use native V8 byte encoding where available; avoid spreading millions of bytes.
+  const native=audio as Uint8Array & {toBase64?:()=>string};
+  let encoded:string;
+  if(typeof native.toBase64==='function')encoded=native.toBase64();
+  else {
+    const chunks:string[]=[];
+    for(let i=0;i<audio.length;i+=0x6000)chunks.push(String.fromCharCode(...audio.subarray(i,i+0x6000)));
+    encoded=btoa(chunks.join(''));
+  }
   const schema={type:'OBJECT',properties:{
     audio_understood:{type:'BOOLEAN'},full_audio_reviewed:{type:'BOOLEAN'},
     music_probability:{type:'NUMBER'},speech_probability:{type:'NUMBER'},
@@ -55,6 +63,7 @@ export async function analyzeGateAudio(
   },required:['audio_understood','full_audio_reviewed','music_probability','speech_probability',
     'unsafe_content','risk_signals','summary']};
   let response:Response;
+  await config.onStage?.('requesting_ai');
   try {
     response=await request(`https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`,{
       method:'POST',redirect:'error',signal:AbortSignal.timeout(60000),
@@ -71,15 +80,17 @@ export async function analyzeGateAudio(
           'Never assert copyright ownership, catalog identity, a fingerprint match, approval or sanctions. '+
           'Set full_audio_reviewed false if any portion was not assessed. Return a concise Korean summary '+
           'without transcribing personal data or explicit content. Return only the specified JSON.'}]},
-        contents:[{role:'user',parts:[{inlineData:{mimeType:'audio/mpeg',data:btoa(binary)}},
+        contents:[{role:'user',parts:[{inlineData:{mimeType:'audio/mpeg',data:encoded}},
           {text:'Analyze this complete audio for technical registration triage.'}]}],
-        generationConfig:{temperature:0,responseMimeType:'application/json',responseSchema:schema,maxOutputTokens:2048}
+        generationConfig:{temperature:0,responseMimeType:'application/json',responseSchema:schema,maxOutputTokens:2048,
+          ...(config.model==='gemini-2.5-flash'?{thinkingConfig:{thinkingBudget:0}}:{})}
       })
     });
   }catch { throw new GateAnalysisError('AI_NETWORK_ERROR',true); }
   if(!response.ok)throw new GateAnalysisError(`AI_HTTP_${response.status}`,
     response.status===429||response.status===408||response.status>=500);
   let payload:any;
+  await config.onStage?.('reading_ai_response');
   try {
     // Bound responses even if the upstream reports an incorrect Content-Length.
     const reader=response.body?.getReader();if(!reader)throw Error('empty');
@@ -95,6 +106,7 @@ export async function analyzeGateAudio(
   if(candidate?.finishReason!=='STOP'||!Array.isArray(candidate?.content?.parts))
     throw new GateAnalysisError('INCOMPLETE_AI_RESPONSE',true);
   let value:unknown;
+  await config.onStage?.('validating_ai_output');
   try {value=JSON.parse(candidate.content.parts.filter((p:any)=>!p.thought&&typeof p.text==='string').map((p:any)=>p.text).join(''));}
   catch {throw new GateAnalysisError('INVALID_AI_OUTPUT',true);}
   return {analysis:validateAudioAnalysis(value),
