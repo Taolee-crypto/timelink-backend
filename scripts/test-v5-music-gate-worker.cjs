@@ -73,11 +73,13 @@ async function main(){
   let evidence=JSON.parse(row.evidence_json);assert.equal(evidence.audio_analysis.music_probability,0.99);
   assert.equal(evidence.fingerprint_matches,null);assert.equal(evidence.decoded,null);
   assert.equal(evidence.rights_verified,false);assert.equal(evidence.rewards_approved,false);
-  assert.equal(calls,1); // The first queued review was approved; do not consume another fixture here.
+  // Consume the queued pre-migration review; otherwise it precedes the negative fixtures.
+  assert.equal((await api.runMusicGateAnalysis(env,mock)).state,'approved');assert.equal(calls,2);
   assert.throws(()=>sqlite.exec('DELETE FROM v5_music_gate_audit'),/IMMUTABLE/);
   assert.throws(()=>sqlite.exec("UPDATE v5_music_gate_audit SET to_status='approved'"),/IMMUTABLE/);
   console.log('PASS full-byte inference transport, hash-bound evidence, no fabricated checks, immutable audit');
 
+  calls=1; // Keep the original fixture's provider-call baseline after the two valid approvals.
   let id=insert({hash:'a'.repeat(64)});await api.runMusicGateAnalysis(env,mock);
   assert.equal(review(id).analysis_error,'SOURCE_HASH_MISMATCH');assert.equal(calls,1);
   id=insert({key:'tracks/u99/foreign.mp3'});await api.runMusicGateAnalysis(env,mock);
