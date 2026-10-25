@@ -1,3 +1,4 @@
+import {readKrFinance,readKrPolicy,saveKrPolicy,saveKrProfile,postKrJournal,closeKrPeriod,krVat,krCorporate,krWithholding} from '../kr-finance';
 import {readAdminFinance} from '../admin-finance-report';
 import {readCreatorPayoutReport} from '../creator-payout-report';
 import { permittedStationTracks } from '../tilo-station';
@@ -654,6 +655,41 @@ router.get('/realtime',async c=>{
     });
   }catch(e:any){return c.json({ok:false,error:'실시간 데이터 조회 실패',detail:String(e?.message||'')},503);}
 });
+// Korean accounting sidecar: administrator only; no wallet debit, bank transfer or tax filing.
+router.get('/finance/kr',async c=>{
+ try{
+  const month=String(c.req.query('month')||new Date(Date.now()+9*3600000).toISOString().slice(0,7));
+  const [report,creator]=await Promise.all([readKrFinance(c.env.DB,month),readCreatorPayoutReport(c.env.DB)]);
+  return c.json({...report,creator_economy:{lifetime_earned_tl:creator.summary.earned_tl,valuation_status:'회계 의무 평가·기표 전 금액을 원화 확정 부채로 자동 전환하지 않습니다.'}});
+ }catch(e:any){return c.json({ok:false,error:e.message||'회계 조회 실패'},503);}
+});
+router.get('/finance/kr/journals/:id',async c=>{
+ const journal=await c.env.DB.prepare("SELECT * FROM v5_kr_journals WHERE id=? AND status='posted'").bind(c.req.param('id')).first();
+ if(!journal)return c.json({ok:false,error:'전표 없음'},404);
+ const lines=await c.env.DB.prepare('SELECT l.account,a.name,l.amount_krw FROM v5_kr_lines l JOIN v5_kr_accounts a ON a.code=l.account WHERE l.journal_id=? ORDER BY l.id').bind(c.req.param('id')).all();
+ return c.json({ok:true,journal,lines:lines.results||[]});
+});
+router.post('/finance/kr/:action',async c=>{
+ const actor=await requireAdmin(c);if(!actor)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+ try{
+  const body=await c.req.json<any>();const action=c.req.param('action');
+  let data:unknown;
+  if(action==='policy')data=await saveKrPolicy(c.env.DB,body,actor);
+  else if(action==='tax-profile')data=await saveKrProfile(c.env.DB,body,actor);
+  else if(action==='journal')data=await postKrJournal(c.env.DB,body,actor);
+  else if(action==='close-period')data=await closeKrPeriod(c.env.DB,body,actor);
+  else if(action==='tax-preview'){
+   if(body.kind==='vat')data=krVat(body.gross_krw,body.vat_type);
+   else if(body.kind==='corporate')data=krCorporate(body);
+   else if(body.kind==='withholding'){
+    const profile=await c.env.DB.prepare('SELECT * FROM v5_kr_tax_profiles WHERE user_id=?').bind(Number(body.user_id)).first();
+    data=krWithholding(body,profile||{});
+   }else return c.json({ok:false,error:'세금 유형 확인 필요'},400);
+  }else return c.json({ok:false,error:'지원하지 않는 작업'},404);
+  return c.json({ok:true,data});
+ }catch(e:any){return c.json({ok:false,error:e.message||'회계 처리 실패'},400);}
+});
+
 router.get('/revenue',async c=>{
   if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
   try{return c.json(await readAdminFinance(c.env.DB));}

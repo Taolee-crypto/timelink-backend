@@ -45,6 +45,9 @@ jobs:
       - name: Verify Music Gate analysis and review integration
         run: node scripts/test-v5-music-gate-worker.cjs
 
+      - name: Verify Korean accounting, tax and closing invariants
+        run: node scripts/test-kr-finance.cjs
+
       - name: Verify cash receipt finance report
         run: node scripts/test-admin-finance.cjs
 
@@ -99,6 +102,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/prepare-tilo-schema.cjs
+
+      - name: Prepare Korean accounting schema without posting balances
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/prepare-kr-finance.cjs
 
       - name: Deploy Worker to production
         env:

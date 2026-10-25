@@ -37,5 +37,5 @@ export async function readAdminFinance(db:D1Database){
   excluded:{test:results[3].results?.[0],virtual:results[4].results?.[0]},
   refund_status_records:Number((results[5].results?.[0] as any)?.count||0),
   verification:{receipt_totals_verified:true,bank_settlement_verified:false,refund_totals_verified:false},
-  note:'PG 성공 영수증 기준 현금 결제 매출입니다. 테스트·가상 충전은 제외하며, 과거 결제 환경 미분류 금액은 별도 표시합니다. 환불 누계·PG 수수료·실제 입금액은 미연결이므로 순유입액과 순이익은 확정하지 않습니다.'};
+  note:'PG 성공 영수증 기준 충전 결제액이며, 회계상 매출·은행 입금액과 구분합니다. 테스트·가상 충전은 제외하며, 과거 결제 환경 미분류 금액은 별도 표시합니다. 환불 누계·PG 수수료·실제 입금액은 미연결이므로 순유입액과 순이익은 확정하지 않습니다.'};
 }
