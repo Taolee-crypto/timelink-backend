@@ -1,0 +1,33 @@
+name: Music Gate targeted runtime diagnostic
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/music-gate-runtime-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  read-runtime:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Read only the reported review's bounded diagnostics
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          node --input-type=module <<'JS'
+          import {spawnSync} from 'node:child_process';
+          import {createRequire} from 'node:module';
+          const require=createRequire(import.meta.url);
+          const sql="SELECT id AS review_id,status,analysis_attempts,analysis_error,updated_at,json_extract(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END,'$.analysis_stage') AS analysis_stage,json_extract(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END,'$.cas_metadata_recovered') AS metadata_recovered,json_extract(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END,'$.analysis_complete') AS analysis_complete,json_extract(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END,'$.audio_analysis.risk_signals') AS risk_signals FROM v5_music_gate_reviews WHERE id='b169d21e-7bc7-4b49-98a9-c82a19be66c9' LIMIT 1";
+          const r=spawnSync(process.execPath,[require.resolve('wrangler/bin/wrangler.js'),'d1','execute','timelink-db','--remote','--command',sql,'--json'],{encoding:'utf8',maxBuffer:1024*1024});
+          if(r.status!==0)throw Error('Runtime diagnostic read failed; no raw command output was emitted.');
+          const result=JSON.parse(r.stdout);
+          console.log('MUSIC_GATE_REPORTED_REVIEW '+JSON.stringify(result.flatMap(x=>x.results||[])));
+          JS
