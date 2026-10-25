@@ -949,6 +949,7 @@ router.get('/broadcast/status', async (c) => {
   const dj = await c.env.DB.prepare(
     'SELECT id, is_live, live_started_at, live_current_track_idx, live_current_track_id, live_listener_count FROM dj_profiles WHERE user_id=?'
   ).bind(auth.id).first<any>();
+  if(dj?.is_live && await enforceDjDailyLimit(c.env.DB,Number(dj.id)))dj.is_live=0;
   return c.json({ ok: true, live: dj || null });
 });
 
@@ -996,6 +997,7 @@ router.get('/live/:djId{[0-9]+}', async (c) => {
      FROM dj_profiles WHERE id=?`
   ).bind(djId).first<any>();
   if (!dj) return c.json({ ok: false, error: 'DJ 없음' }, 404);
+  if(dj.is_live && await enforceDjDailyLimit(c.env.DB,Number(dj.id)))dj.is_live=0;
   return c.json({ ok: true, dj });
 });
 
