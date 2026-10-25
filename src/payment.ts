@@ -62,10 +62,14 @@ payment.post('/v5/premium/prepare',async c=>{
  try{
   const owned=await c.env.DB.prepare(`SELECT f.id FROM tl_files f
     JOIN tl3_v5_releases v ON v.file_id=f.id
-    JOIN tl3_releases r ON r.file_id=f.id
+    JOIN tl_creator_metadata m ON m.file_id=f.id AND m.user_id=f.user_id
     WHERE f.id=? AND f.user_id=? AND f.shared=1
-      AND v.status='sealed' AND r.status='released'
-      AND r.rights_confirmed=1 AND COALESCE(f.revenue_held,0)=0
+      AND v.status='sealed' AND COALESCE(f.revenue_held,0)=0
+      AND m.rights_declared=1
+      AND m.rights_role IN ('owner','authorized_agent','licensee')
+      AND m.rights_scope IN ('master_recording','distribution_license','delegated_scope')
+      AND EXISTS (SELECT 1 FROM v5_music_gate_reviews g
+        WHERE g.user_id=f.user_id AND g.source_sha256=v.source_sha256 AND g.status='approved')
     LIMIT 1`).bind(fileId,Number(userId)).first();
   if(!owned){
    // Report a specific eligibility gate without exposing another member's asset.
@@ -75,8 +79,15 @@ payment.post('/v5/premium/prepare',async c=>{
    if(Number(f.revenue_held)!==0)return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'REVENUE_HELD'},403);
    const v=await c.env.DB.prepare('SELECT status FROM tl3_v5_releases WHERE file_id=? LIMIT 1').bind(fileId).first<any>();
    if(!v||v.status!=='sealed')return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'V5_RELEASE_NOT_SEALED'},403);
-   const rights=await c.env.DB.prepare('SELECT status,rights_confirmed FROM tl3_releases WHERE file_id=? LIMIT 1').bind(fileId).first<any>();
-   if(!rights||rights.status!=='released'||Number(rights.rights_confirmed)!==1)return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'RIGHTS_RELEASE_NOT_CONFIRMED'},403);
+   const rights=await c.env.DB.prepare('SELECT rights_declared,rights_role,rights_scope FROM tl_creator_metadata WHERE file_id=? AND user_id=? LIMIT 1').bind(fileId,Number(userId)).first<any>();
+   if(!rights||Number(rights.rights_declared)!==1||
+      !['owner','authorized_agent','licensee'].includes(String(rights.rights_role))||
+      !['master_recording','distribution_license','delegated_scope'].includes(String(rights.rights_scope)))
+     return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'V5_CREATOR_RIGHTS_DECLARATION_REQUIRED'},403);
+   const gate=await c.env.DB.prepare(`SELECT 1 AS approved FROM v5_music_gate_reviews g
+     JOIN tl3_v5_releases v ON v.source_sha256=g.source_sha256
+     WHERE v.file_id=? AND g.user_id=? AND g.status='approved' LIMIT 1`).bind(fileId,Number(userId)).first();
+   if(!gate)return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'V5_MUSIC_GATE_APPROVAL_REQUIRED'},403);
    return c.json({ok:false,error:'NOT_ELIGIBLE',reason:'REVIEW_REQUIRED'},403);
   }
   const amount=amounts[plan];
