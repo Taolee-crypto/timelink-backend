@@ -1,3 +1,4 @@
+import salesManagersRouter from './routes/sales-managers';
 import {certificateFeeQuote,chargeCertificateFee,ServiceFeeError,CERTIFICATE_ISSUE_FEE,CERTIFICATE_DOWNLOAD_FEE} from './v5-certificate-fees';
 import creatorEarningsRouter from './routes/creator-earnings';
 import {readCreatorSplit} from './creator-split-policy';
@@ -485,6 +486,7 @@ app.route('/api/creator',creatorEarningsRouter);
 app.route('/api/admin', adminRouter);
 app.route('/api/admin', adminMembersRouter);
 app.route('/api/cafe', cafeRouter);
+app.route('/api/sales', salesManagersRouter);
 app.route('/api/incar', incarRouter);
 app.route('/api/search', searchRouter);
 app.route('/api/dj', djRouter);

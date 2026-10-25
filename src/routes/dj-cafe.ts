@@ -1,3 +1,4 @@
+import {chargeCafeStream} from '../sales-managers';
 import {djLibrary,djTrack} from '../dj-v5-library';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -1096,6 +1097,13 @@ router.post('/charge', async (c) => {
 
   const rates = await getRates(c.env.DB);
   const multiplier = role === 'cafe' ? rates.cafe : rates.normal;
+
+  if(role==='cafe'){
+    try{
+      const result=await chargeCafeStream(c.env.DB,{ownerId:chargeUserId,channelId:chargeChannelId,djId,seconds,rate:Number(multiplier),requestId:String(body.request_id||'')});
+      return c.json({ok:true,...result,new_tl:result.wallet.total,charged_to_user_id:chargeUserId,cafe_channel_id:chargeChannelId,multiplier});
+    }catch(e:any){return c.json({ok:false,error:e.message,current:e.current,required:e.required,code:e.status===402?'TL_INSUFFICIENT':'CAFE_CHARGE_RETRY'},e.status===402?402:409);}
+  }
 
   // 곡이 실제 공유 자산인지 확인한다.
   const share = await c.env.DB.prepare('SELECT id FROM tl_shares WHERE id=?').bind(shareId).first<any>();

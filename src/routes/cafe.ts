@@ -1,3 +1,4 @@
+import {assignmentPlan,settleCafeService} from '../sales-managers';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../types';
@@ -14,7 +15,7 @@ async function authUser(c: Context<{ Bindings: Env }>): Promise<{id: number, use
   if (!payload) return null;
   const userId = Number(payload.sub || 0);
   if (!userId) return null;
-  const user = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance FROM users WHERE id=?').bind(userId).first<any>();
+  const user = await c.env.DB.prepare('SELECT id, email, username, tl, tl_balance FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0').bind(userId).first<any>();
   if (!user) return null;
   return { id: userId, user };
 }
@@ -235,6 +236,23 @@ router.post('/channels', async (c) => {
   const existing = await c.env.DB.prepare('SELECT channel_id FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
   if (existing) return c.json({ ok: false, error: '이미 사용 중인 채널 ID입니다.' }, 409);
 
+  const requestId=String(body.request_id||'');
+  if(requestId&&!/^[a-zA-Z0-9_-]{16,100}$/.test(requestId))return c.json({ok:false,error:'등록 요청 번호 확인 필요'},400);
+  const requestKey=requestId?'store:create:'+auth.id+':'+requestId:'';
+  const inputHash=JSON.stringify({name,country,bizNo,addr,manager:body.sales_manager_id||null,invite:body.sales_invite_code||null,dj:body.dj_id||null,kind:body.store_kind||'cafe'});
+  if(requestKey){
+    const previous=await c.env.DB.prepare('SELECT input_hash,result_json FROM v5_sales_channel_requests WHERE request_key=? AND owner_id=?').bind(requestKey,auth.id).first<any>();
+    if(previous){if(previous.input_hash!==inputHash)return c.json({ok:false,error:'같은 요청 번호로 다른 매장을 등록할 수 없습니다.'},409);return c.json({...JSON.parse(previous.result_json),already:true});}
+  }
+  let salesBinding:Awaited<ReturnType<typeof assignmentPlan>>|null=null;
+  if(body.sales_invite_code||body.sales_manager_id){
+    if(body.sales_accept!==true)return c.json({ok:false,error:'상점주의 영업 매니저 연결 동의가 필요합니다.'},400);
+    try{salesBinding=await assignmentPlan(c.env.DB,{channel_id:channelId,owner_id:auth.id,country},auth.id,{
+      invite_code:body.sales_invite_code||undefined,manager_user_id:Number(body.sales_manager_id||0),dj_id:Number(body.dj_id),
+      kind:body.store_kind||'cafe',expected_version:0,reason:'상점주 매장 개설 및 담당 매니저 연결 동의'
+    });}catch(e:any){return c.json({ok:false,error:e.message},400);}
+  }
+
   let channelFee = 50000;
   try {
     const feeRow = await c.env.DB.prepare("SELECT value FROM tl_settings WHERE key='cafe_channel_fee'").first<any>();
@@ -300,26 +318,14 @@ router.post('/channels', async (c) => {
       trial ? 'trial' : 'free', 'active', expiresAt, now, now
     );
 
-    if (finalFee > 0) {
-      const revenueAccount = await ensureLedgerAccount(c.env.DB,'platform','timelink','TL','cafe_channel_revenue');
-      let remaining = feeAtoms;
-      const lines: Array<{accountId:string;assetCode:'TL';amountAtoms:number}> = [];
-      for (const source of walletSources) {
-        const taken = Math.min(Math.max(0,source.available),remaining);
-        if (taken) { lines.push({accountId:source.accountId,assetCode:'TL',amountAtoms:-taken}); remaining-=taken; }
-      }
-      if (remaining !== 0) throw new Error('INSUFFICIENT_TL');
-      lines.push({accountId:revenueAccount,assetCode:'TL',amountAtoms:feeAtoms});
-      await postLedgerTransaction(c.env.DB,{
-        idempotencyKey:'cafe:create:'+channelId,
-        transactionType:'cafe_channel_create',source:'cafe_channel',
-        referenceType:'cafe_channel',referenceId:channelId,actorUserId:String(auth.id),
-        description:'카페채널 개설 TL 결제',metadata:{channel_id:channelId,fee_tl:finalFee},
-        lines,atomicStatements:[channelInsert]
-      });
-    } else {
-      await channelInsert.run();
-    }
+    const salesStatements=[...(salesBinding?.statements||[])];
+    if(requestKey)salesStatements.push(c.env.DB.prepare('INSERT INTO v5_sales_channel_requests(request_key,owner_id,channel_id,input_hash,result_json)VALUES(?,?,?,?,?)')
+      .bind(requestKey,auth.id,channelId,inputHash,JSON.stringify({ok:true,channel_id:channelId,name,country,expires_at:expiresAt,fee:finalFee,original_fee:channelFee,trial,trial_days:trial?trialDays:0})));
+    if(finalFee>0){
+      await settleCafeService(c.env.DB,{payerId:auth.id,channelId,amountAtoms:feeAtoms,key:requestKey||'cafe:create:'+channelId,
+        managerId:salesBinding?.manager_user_id,djUserId:salesBinding?.dj_user_id,
+        atomic:[channelInsert,...salesStatements],metadata:{service:'channel_open',fee_tl:finalFee}});
+    }else await c.env.DB.batch([channelInsert,...salesStatements]);
 
     // ⭐ 체험 구독 생성
     if (trial) {
@@ -360,7 +366,11 @@ router.post('/channels', async (c) => {
       biz_verified: bizCheck.verified
     });
   } catch (e: any) {
-    return c.json({ ok: false, error: e?.message || '채널 개설 실패' }, 500);
+    if(requestKey){
+      const previous=await c.env.DB.prepare('SELECT input_hash,result_json FROM v5_sales_channel_requests WHERE request_key=? AND owner_id=?').bind(requestKey,auth.id).first<any>();
+      if(previous&&previous.input_hash===inputHash)return c.json({...JSON.parse(previous.result_json),already:true});
+    }
+    return c.json({ok:false,error:e?.message||'스토어 개설 실패'},500);
   }
 });
 
