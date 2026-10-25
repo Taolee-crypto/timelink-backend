@@ -276,9 +276,7 @@ router.get('/settlements/:id/posting-readiness',async c=>{
    WHERE e.country=? AND e.creator_id=? AND e.local_month=?
      AND (svc.service_id IS NULL OR sg.service_id IS NULL
        OR rg.file_id IS NULL OR v.file_id IS NULL OR f.id IS NULL
-       OR NOT EXISTS (SELECT 1 FROM tl3_releases tr
-         WHERE tr.file_id=e.file_id AND tr.status='released'
-           AND tr.rights_confirmed=1))`)
+       OR NOT EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=e.file_id AND cm.user_id=e.creator_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved')))`)
    .bind(scope.country,scope.creator_id,scope.local_date.slice(0,7))
    .first<{denied:number}>();
   if(Number(rights?.denied||0)>0)blockers.push('BROADCAST_RIGHTS_REVOKED_OR_EXPIRED');

@@ -513,7 +513,7 @@ app.get('/api/v1/tilo/catalogue', async (c) => {
       title:r.title,artist:r.artist,genre:r.genre,country:r.country,cover_image:r.cover_image,
       promotion_status:'unverified'
     })),total_returned:(rows.results||[]).length,live:false,
-    promotion_policy:{target_airtime_percent:50,status:'not_implemented'}});
+    promotion_policy:{mode:'promotion_first_random_fallback',status:'preview_only'}});
   }catch(e){console.error('[TILO] catalogue query failed',e);return c.json({ok:false,error:'Broadcast catalogue unavailable'},503)}
 });
 
@@ -538,7 +538,7 @@ app.get('/api/v1/tilo/promotion/availability', async (c) => {
         AND LOWER(f.file_type)='audio/tl3' AND COALESCE(f.revenue_held,0)=0
     `).bind(country,language).first<any>();
     return c.json({ok:true,country,language,eligible_campaign_tracks:Number(data?.eligible_campaign_tracks||0),
-      scheduling_active:false,promotion_airtime_target_percent:50});
+      scheduling_active:false,promotion_policy:'promotion_first_random_fallback'});
   }catch(e){console.error('[TILO] promotion inventory unavailable',e);
     return c.json({ok:false,error:'Promotion inventory unavailable or migration pending'},503)}
 });

@@ -115,15 +115,24 @@ router.post('/central-broadcast/stations/:country/grants', async c => {
       SELECT v.file_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id
       WHERE v.file_id=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0
       AND LOWER(f.file_type)='audio/tl3'
-      AND EXISTS(SELECT 1 FROM tl3_releases r WHERE r.file_id=v.file_id AND r.status='released' AND r.rights_confirmed=1)
-      AND EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
+      AND EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=v.file_id AND cm.user_id=v.user_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved'))
+      AND (v.user_id=? OR EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
         WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
-        AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
-      LIMIT 1`).bind(fileId,country).first();
+        AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now'))))
+      LIMIT 1`).bind(fileId,adminId,country).first();
     if(!eligible)return c.json({ok:false,error:'BROADCAST_RIGHTS_NOT_CLEARED'},403);
     const service=await c.env.DB.prepare('SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?')
       .bind(serviceId,adminId).first<{status:string}>();
     if(service?.status!=='active')return c.json({ok:false,error:'TILO_SERVICE_NOT_ACTIVE'},409);
+    // A creator-admin may grant only their own declared recording. Other
+    // creators still require a separately recorded country broadcast grant.
+    await c.env.DB.prepare(`INSERT INTO central_broadcast_rights_grants
+      (grant_id,file_id,creator_id,country,status)
+      SELECT ?,v.file_id,v.user_id,?,'active' FROM tl3_v5_releases v
+      WHERE v.file_id=? AND v.user_id=? AND NOT EXISTS(
+        SELECT 1 FROM central_broadcast_rights_grants rg
+        WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?)`)
+      .bind('creator-admin:'+adminId+':'+fileId+':'+country,country,fileId,adminId,country).run();
     await c.env.DB.prepare(`
       INSERT INTO central_broadcast_service_file_grants
       (service_id,file_id,country,permission,status,granted_by_admin_user_id)
@@ -145,8 +154,7 @@ router.get('/central-broadcast/stations/:country/audit', async c => {
     await ensureCentralBroadcastSchema(c.env.DB);
     const rows=await c.env.DB.prepare(`SELECT f.id AS file_id,f.title,f.file_type,f.shared,
       v.status AS v5_status,v.duration_ms,
-      CASE WHEN EXISTS(SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id
-        AND r.status='released' AND r.rights_confirmed=1) THEN 1 ELSE 0 END AS release_rights,
+      CASE WHEN EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=f.id AND cm.user_id=f.user_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved')) THEN 1 ELSE 0 END AS release_rights,
       CASE WHEN EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
         WHERE rg.file_id=f.id AND rg.creator_id=f.user_id AND rg.country=?
           AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
@@ -741,8 +749,7 @@ router.get('/central-broadcast/stations/:country/now', async c => {
       AND EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
         WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
         AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
-      AND EXISTS(SELECT 1 FROM tl3_releases r
-        WHERE r.file_id=v.file_id AND r.status='released' AND r.rights_confirmed=1)
+      AND EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=v.file_id AND cm.user_id=v.user_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved'))
       ORDER BY v.file_id ASC LIMIT 200
     `).bind(serviceId,country,country).all<{file_id:number;duration_ms:number;title:string;artist:string}>();
     const now=new Date();

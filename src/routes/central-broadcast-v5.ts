@@ -1,6 +1,7 @@
 import { currentTiloSlot, tiloLocalShow, TILO_ZONES, type TiloCountry } from '../tilo-server-timeline';
 import { Hono } from 'hono';
 import { permittedStationTracks } from '../tilo-station';
+import { scheduledStationTracks } from '../tilo-station-schedule';
 import type { Env } from '../types';
 import { calculateCentralBroadcastAtoms, calculateTiloCreatorContributionDelta, tiloLocalSettlementMonth } from '../central-broadcast-v5-settlement';
 
@@ -11,12 +12,13 @@ router.get('/stations/:country',async c=>{
   const country=String(c.req.param('country')).toUpperCase();
   if(!Object.hasOwn(TILO_ZONES,country))return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
   try{
-    const tracks=await permittedStationTracks(c.env.DB,country);
     const now=new Date();
+    const tracks=await scheduledStationTracks(c.env.DB,country,now);
     return c.json({ok:true,country,service_enabled:tracks.length>0,
       granted_file_ids:tracks.map(t=>t.file_id),tracks,
       slot:currentTiloSlot(tracks,now.getTime(),Date.UTC(2026,0,1)),serverTime:now.toISOString(),
       show:tiloLocalShow(country as TiloCountry,now),
+      scheduling_policy:'promotion_first_random_fallback',
       playback_mode:'authorized_browser_receiver',server_audio_stream:false,posted:false});
   }catch{return c.json({ok:false,error:'BROADCAST_STATION_UNAVAILABLE'},503);}
 });
@@ -34,8 +36,7 @@ router.get('/inventory', async c => {
       WHERE v.status='sealed' AND f.shared=1
         AND COALESCE(f.revenue_held,0)=0
         AND LOWER(f.file_type)='audio/tl3'
-        AND EXISTS (SELECT 1 FROM tl3_releases r
-          WHERE r.file_id=v.file_id AND r.status='released' AND r.rights_confirmed=1)
+        AND EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=v.file_id AND cm.user_id=v.user_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved'))
       ORDER BY v.file_id DESC LIMIT 500
     `).all<Song>();
     const tracks=(rows.results||[]).filter(s=>Number.isSafeInteger(s.file_id)&&s.duration_ms>0);
@@ -148,8 +149,7 @@ router.post('/airtime/record', async c => {
         AND EXISTS (SELECT 1 FROM central_broadcast_rights_grants rg
           WHERE rg.file_id=? AND rg.creator_id=? AND rg.country=? AND rg.status='active'
             AND (rg.expires_at IS NULL OR rg.expires_at>?))
-        AND EXISTS (SELECT 1 FROM tl3_releases r
-          WHERE r.file_id=? AND r.status='released' AND r.rights_confirmed=1)
+        AND EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=? AND cm.user_id=v.user_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved'))
       LIMIT 1
     `).bind(serviceId,country,fileId,endedAt,creatorId,fileId,creatorId,country,endedAt,fileId)
       .first<{allowed:number}>();
@@ -234,8 +234,7 @@ router.get('/country/:country/playlist', async c => {
           WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id
             AND rg.country=? AND rg.status='active'
             AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
-        AND EXISTS (SELECT 1 FROM tl3_releases r
-          WHERE r.file_id=v.file_id AND r.status='released' AND r.rights_confirmed=1)
+        AND EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=v.file_id AND cm.user_id=v.user_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved'))
       ORDER BY v.file_id DESC LIMIT 200`
     ).bind(serviceId,country,country).all<Song>();
     return c.json({ok:true,country,enabled:true,tracks:rows.results||[],
@@ -275,8 +274,7 @@ router.get('/country/:country/now', async c => {
         AND EXISTS (SELECT 1 FROM central_broadcast_rights_grants rg
           WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
             AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
-        AND EXISTS (SELECT 1 FROM tl3_releases r
-          WHERE r.file_id=v.file_id AND r.status='released' AND r.rights_confirmed=1)
+        AND EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=v.file_id AND cm.user_id=v.user_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved'))
       ORDER BY v.file_id ASC LIMIT 200
     `).bind(serviceId,country,country).all<{file_id:number;duration_ms:number;title:string;artist:string}>();
     const now=new Date();
