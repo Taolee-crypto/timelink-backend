@@ -11,6 +11,7 @@ export {default as admin} from './src/routes/admin';
 export {readContributionPolicy,saveContributionPolicy,readContributionEvaluation} from './src/v5-contribution-store';
 export {ensureSubscriptionMeterSchema,readDailyMusicAllowance,prepareDailyMusicUsage} from './src/v5-subscription-meter';
 export {prepareMusicOrder,confirmMusicOrder} from './src/v5-music-subscription-orders';
+export {reviewMusicSettlement} from './src/v5-subscription-settlement-review';
 export {beginSubscriptionSession,meterSubscriptionPlayback} from './src/v5-subscription-playback';
 export {ensureLedgerAccount} from './src/economy-ledger';
 export {makeAccessToken} from './src/auth';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:dir+'/api.cjs',logLevel:'silent'});
@@ -64,6 +65,10 @@ async function main(){
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM v5_music_receipts').first()).n,1);
   assert.equal((await api.confirmMusicOrder(db,2,musicOrder.orderId,'runtime-music-pg',4900,musicConfig,musicStart+2000,musicTransport)).replayed,true);
   assert.equal((await api.readDailyMusicAllowance(db,2,musicStart+2000)).active,false);
+  const reviewOrder='v5music_00000000000000000000000000000003';
+  await db.prepare('INSERT INTO v5_music_receipts VALUES(?,?,?,?,?,?,?,?,?)').bind(reviewOrder,'review-pg-fixture',3,1900,1330,570,'live',meterStart,'runtime-player').run();
+  const review=await api.reviewMusicSettlement(db,reviewOrder,meterStart+7200000);
+  assert.equal(review.summary.includedMs,3600000);assert.equal(review.summary.heldKrw,1330);assert.equal(review.payoutEnabled,false);
   const original=new TextEncoder().encode('private encrypted object fixture');
   await api.putV5Object(env,'private-discovery/fixture/object',original,'application/octet-stream');
   const read=await api.readV5Object(env,'private-discovery/fixture/object');assert.deepEqual(new Uint8Array(read),original);
