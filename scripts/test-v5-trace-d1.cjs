@@ -10,6 +10,7 @@ export {putV5Object,readV5Object,deleteV5Object} from './src/v5-object-store';
 export {default as admin} from './src/routes/admin';
 export {readContributionPolicy,saveContributionPolicy,readContributionEvaluation} from './src/v5-contribution-store';
 export {ensureSubscriptionMeterSchema,readDailyMusicAllowance,prepareDailyMusicUsage} from './src/v5-subscription-meter';
+export {prepareMusicOrder,confirmMusicOrder} from './src/v5-music-subscription-orders';
 export {makeAccessToken} from './src/auth';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:dir+'/api.cjs',logLevel:'silent'});
 async function main(){
  const mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("isolated")}}',compatibilityDate:'2026-10-24',d1Databases:{DB:'isolated-v5-trace-d1'}});
@@ -37,11 +38,19 @@ async function main(){
   assert.equal((await api.prepareDailyMusicUsage(db,usage,meterStart+2000)).replayed,true);
   const overlapping=await api.prepareDailyMusicUsage(db,{...usage,usageKey:'runtime-overlap'},meterStart+2000);await assert.rejects(db.batch(overlapping.statements));
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM v5_music_usage_events').first()).n,1);
+  const musicStart=Date.parse('2026-11-10T09:00:00Z'),musicConfig={mode:'test',secret:'test_sk_fixture',timezone:'Asia/Seoul'};
+  const musicOrder=await api.prepareMusicOrder(db,2,4,'runtime-music-order-00000',musicConfig,musicStart);
+  const musicTransport=async()=>new Response(JSON.stringify({paymentKey:'runtime-music-pg',orderId:musicOrder.orderId,status:'DONE',totalAmount:4900,currency:'KRW',approvedAt:new Date(musicStart+1000).toISOString()}));
+  const musicConfirm=await api.confirmMusicOrder(db,2,musicOrder.orderId,'runtime-music-pg',4900,musicConfig,musicStart+2000,musicTransport);
+  assert.equal(musicConfirm.testPayment,true);assert.equal(musicConfirm.tlCredited,0);
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM v5_music_receipts').first()).n,1);
+  assert.equal((await api.confirmMusicOrder(db,2,musicOrder.orderId,'runtime-music-pg',4900,musicConfig,musicStart+2000,musicTransport)).replayed,true);
+  assert.equal((await api.readDailyMusicAllowance(db,2,musicStart+2000)).active,false);
   const original=new TextEncoder().encode('private encrypted object fixture');
   await api.putV5Object(env,'private-discovery/fixture/object',original,'application/octet-stream');
   const read=await api.readV5Object(env,'private-discovery/fixture/object');assert.deepEqual(new Uint8Array(read),original);
   await api.deleteV5Object(env,'private-discovery/fixture/object');assert.equal(await api.readV5Object(env,'private-discovery/fixture/object'),null);
-  console.log('PASS actual local D1: schema, complete trigger statements, work-ledger/contribution audit/CAS, subscription meter commit/replay/overlap rollback, private object fallback roundtrip');
+  console.log('PASS actual local D1: schema, complete trigger statements, work-ledger/contribution audit/CAS, subscription meter and order/receipt replay/test isolation, private object fallback roundtrip');
  }finally{await mf.dispose();fs.rmSync(dir,{recursive:true,force:true});}
 }
 main().catch(e=>{console.error(e);process.exitCode=1});

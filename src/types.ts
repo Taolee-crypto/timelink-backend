@@ -1,5 +1,8 @@
 export interface Env {
   DB: D1Database;
+  TOSS_SECRET_KEY?: string;
+  MUSIC_SUBSCRIPTION_CHECKOUT_MODE?: 'disabled'|'test'|'live';
+  MUSIC_SUBSCRIPTION_BILLING_TIMEZONE?: string;
   R2?: R2Bucket;
   JWT_SECRET: string;
   TWILIO_ACCOUNT_SID?: string;
