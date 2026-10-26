@@ -1,3 +1,4 @@
+import {listMusicSettlementReceipts,reviewMusicSettlement} from '../v5-subscription-settlement-review';
 import {readContributionPolicy,saveContributionPolicy,readContributionEvaluation} from '../v5-contribution-store';
 import {contributionTable,validateContributionPolicy} from '../v5-contribution-policy';
 import {dailyFreeCatalogue} from '../v5-daily-free-policy';
@@ -62,6 +63,17 @@ router.get('/contribution-members/:id',async c=>{
   const user=await c.env.DB.prepare('SELECT id FROM users WHERE id=?').bind(id).first();
   if(!user)return c.json({error:'USER_NOT_FOUND'},404);
   return c.json({ok:true,...await readContributionEvaluation(c.env.DB,id)});
+});
+
+router.get('/music-subscription-settlements',async c=>{
+ c.header('Cache-Control','no-store');
+ try{return c.json(await listMusicSettlementReceipts(c.env.DB,Number(c.req.query('limit')||25),Number(c.req.query('offset')||0)));}
+ catch(error){if(String(error).includes('INVALID_MUSIC_REVIEW_PAGE'))return c.json({error:'INVALID_MUSIC_REVIEW_PAGE'},400);throw error;}
+});
+router.get('/music-subscription-settlements/:orderId',async c=>{
+ c.header('Cache-Control','no-store');
+ try{const result=await reviewMusicSettlement(c.env.DB,c.req.param('orderId'));return result?c.json(result):c.json({error:'MUSIC_RECEIPT_NOT_FOUND'},404);}
+ catch(error){if(String(error).includes('INVALID_MUSIC_REVIEW_ORDER'))return c.json({error:'INVALID_MUSIC_REVIEW_ORDER'},400);throw error;}
 });
 
 router.get('/reward-policy',async c=>c.json({ok:true,...await readRewardPolicy(c.env.DB),definitions:REWARD_RULES,mode:'manual'}));
