@@ -10,6 +10,31 @@ import { readRewardPolicy,paymentBonusMap } from './v5-reward-policy';
 const payment = new Hono<{ Bindings: Env }>();
 payment.route('/v5/music',musicSubscriptionsRouter);
 
+/**
+ * Share Place airtime pricing preview only. Server-owned independent draws;
+ * never use this quote as payment authorization or a wallet mutation.
+ */
+payment.post('/v5/shareplace-time/quote', async c => {
+  const userId=await authUserId(c);
+  if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+  const body=await c.req.json<{hours?:number}>().catch(()=>null);
+  const hours=Number(body?.hours);
+  if(!Number.isFinite(hours)||hours<=0||hours>720)return c.json({ok:false,error:'INVALID_HOURS'},400);
+  const seconds=Math.round(hours*3600);
+  if(!Number.isSafeInteger(seconds)||seconds<1)return c.json({ok:false,error:'INVALID_DURATION'},400);
+  // Placeholder distribution pending administrator-controlled V5 discount policy.
+  // No checkout or entitlement is enabled while the policy remains unapproved.
+  const rates=[0,5,10,15,20,30,40,50,100];
+  const draw=()=>{const buf=new Uint32Array(1);crypto.getRandomValues(buf);return rates[buf[0]%rates.length];};
+  const first=draw(),second=draw();
+  const discountedTl=Math.ceil(seconds*(100-first)*(100-second)/10000);
+  return c.json({ok:true,seconds,nominalTl:seconds,firstDiscountPercent:first,
+    doubleDiscountPercent:second,discountedTl,entitlementTlB:seconds,
+    checkoutEnabled:false,quoteOnly:true,
+    note:'Preview only: discount probabilities, KRW conversion, ledger and payment are not approved.'});
+});
+
+
 // V5 TL PREMIUM: cash promotion prices are informational until a separate
 // verified PG order + airtime settlement pipeline is implemented.
 // Never route promotion purchases through the ordinary TL top-up endpoints.
