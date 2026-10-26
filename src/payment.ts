@@ -1,3 +1,4 @@
+import musicSubscriptionsRouter from './routes/music-subscriptions';
 import { Hono } from 'hono';
 import type { Env } from './types';
 import { verifyToken } from './auth';
@@ -7,6 +8,7 @@ import { assertTLAtomScale, ensureLedgerAccount, postLedgerTransaction, tlToAtom
 import { readRewardPolicy,paymentBonusMap } from './v5-reward-policy';
 
 const payment = new Hono<{ Bindings: Env }>();
+payment.route('/v5/music',musicSubscriptionsRouter);
 
 // V5 TL PREMIUM: cash promotion prices are informational until a separate
 // verified PG order + airtime settlement pipeline is implemented.
