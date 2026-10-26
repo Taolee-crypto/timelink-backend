@@ -13,9 +13,15 @@ async function user(c:Context<{Bindings:Env}>){
  if(!Number.isSafeInteger(id)||id<1)return null;
  return await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0').bind(id).first<{id:number}>();
 }
-router.get('/products',c=>c.json({ok:true,products:dailyFreeCatalogue(),checkoutMode:config(c.env).mode,checkoutEnabled:false,orderApiEnabled:config(c.env).mode!=='disabled',
- note:'구독 결제 연결 준비 단계입니다. 전체 재생·환불·정산 검증 후 운영자가 활성화해야 합니다.'}));
-router.get('/status',async c=>{const u=await user(c);if(!u)return c.json({ok:false,error:'AUTH_REQUIRED'},401);return c.json({ok:true,...await readDailyMusicAllowance(c.env.DB,u.id)});});
+router.get('/products',c=>{
+ const cfg=config(c.env),key=c.env.TOSS_CLIENT_KEY||'';
+ const testReady=cfg.mode==='test'&&cfg.secret.startsWith('test_sk_')&&key.startsWith('test_ck_');
+ return c.json({ok:true,products:dailyFreeCatalogue(),checkoutMode:cfg.mode,checkoutEnabled:false,
+  orderApiEnabled:cfg.mode!=='disabled',testCheckoutEnabled:testReady,clientKey:testReady?key:null,
+  billingTimezone:cfg.timezone,billingPeriod:'calendar_month_utc',autoRenew:false,
+  note:'정식 판매 준비 중입니다. 운영자가 구성한 시험결제만 별도로 확인할 수 있습니다.'});
+});
+router.get('/status',async c=>{const u=await user(c);if(!u)return c.json({ok:false,error:'AUTH_REQUIRED'},401);return c.json({ok:true,userId:u.id,...await readDailyMusicAllowance(c.env.DB,u.id)});});
 router.post('/prepare',async c=>{
  const u=await user(c);if(!u)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
  try{const b=await c.req.json<{level:number;requestKey:string;termsAccepted:boolean}>().catch(()=>null);if(!b)return c.json({ok:false,error:'INVALID_REQUEST'},400);if(b.termsAccepted!==true)return c.json({ok:false,error:'TERMS_REQUIRED'},400);
