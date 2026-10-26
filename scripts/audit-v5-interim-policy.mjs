@@ -12,7 +12,12 @@ function check(name,fn){try{fn();console.log('PASS '+name)}catch(e){failures++;c
 check('70/30 policy constants',()=>{assert.match(policy,/CREATOR_SHARE_RATE\s*=\s*0\.70/);assert.match(policy,/PLATFORM_SHARE_RATE\s*=\s*0\.30/)});
 check('settlement consumes track pool',()=>assert.match(ledger,/export async function settleTrackPlayback[\s\S]*?add\(pool,-consumed\)/));
 check('settlement records creator and platform separately',()=>{assert.match(ledger,/creatorShareAtoms\+=creatorPart/);assert.match(ledger,/platformShareAtoms\+=platformPart/)});
-check('settlement transaction idempotency',()=>assert.match(ledger,/idempotencyKey,transactionType:'track_playback_settlement'/));
+check('settlement transaction idempotency',()=>{
+ assert.match(ledger,/const transactionType=walletMode\?"daily_free_overage":"track_playback_settlement"/);
+ assert.match(ledger,/idempotencyKey,transactionType,source:transactionSource/);
+ assert.match(ledger,/prior\.transaction_type!==transactionType/);
+ assert.match(ledger,/idempotencyKey!=="daily-free-overage:"\+input\.walletUsageKey/);
+});
 check('stop refunds 100 percent as TL_B',()=>{assert.match(ledger,/const refund=amount,platform=0/);assert.match(ledger,/accountId:await ensureLedgerAccount\(db,'user',userId,'TL','wallet_bonus'\),assetCode:'TL',amountAtoms:refund/);assert.match(ledger,/idempotencyKey:'v5-early-stop:'\+sessionId/)});
 check('test D1 is separate',()=>{const id=x=>x.match(/database_id\s*=\s*"([^"]+)"/)?.[1];assert(id(prod)&&id(test)&&id(prod)!==id(test));assert.match(test,/ENVIRONMENT\s*=\s*"test"/)});
 check('local SQL fixture is repeatable',()=>{assert.match(sql,/INSERT OR IGNORE INTO v5_test_transactions/);assert.match(sql,/INSERT INTO v5_test_once\(applied\) SELECT changes\(\)/);assert.match(sql,/\(SELECT applied FROM v5_test_once\)=1/);assert.match(sql,/CREATE TABLE IF NOT EXISTS v5_test_once/)});

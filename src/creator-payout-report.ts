@@ -4,21 +4,31 @@ WITH valid_settlements AS (
  SELECT t.id,t.transaction_type FROM v3_economy_transactions t
  WHERE t.status='posted' AND (
   (t.transaction_type='track_playback_settlement' AND t.source='tl3_actual_playback') OR
+  (t.transaction_type='daily_free_overage' AND t.source='verified_subscription_playback') OR
   (t.transaction_type='self_play_income_release' AND t.source='self_play_policy_v1') OR
   (t.transaction_type='central_broadcast_settlement' AND t.source='verified_central_broadcast') OR
   (t.transaction_type='tilo_v5_broadcast_settlement' AND t.source='tilo_verified_airtime'))
  AND EXISTS(SELECT 1 FROM v3_economy_entries e WHERE e.transaction_id=t.id AND e.asset_code='TL')
  AND NOT EXISTS(SELECT 1 FROM v3_economy_entries e WHERE e.transaction_id=t.id GROUP BY e.asset_code HAVING SUM(e.amount_atoms)<>0)
+), reporting_entries AS (
+ SELECT e.transaction_id,e.account_id,e.asset_code,e.amount_atoms
+ FROM v3_economy_entries e JOIN valid_settlements v ON v.id=e.transaction_id
+ WHERE v.transaction_type<>'daily_free_overage'
+ UNION ALL
+ SELECT tx.id,json_extract(j.value,'$.account_id'),'TL',json_extract(j.value,'$.amount_atoms')
+ FROM v3_economy_transactions tx JOIN valid_settlements v ON v.id=tx.id,
+ json_each(CASE WHEN json_valid(tx.metadata_json) THEN tx.metadata_json ELSE '{}' END,'$.creator_credits') j
+ WHERE v.transaction_type='daily_free_overage' AND json_extract(j.value,'$.amount_atoms')>0
 ), earnings AS (
  SELECT a.owner_id AS user_id,SUM(e.amount_atoms) AS earned_atoms,
  SUM(CASE WHEN a.bucket='wallet_paid' THEN e.amount_atoms ELSE 0 END) AS cash_source_atoms,
  SUM(CASE WHEN a.bucket IN ('wallet_ad','wallet_bonus') THEN e.amount_atoms ELSE 0 END) AS non_cash_atoms,
- SUM(CASE WHEN t.transaction_type IN ('track_playback_settlement','self_play_income_release') THEN e.amount_atoms ELSE 0 END) AS playback_atoms,
- SUM(CASE WHEN t.transaction_type NOT IN ('track_playback_settlement','self_play_income_release') THEN e.amount_atoms ELSE 0 END) AS broadcast_atoms
- FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id AND a.asset_code=e.asset_code
+ SUM(CASE WHEN t.transaction_type IN ('track_playback_settlement','self_play_income_release','daily_free_overage') THEN e.amount_atoms ELSE 0 END) AS playback_atoms,
+ SUM(CASE WHEN t.transaction_type NOT IN ('track_playback_settlement','self_play_income_release','daily_free_overage') THEN e.amount_atoms ELSE 0 END) AS broadcast_atoms
+ FROM reporting_entries e JOIN v3_economy_accounts a ON a.id=e.account_id AND a.asset_code=e.asset_code
  JOIN valid_settlements t ON t.id=e.transaction_id
  WHERE a.owner_type='user' AND e.asset_code='TL'
- AND ((t.transaction_type IN ('track_playback_settlement','self_play_income_release') AND a.bucket IN ('wallet_paid','wallet_ad','wallet_bonus'))
+ AND ((t.transaction_type IN ('track_playback_settlement','self_play_income_release','daily_free_overage') AND a.bucket IN ('wallet_paid','wallet_ad','wallet_bonus'))
   OR(t.transaction_type='central_broadcast_settlement' AND a.bucket='broadcast_earnings')
   OR(t.transaction_type='tilo_v5_broadcast_settlement' AND a.bucket='tilo_creator_reward'))
  GROUP BY a.owner_id
@@ -51,10 +61,10 @@ export const CREATOR_TRACK_SQL=CREATOR_REPORT_CTE.slice(0,CREATOR_REPORT_CTE.ind
  SELECT CAST(a.owner_id AS INTEGER) AS user_id,
   CAST(CASE WHEN json_valid(tx.metadata_json) THEN json_extract(tx.metadata_json,'$.file_id') END AS INTEGER) AS file_id,
   SUM(e.amount_atoms) AS earned_atoms,MAX(tx.created_at) AS last_earned_at
- FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id AND a.asset_code=e.asset_code
+ FROM reporting_entries e JOIN v3_economy_accounts a ON a.id=e.account_id AND a.asset_code=e.asset_code
  JOIN valid_settlements v ON v.id=e.transaction_id JOIN v3_economy_transactions tx ON tx.id=v.id
  WHERE a.owner_type='user' AND e.asset_code='TL' AND
- ((v.transaction_type IN ('track_playback_settlement','self_play_income_release') AND a.bucket IN ('wallet_paid','wallet_ad','wallet_bonus')) OR
+ ((v.transaction_type IN ('track_playback_settlement','self_play_income_release','daily_free_overage') AND a.bucket IN ('wallet_paid','wallet_ad','wallet_bonus')) OR
   (v.transaction_type='central_broadcast_settlement' AND a.bucket='broadcast_earnings') OR
   (v.transaction_type='tilo_v5_broadcast_settlement' AND a.bucket='tilo_creator_reward'))
  GROUP BY a.owner_id,file_id
@@ -84,7 +94,7 @@ export async function readCreatorPayoutReport(db:D1Database,userId?:number){
    JOIN v3_economy_accounts a ON a.id=e.account_id AND a.asset_code=e.asset_code
    JOIN valid_settlements t ON t.id=e.transaction_id
    WHERE a.owner_type='platform' AND e.asset_code='TL'
-    AND((t.transaction_type='track_playback_settlement' AND a.bucket LIKE 'playback_revenue_%') OR
+    AND((t.transaction_type IN ('track_playback_settlement','daily_free_overage') AND a.bucket LIKE 'playback_revenue_%') OR
      (t.transaction_type='central_broadcast_settlement' AND a.bucket='broadcast_revenue') OR
      (t.transaction_type='tilo_v5_broadcast_settlement' AND a.bucket='tilo_broadcast_revenue'))`;
  const results=await db.batch([

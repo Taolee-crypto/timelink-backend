@@ -92,8 +92,9 @@ export async function prepareDailyMusicUsage(db:D1Database,interval:VerifiedList
     AND json_valid(t.metadata_json) AND json_extract(t.metadata_json,'$.overage_atoms')=?
     AND EXISTS(SELECT 1 FROM v3_economy_entries x WHERE x.transaction_id=t.id AND x.asset_code='TL' AND x.amount_atoms<0)
     AND NOT EXISTS(SELECT 1 FROM v3_economy_entries x WHERE x.transaction_id=t.id GROUP BY x.asset_code HAVING SUM(x.amount_atoms)<>0)
-    AND (SELECT COALESCE(SUM(-x.amount_atoms),0) FROM v3_economy_entries x JOIN v3_economy_accounts a ON a.id=x.account_id WHERE x.transaction_id=t.id AND x.asset_code='TL' AND x.amount_atoms<0 AND a.owner_type='user' AND a.owner_id=? AND a.bucket IN ('wallet_paid','wallet_ad','wallet_bonus'))=?
-  ) THEN 1 ELSE json_extract('MISSING_POSTED_OVERAGE_SETTLEMENT','$') END`).bind(paymentKey,String(interval.userId),interval.usageKey,atoms,String(interval.userId),atoms));
+    AND (SELECT COALESCE(SUM(-x.amount_atoms),0) FROM v3_economy_entries x JOIN v3_economy_accounts a ON a.id=x.account_id WHERE x.transaction_id=t.id AND x.asset_code='TL' AND a.owner_type='user' AND a.owner_id=? AND a.bucket IN ('wallet_paid','wallet_ad','wallet_bonus'))=?-COALESCE(json_extract(t.metadata_json,'$.self_creator_credit_atoms'),0)
+    AND COALESCE(json_extract(t.metadata_json,'$.self_creator_credit_atoms'),0) BETWEEN 0 AND ?
+  ) THEN 1 ELSE json_extract('MISSING_POSTED_OVERAGE_SETTLEMENT','$') END`).bind(paymentKey,String(interval.userId),interval.usageKey,atoms,String(interval.userId),atoms,atoms));
  statements.push(
   db.prepare(`INSERT INTO v5_music_usage_events(usage_key,user_id,file_id,session_id,entitlement_id,local_day,timezone,starts_at_ms,ends_at_ms,included_ms,overage_ms,overage_atoms,expected_daily_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(interval.usageKey,interval.userId,interval.fileId,interval.sessionId,e.id,day,e.timezone,interval.startsAtMs,interval.endsAtMs,included,overage,atoms,version),
   db.prepare(`UPDATE v5_music_daily_usage SET used_ms=used_ms+?,included_used_ms=included_used_ms+?,overage_ms=overage_ms+?,version=version+1 WHERE user_id=? AND local_day=? AND version=?`).bind(duration,included,overage,interval.userId,day,version)
