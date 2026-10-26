@@ -51,6 +51,42 @@ payment.post('/v5/shareplace-time/test-checkout',async c=>{
  }catch(error){console.error('[SHAREPLACE_TIME_TEST_CHECKOUT]',error);return c.json({ok:false,error:'TEST_CHECKOUT_UNAVAILABLE'},503);}
 });
 
+
+// Real Toss sandbox payment for Share Place time purchases. Separate from TL top-ups.
+payment.post('/v5/shareplace-time/toss/prepare',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null),quoteId=String(b?.quoteId||'');
+ if(!/^[a-f0-9-]{36}$/i.test(quoteId))return c.json({ok:false,error:'INVALID_QUOTE'},400);
+ const key=String(c.env.TOSS_CLIENT_KEY||''),secret=String(c.env.TOSS_SECRET_KEY||'');
+ if(!key.startsWith('test_ck_')||!secret.startsWith('test_sk_'))return c.json({ok:false,error:'TOSS_TEST_KEYS_REQUIRED'},503);
+ const o=await c.env.DB.prepare('SELECT * FROM v5_shareplace_time_test_orders WHERE quote_id=? AND user_id=?').bind(quoteId,Number(uid)).first<any>();
+ if(!o||o.status!=='quoted')return c.json({ok:false,error:'QUOTE_NOT_AVAILABLE'},409);
+ const amount=Number(o.discounted_tl);
+ if(!Number.isSafeInteger(amount)||amount<1000)return c.json({ok:false,error:'TOSS_MINIMUM_1000_KRW'},400);
+ const orderId='v5time_'+quoteId.replace(/-/g,'');
+ const updated=await c.env.DB.prepare("UPDATE v5_shareplace_time_test_orders SET status='pending_toss',method='cash' WHERE quote_id=? AND user_id=? AND status='quoted'").bind(quoteId,Number(uid)).run();
+ if(!updated.meta?.changes)return c.json({ok:false,error:'QUOTE_ALREADY_USED'},409);
+ return c.json({ok:true,orderId,amount,clientKey:key,mode:'test',seconds:Number(o.seconds)});
+});
+payment.post('/v5/shareplace-time/toss/confirm',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null),orderId=String(b?.orderId||''),paymentKey=String(b?.paymentKey||''),amount=Number(b?.amount);
+ if(!/^v5time_[a-f0-9]{32}$/.test(orderId)||!paymentKey||!Number.isSafeInteger(amount))return c.json({ok:false,error:'INVALID_REQUEST'},400);
+ const quoteId=orderId.slice(7).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,'$1-$2-$3-$4-$5');
+ const o=await c.env.DB.prepare('SELECT * FROM v5_shareplace_time_test_orders WHERE quote_id=? AND user_id=?').bind(quoteId,Number(uid)).first<any>();
+ if(!o||Number(o.discounted_tl)!==amount)return c.json({ok:false,error:'ORDER_AMOUNT_MISMATCH'},403);
+ if(o.status==='toss_paid')return c.json({ok:true,alreadyCompleted:true,seconds:o.seconds,amount});
+ if(o.status!=='pending_toss')return c.json({ok:false,error:'ORDER_NOT_PENDING'},409);
+ const secret=String(c.env.TOSS_SECRET_KEY||'');if(!secret.startsWith('test_sk_'))return c.json({ok:false,error:'TOSS_TEST_SECRET_REQUIRED'},503);
+ try{
+  const response=await fetch('https://api.tosspayments.com/v1/payments/confirm',{method:'POST',headers:{Authorization:'Basic '+btoa(secret+':'),'Content-Type':'application/json','Idempotency-Key':'v5time-'+orderId},body:JSON.stringify({paymentKey,orderId,amount})});
+  const proof:any=await response.json().catch(()=>({}));
+  if(!response.ok||proof.status!=='DONE'||proof.orderId!==orderId||Number(proof.totalAmount)!==amount||proof.paymentKey!==paymentKey)return c.json({ok:false,error:proof.message||'TOSS_CONFIRM_FAILED'},400);
+  await c.env.DB.prepare("UPDATE v5_shareplace_time_test_orders SET status='toss_paid',paid_at=CURRENT_TIMESTAMP WHERE quote_id=? AND user_id=? AND status='pending_toss'").bind(quoteId,Number(uid)).run();
+  return c.json({ok:true,seconds:o.seconds,amount,testPayment:true,tlBCredited:false});
+ }catch(e){console.error('[TIME_TOSS_CONFIRM]',e);return c.json({ok:false,error:'TOSS_CONFIRM_UNAVAILABLE'},503);}
+});
+
 // V5 TL PREMIUM: cash promotion prices are informational until a separate
 // verified PG order + airtime settlement pipeline is implemented.
 // Never route promotion purchases through the ordinary TL top-up endpoints.
