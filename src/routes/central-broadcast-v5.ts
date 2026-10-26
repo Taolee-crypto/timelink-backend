@@ -276,4 +276,51 @@ router.get('/country/:country/now', async c => {
   }catch(e){console.error('[TILO_TIMELINE]',e);return c.json({ok:false,error:'TIMELINE_UNAVAILABLE'},503);}
 });
 
+
+/** Global, station-independent TILO member lounge. No advertising or TL reward. */
+async function loungeUser(c:any):Promise<number>{
+ const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
+ if(!token)return 0;
+ const {verifyToken}=await import('../auth');
+ const payload=await verifyToken(token,c.env.JWT_SECRET);
+ const id=Number(payload?.sub||0);
+ return Number.isSafeInteger(id)&&id>0?id:0;
+}
+router.get('/lounge',async c=>{
+ const id=await loungeUser(c);if(!id)return c.json({ok:false,error:'LOGIN_REQUIRED'},401);
+ try{
+  const cutoff=Math.floor(Date.now()/1000)-90;
+  const [members,messages]=await Promise.all([
+   c.env.DB.prepare('SELECT u.username FROM tilo_global_presence p JOIN users u ON u.id=p.user_id WHERE p.last_seen_at>=? AND u.is_active=1 ORDER BY p.last_seen_at DESC LIMIT 100').bind(cutoff).all(),
+   c.env.DB.prepare('SELECT m.id,u.username,m.message,m.created_at FROM tilo_global_chat m JOIN users u ON u.id=m.user_id ORDER BY m.id DESC LIMIT 60').all()
+  ]);
+  return c.json({ok:true,members:members.results||[],messages:(messages.results||[]).reverse()});
+ }catch(e){console.error('[TILO_LOUNGE]',e);return c.json({ok:false,error:'LOUNGE_UNAVAILABLE'},503);}
+});
+router.post('/lounge/presence',async c=>{
+ const id=await loungeUser(c);if(!id)return c.json({ok:false,error:'LOGIN_REQUIRED'},401);
+ try{
+  await c.env.DB.prepare('INSERT INTO tilo_global_presence(user_id,last_seen_at) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET last_seen_at=excluded.last_seen_at').bind(id,Math.floor(Date.now()/1000)).run();
+  return c.json({ok:true});
+ }catch(e){console.error('[TILO_PRESENCE]',e);return c.json({ok:false,error:'PRESENCE_UNAVAILABLE'},503);}
+});
+router.delete('/lounge/presence',async c=>{
+ const id=await loungeUser(c);if(!id)return c.json({ok:false,error:'LOGIN_REQUIRED'},401);
+ try{await c.env.DB.prepare('DELETE FROM tilo_global_presence WHERE user_id=?').bind(id).run();return c.json({ok:true});}
+ catch(e){return c.json({ok:false,error:'PRESENCE_UNAVAILABLE'},503);}
+});
+router.post('/lounge/messages',async c=>{
+ const id=await loungeUser(c);if(!id)return c.json({ok:false,error:'LOGIN_REQUIRED'},401);
+ let body:any;try{body=await c.req.json();}catch{return c.json({ok:false,error:'INVALID_JSON'},400);}
+ const message=String(body?.message||'').trim();
+ if(!message||message.length>500)return c.json({ok:false,error:'INVALID_MESSAGE'},400);
+ try{
+  const now=Math.floor(Date.now()/1000);
+  const last=await c.env.DB.prepare('SELECT created_at FROM tilo_global_chat WHERE user_id=? ORDER BY id DESC LIMIT 1').bind(id).first<{created_at:number}>();
+  if(last&&now-last.created_at<3)return c.json({ok:false,error:'RATE_LIMIT'},429);
+  await c.env.DB.prepare('INSERT INTO tilo_global_chat(user_id,message,created_at) VALUES (?,?,?)').bind(id,message,now).run();
+  return c.json({ok:true});
+ }catch(e){console.error('[TILO_MESSAGE]',e);return c.json({ok:false,error:'MESSAGE_UNAVAILABLE'},503);}
+});
+
 export default router;
