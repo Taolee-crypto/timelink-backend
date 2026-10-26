@@ -20,7 +20,7 @@ eco.get('/daily-free-allowance',async c=>{
 });
 eco.get('/contribution',async c=>{
   const userId=await authId(c);if(!userId)return c.json({error:'인증 필요'},401);
-  return c.json({ok:true,...await readContributionEvaluation(c.env.DB,Number(userId))});
+  return c.json({ok:true,...await readContributionEvaluation(c.env.DB,Number(userId)),policyStatus:'retired',activeRewardPolicy:'v5_reward_policy'});
 });
 
 /* ══════════════════════════════════════════════════════

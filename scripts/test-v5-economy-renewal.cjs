@@ -62,8 +62,8 @@ async function main(){
  const adminToken=await api.makeAccessToken(1,env.JWT_SECRET),userToken=await api.makeAccessToken(2,env.JWT_SECRET);
  let response=await api.admin.request('/contribution-policy',{},env);assert.equal(response.status,403);
  response=await api.admin.request('/contribution-policy',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,403);
- response=await api.admin.request('/contribution-policy',{headers:{Authorization:'Bearer '+adminToken}},env);assert.equal(response.status,200);let body=await response.json();assert.equal(body.definitions.length,24);assert.ok(body.products.every(p=>p.miningMode==='individual'));
- response=await api.admin.request('/contribution-policy',{method:'POST',headers:{Authorization:'Bearer '+adminToken,'Content-Type':'application/json'},body:JSON.stringify({expected_version:0,policy:changed,note:'stale'})},env);assert.equal(response.status,409);
+ response=await api.admin.request('/contribution-policy',{headers:{Authorization:'Bearer '+adminToken}},env);assert.equal(response.status,200);let body=await response.json();assert.equal(body.policyStatus,'retired');assert.equal(body.activeRewardPolicy,'v5_reward_policy');assert.equal(body.definitions.length,24);assert.ok(body.products.every(p=>p.miningMode==='individual'));
+ response=await api.admin.request('/contribution-policy',{method:'POST',headers:{Authorization:'Bearer '+adminToken,'Content-Type':'application/json'},body:JSON.stringify({expected_version:0,policy:changed,note:'stale'})},env);assert.equal(response.status,410);assert.equal((await response.json()).error,'CONTRIBUTION_POLICY_RETIRED');
  response=await api.eco.request('/contribution',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,200);body=await response.json();assert.equal(body.newMiningEnabled,false);
  response=await api.eco.request('/daily-free-allowance',{},env);assert.equal(response.status,401);
  response=await api.eco.request('/daily-free-allowance?user_id=3',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,200);body=await response.json();assert.equal(body.active,false);assert.equal(body.subscriptionCheckoutEnabled,false);
@@ -83,6 +83,6 @@ async function main(){
  const repeat=await api.settleTrackPlayback(db,{userId:2,creatorId:3,shareId:'mixed',amountAtoms:api.tlToAtoms(2000),idempotencyKey:'mixed-settlement',fileId:77,playedSeconds:2000});
  assert.equal(repeat.replayed,true);assert.equal(balance(creatorBonus),api.tlToAtoms(700));
  console.log('PASS mixed funding: paid 70% stays cash source, gifted 70% becomes TL_B, conservation and replay');
- console.log('PASS HTTP: admin-only policy control, stale update 409, owner-scoped contribution and draft-only products');
+ console.log('PASS HTTP: admin-only historical proposal, retired policy writes rejected, owner-scoped audit data and retained time products');
 }
 main().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>{sqlite.close();fs.rmSync(temp,{recursive:true,force:true})});
