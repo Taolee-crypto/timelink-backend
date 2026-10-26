@@ -954,12 +954,17 @@ router.post('/broadcast/stop', async (c) => {
 router.get('/broadcast/status', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
-  await ensureDJCafeTables(c.env.DB);
-  const dj = await c.env.DB.prepare(
-    'SELECT id, is_live, live_started_at, live_current_track_idx, live_current_track_id, live_listener_count FROM dj_profiles WHERE user_id=?'
-  ).bind(auth.id).first<any>();
-  if(dj?.is_live && await enforceDjDailyLimit(c.env.DB,Number(dj.id)))dj.is_live=0;
-  return c.json({ ok: true, live: dj || null });
+  try {
+    await ensureDJCafeTables(c.env.DB);
+    const dj = await c.env.DB.prepare(
+      'SELECT id, is_live, live_started_at, live_current_track_idx, live_current_track_id, live_listener_count FROM dj_profiles WHERE user_id=?'
+    ).bind(auth.id).first<any>();
+    if(dj?.is_live && await enforceDjDailyLimit(c.env.DB,Number(dj.id)))dj.is_live=0;
+    return c.json({ ok: true, live: dj || null });
+  } catch(error) {
+    console.error('[DJ_BROADCAST_STATUS]',error);
+    return c.json({ok:false,code:'DJ_BROADCAST_STATUS_UNAVAILABLE',error:'방송 상태 조회 실패'},503);
+  }
 });
 
 // ── GET /api/dj-cafe/live-djs — 라이브 중인 DJ 목록 (공개) ──
