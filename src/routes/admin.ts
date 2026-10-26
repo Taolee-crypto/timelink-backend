@@ -31,6 +31,15 @@ router.use('*',async(c,next)=>{
   finally{await c.env.DB.prepare("UPDATE v5_admin_access_audit SET status=?,outcome=?,finished_at=datetime('now') WHERE id=?")
     .bind(c.res.status,c.res.status<400?'completed':'failed',id).run();}
 });
+router.get('/cafe/channels',async c=>{
+  try {
+    const rows=await c.env.DB.prepare('SELECT channel_id,name,status FROM cafe_channels ORDER BY channel_id DESC LIMIT 500').all();
+    return c.json({ok:true,channels:rows.results||[]});
+  } catch(error) {
+    console.error('[ADMIN_CAFE_CHANNELS]',error);
+    return c.json({ok:false,error:'STORE_CHANNELS_UNAVAILABLE'},503);
+  }
+});
 router.get('/audit-events',async c=>{
   const rows=await c.env.DB.prepare(`SELECT * FROM v5_admin_access_audit ORDER BY created_at DESC,id DESC LIMIT 100`).all();
   const stats=await c.env.DB.prepare(`SELECT COUNT(*) AS requests,
