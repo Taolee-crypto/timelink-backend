@@ -1,6 +1,6 @@
 import {listMusicSettlementReceipts,reviewMusicSettlement} from '../v5-subscription-settlement-review';
-import {readContributionPolicy,saveContributionPolicy,readContributionEvaluation} from '../v5-contribution-store';
-import {contributionTable,validateContributionPolicy} from '../v5-contribution-policy';
+import {readContributionPolicy,readContributionEvaluation} from '../v5-contribution-store';
+import {contributionTable} from '../v5-contribution-policy';
 import {dailyFreeCatalogue} from '../v5-daily-free-policy';
 import {readKrFinance,readKrPolicy,saveKrPolicy,saveKrProfile,postKrJournal,closeKrPeriod,krVat,krCorporate,krWithholding} from '../kr-finance';
 import {readAdminFinance} from '../admin-finance-report';
@@ -51,16 +51,13 @@ router.get('/audit-events',async c=>{
 // Renewal policy and simulation only: never edits legacy PoC or mints TLC.
 router.get('/contribution-policy',async c=>{
   const current=await readContributionPolicy(c.env.DB);
-  return c.json({ok:true,...current,definitions:contributionTable(current.policy),products:dailyFreeCatalogue(),mode:'manual',newMiningEnabled:false,pricingStatus:'design'});
+  return c.json({ok:true,...current,definitions:contributionTable(current.policy),products:dailyFreeCatalogue(),mode:'historical',newMiningEnabled:false,policyStatus:'retired',activeRewardPolicy:'v5_reward_policy',pricingStatus:'design'});
 });
+// The renewal reward proposal has been withdrawn. Existing versioned reward
+// rules remain authoritative; historical policy and event records stay readable.
 router.post('/contribution-policy',async c=>{
   const actor=await requireAdmin(c);if(!actor)return c.json({error:'ADMIN_REQUIRED'},403);
-  try{
-    const body=await c.req.json<{policy:unknown;expected_version:number;note:string}>();
-    const policy=validateContributionPolicy(body.policy);
-    if(typeof body.note!=='string')return c.json({error:'CHANGE_NOTE_REQUIRED'},400);
-    return c.json({ok:true,...await saveContributionPolicy(c.env.DB,policy,body.expected_version,actor,body.note)});
-  }catch(error){const message=error instanceof Error?error.message:'INVALID_CONTRIBUTION_POLICY';return c.json({error:message},message==='CONTRIBUTION_VERSION_CONFLICT'?409:400);}
+  return c.json({ok:false,error:'CONTRIBUTION_POLICY_RETIRED',activeRewardPolicy:'v5_reward_policy',message:'새 보상안은 폐기되었습니다. 기존 V5 보상 규칙을 사용하세요.'},410);
 });
 router.get('/contribution-policy/history',async c=>{
   await readContributionPolicy(c.env.DB);
