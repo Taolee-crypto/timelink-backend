@@ -955,7 +955,10 @@ router.get('/broadcast/status', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
   try {
-    await ensureDJCafeTables(c.env.DB);
+    // A status GET must not execute DDL migrations on every poll.
+    // Missing profiles mean the member has not registered as a DJ.
+    const profileTable = await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='dj_profiles'").first();
+    if (!profileTable) return c.json({ok:true,live:null});
     const dj = await c.env.DB.prepare(
       'SELECT id, is_live, live_started_at, live_current_track_idx, live_current_track_id, live_listener_count FROM dj_profiles WHERE user_id=?'
     ).bind(auth.id).first<any>();
