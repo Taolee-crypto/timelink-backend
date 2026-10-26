@@ -11,12 +11,14 @@ WITH valid_settlements AS (
  AND NOT EXISTS(SELECT 1 FROM v3_economy_entries e WHERE e.transaction_id=t.id GROUP BY e.asset_code HAVING SUM(e.amount_atoms)<>0)
 ), earnings AS (
  SELECT a.owner_id AS user_id,SUM(e.amount_atoms) AS earned_atoms,
+ SUM(CASE WHEN a.bucket='wallet_paid' THEN e.amount_atoms ELSE 0 END) AS cash_source_atoms,
+ SUM(CASE WHEN a.bucket IN ('wallet_ad','wallet_bonus') THEN e.amount_atoms ELSE 0 END) AS non_cash_atoms,
  SUM(CASE WHEN t.transaction_type IN ('track_playback_settlement','self_play_income_release') THEN e.amount_atoms ELSE 0 END) AS playback_atoms,
  SUM(CASE WHEN t.transaction_type NOT IN ('track_playback_settlement','self_play_income_release') THEN e.amount_atoms ELSE 0 END) AS broadcast_atoms
  FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id AND a.asset_code=e.asset_code
  JOIN valid_settlements t ON t.id=e.transaction_id
  WHERE a.owner_type='user' AND e.asset_code='TL'
- AND ((t.transaction_type IN ('track_playback_settlement','self_play_income_release') AND a.bucket IN ('wallet_paid','wallet_ad'))
+ AND ((t.transaction_type IN ('track_playback_settlement','self_play_income_release') AND a.bucket IN ('wallet_paid','wallet_ad','wallet_bonus'))
   OR(t.transaction_type='central_broadcast_settlement' AND a.bucket='broadcast_earnings')
   OR(t.transaction_type='tilo_v5_broadcast_settlement' AND a.bucket='tilo_creator_reward'))
  GROUP BY a.owner_id
@@ -33,7 +35,7 @@ WITH valid_settlements AS (
  WHERE a.owner_type='escrow' AND a.asset_code='TL' AND a.bucket LIKE 'self_play_creator_share_%' GROUP BY a.owner_id
 )
 SELECT u.id,u.username,u.email,u.role,COALESCE(t.track_count,0) AS track_count,
- COALESCE(e.earned_atoms,0) AS earned_atoms,COALESCE(e.playback_atoms,0) AS playback_atoms,
+ COALESCE(e.earned_atoms,0) AS earned_atoms,COALESCE(e.cash_source_atoms,0) AS cash_source_atoms,COALESCE(e.non_cash_atoms,0) AS non_cash_atoms,COALESCE(e.playback_atoms,0) AS playback_atoms,
  COALESCE(e.broadcast_atoms,0) AS broadcast_atoms,COALESCE(w.wallet_atoms,0) AS wallet_atoms,
  COALESCE(h.self_held_atoms,0) AS self_held_atoms
  FROM users u LEFT JOIN tracks t ON t.user_id=CAST(u.id AS TEXT)
@@ -52,7 +54,7 @@ export const CREATOR_TRACK_SQL=CREATOR_REPORT_CTE.slice(0,CREATOR_REPORT_CTE.ind
  FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id AND a.asset_code=e.asset_code
  JOIN valid_settlements v ON v.id=e.transaction_id JOIN v3_economy_transactions tx ON tx.id=v.id
  WHERE a.owner_type='user' AND e.asset_code='TL' AND
- ((v.transaction_type IN ('track_playback_settlement','self_play_income_release') AND a.bucket IN ('wallet_paid','wallet_ad')) OR
+ ((v.transaction_type IN ('track_playback_settlement','self_play_income_release') AND a.bucket IN ('wallet_paid','wallet_ad','wallet_bonus')) OR
   (v.transaction_type='central_broadcast_settlement' AND a.bucket='broadcast_earnings') OR
   (v.transaction_type='tilo_v5_broadcast_settlement' AND a.bucket='tilo_creator_reward'))
  GROUP BY a.owner_id,file_id
@@ -104,7 +106,7 @@ export async function readCreatorPayoutReport(db:D1Database,userId?:number){
  if(paidByUser.size)warnings.push('기존 지급 완료 기록은 V5 원장 거래 연결이 없어 지급 검증이 필요합니다.');
  const creators=rows.map(r=>({
   id:Number(r.id),username:String(r.username||''),email:String(r.email||''),track_count:Number(r.track_count),
-  total_earned:tl(r.earned_atoms),personal_display_tl:tl(Number(r.earned_atoms)+(!userId&&String(r.role||'').toLowerCase()==='admin'?Number(r.self_held_atoms):0)),playback_earned_tl:tl(r.playback_atoms),broadcast_earned_tl:tl(r.broadcast_atoms),
+  total_earned:tl(r.earned_atoms),cash_funded_playback_tl:tl(r.cash_source_atoms),non_cash_playback_tl:tl(r.non_cash_atoms),personal_display_tl:tl(Number(r.earned_atoms)+(!userId&&String(r.role||'').toLowerCase()==='admin'?Number(r.self_held_atoms):0)),playback_earned_tl:tl(r.playback_atoms),broadcast_earned_tl:tl(r.broadcast_atoms),
   self_play_held_tl:tl(r.self_held_atoms),tl_balance:tl(r.wallet_atoms),
   total_exchanged:paidByUser.has(Number(r.id))?null:0,reported_paid_tl:paidByUser.get(Number(r.id))||0,
   payout_verified:!paidByUser.has(Number(r.id)),cash_redeemable_tl:null,tracks:trackDetails.filter(t=>t.user_id===Number(r.id))
@@ -113,8 +115,8 @@ export async function readCreatorPayoutReport(db:D1Database,userId?:number){
  return {ok:true,ledger_version:'V5',read_only:true,as_of:new Date().toISOString(),creators,
   requests:requests.map(r=>({...r,verification_status:'legacy_record_not_ledger_verified'})),
   platform:userId?undefined:{music_revenue_tl:tl((results[4].results?.[0] as any)?.atoms)},tracks:trackDetails,
-  summary:{creator_count:creators.length,earned_tl:tl(earned),playback_earned_tl:tl(rows.reduce((n,r)=>n+Number(r.playback_atoms),0)),broadcast_earned_tl:tl(rows.reduce((n,r)=>n+Number(r.broadcast_atoms),0)),personal_display_tl:creators.reduce((n,r)=>Number((n+r.personal_display_tl).toFixed(4)),0),self_play_held_tl:tl(held),
+  summary:{creator_count:creators.length,earned_tl:tl(earned),cash_funded_playback_tl:tl(rows.reduce((n,r)=>n+Number(r.cash_source_atoms),0)),non_cash_playback_tl:tl(rows.reduce((n,r)=>n+Number(r.non_cash_atoms),0)),playback_earned_tl:tl(rows.reduce((n,r)=>n+Number(r.playback_atoms),0)),broadcast_earned_tl:tl(rows.reduce((n,r)=>n+Number(r.broadcast_atoms),0)),personal_display_tl:creators.reduce((n,r)=>Number((n+r.personal_display_tl).toFixed(4)),0),self_play_held_tl:tl(held),
    pending_request_count:requests.filter(r=>r.status==='pending').length,request_count:requests.length,
    unpaid_tl:null,cash_redeemable_tl:null},warnings,basis:'posted_balanced_v5_creator_credit_entries',
-  note:'창작 수익은 실제 수취인의 V5 원장 입금액입니다. 충전·가입 보너스 자체는 수익이 아니며 실제 TL 사용으로 정산된 창작자 몫을 수익으로 집계합니다. 현금 환전 가능액은 별도 기여도 및 정산 검토 후 확정합니다.'};
+  note:'창작 수익은 실제 수취인의 V5 원장 입금액입니다. 충전·가입 보너스 자체는 수익이 아니며 실제 TL 사용으로 정산된 창작자 몫을 수익으로 집계합니다. 유료 재원 창작 정산과 비환금성 보상을 구분하며, 현금 지급 가능액은 별도 정산 확인 후 확정합니다.'};
 }

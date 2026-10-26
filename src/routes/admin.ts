@@ -1,3 +1,6 @@
+import {readContributionPolicy,saveContributionPolicy,readContributionEvaluation} from '../v5-contribution-store';
+import {contributionTable,validateContributionPolicy} from '../v5-contribution-policy';
+import {dailyFreeCatalogue} from '../v5-daily-free-policy';
 import {readKrFinance,readKrPolicy,saveKrPolicy,saveKrProfile,postKrJournal,closeKrPeriod,krVat,krCorporate,krWithholding} from '../kr-finance';
 import {readAdminFinance} from '../admin-finance-report';
 import {readCreatorPayoutReport} from '../creator-payout-report';
@@ -35,6 +38,32 @@ router.get('/audit-events',async c=>{
     FROM v5_admin_access_audit WHERE created_at>=datetime('now','-30 days')`).first();
   return c.json({ok:true,events:rows.results||[],stats});
 });
+// Renewal policy and simulation only: never edits legacy PoC or mints TLC.
+router.get('/contribution-policy',async c=>{
+  const current=await readContributionPolicy(c.env.DB);
+  return c.json({ok:true,...current,definitions:contributionTable(current.policy),products:dailyFreeCatalogue(),mode:'manual',newMiningEnabled:false,pricingStatus:'design'});
+});
+router.post('/contribution-policy',async c=>{
+  const actor=await requireAdmin(c);if(!actor)return c.json({error:'ADMIN_REQUIRED'},403);
+  try{
+    const body=await c.req.json<{policy:unknown;expected_version:number;note:string}>();
+    const policy=validateContributionPolicy(body.policy);
+    if(typeof body.note!=='string')return c.json({error:'CHANGE_NOTE_REQUIRED'},400);
+    return c.json({ok:true,...await saveContributionPolicy(c.env.DB,policy,body.expected_version,actor,body.note)});
+  }catch(error){const message=error instanceof Error?error.message:'INVALID_CONTRIBUTION_POLICY';return c.json({error:message},message==='CONTRIBUTION_VERSION_CONFLICT'?409:400);}
+});
+router.get('/contribution-policy/history',async c=>{
+  await readContributionPolicy(c.env.DB);
+  const history=await c.env.DB.prepare('SELECT version,policy_json,updated_by,note,updated_at FROM v5_contribution_policy_history ORDER BY version DESC LIMIT 50').all();
+  return c.json({ok:true,history:history.results});
+});
+router.get('/contribution-members/:id',async c=>{
+  const id=Number(c.req.param('id'));if(!Number.isSafeInteger(id)||id<=0)return c.json({error:'INVALID_USER'},400);
+  const user=await c.env.DB.prepare('SELECT id FROM users WHERE id=?').bind(id).first();
+  if(!user)return c.json({error:'USER_NOT_FOUND'},404);
+  return c.json({ok:true,...await readContributionEvaluation(c.env.DB,id)});
+});
+
 router.get('/reward-policy',async c=>c.json({ok:true,...await readRewardPolicy(c.env.DB),definitions:REWARD_RULES,mode:'manual'}));
 router.get('/reward-policy/history',async c=>{
   await readRewardPolicy(c.env.DB);

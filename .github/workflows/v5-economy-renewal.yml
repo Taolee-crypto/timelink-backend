@@ -1,0 +1,25 @@
+name: V5 economy renewal validation
+on:
+  pull_request:
+    paths: ['src/**', 'scripts/test-v5-economy-renewal.cjs', 'scripts/test-v5-daily-free.mjs', '.github/workflows/v5-economy-renewal.yml']
+  push:
+    branches: [main]
+    paths: ['src/v5-contribution*', 'src/v5-daily-free-policy.ts', 'src/v5-payment-ledger.ts', 'src/economy-ledger.ts', '.github/workflows/v5-economy-renewal.yml']
+jobs:
+  economy-renewal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install tsc --noEmit
+      - run: node scripts/test-v5-daily-free.mjs
+      - run: node scripts/test-v5-economy-renewal.cjs
+      - run: node scripts/test-v5-real-ledger-sqlite.cjs
+      - run: node scripts/test-self-play-income.cjs
+      - run: node scripts/test-creator-payout-report.cjs
+      - run: node scripts/test-creator-contributors.cjs
+      - run: node scripts/test-v5-trace-d1.cjs

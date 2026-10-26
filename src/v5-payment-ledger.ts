@@ -1,3 +1,4 @@
+import {ensureContributionSchema,contributionEventStatement} from './v5-contribution-store';
 import { assertTLAtomScale, ensureLedgerAccount, postLedgerTransaction, tlToAtoms } from './economy-ledger';
 
 /** Called only after provider verification. The payment receipt and wallet
@@ -16,6 +17,14 @@ export async function creditVerifiedPayment(db:D1Database,input:{userId:string;m
       BEGIN SELECT RAISE(ABORT,'PAYMENT_ORDER_ALREADY_USED_OR_MISMATCHED'); END`).run();
     if(!input.atomicStatements?.length)throw new Error('PAYMENT_ORDER_TRANSITION_REQUIRED');
   }
+  // Only verified LIVE receipts enter the renewal PoC record. Test/unknown
+  // payments remain excluded; this does not activate new mining.
+  if(input.paymentMode==='live')await ensureContributionSchema(db);
+  const contributionStatements=input.paymentMode==='live'?[contributionEventStatement(db,{
+    eventKey:'payment:'+method+':'+paymentId,userId,activity:'paid_topup',quantity:paidTL,
+    occurredAtMs:Date.now(),evidenceRef:'payment:'+method+':'+paymentId,
+    economicKey:'payment:'+method+':'+paymentId,counterpartyId:null,verified:true,revoked:false
+  })]:[];
   const source=await ensureLedgerAccount(db,'system','pg:'+method,'TL','verified_payment_issuance');
   const paid=await ensureLedgerAccount(db,'user',userId,'TL','wallet_paid');
   const lines:any[]=[{accountId:source,assetCode:'TL',amountAtoms:-tlToAtoms(paidTL+bonusTL)},
@@ -30,6 +39,7 @@ export async function creditVerifiedPayment(db:D1Database,input:{userId:string;m
     issuanceStatements:[db.prepare('UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?')
       .bind(tlToAtoms(paidTL+bonusTL),source)],
     atomicStatements:[
+      ...contributionStatements,
       db.prepare(`INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,bonus_tl,status)
         VALUES (?,?,?,?,?,?,?,'success')`).bind(userId,method,paymentId,orderId,paidTL,paidTL+bonusTL,bonusTL),
       db.prepare('UPDATE users SET tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?').bind(paidTL,userId),
