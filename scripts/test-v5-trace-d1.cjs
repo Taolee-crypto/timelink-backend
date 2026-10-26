@@ -11,6 +11,8 @@ export {default as admin} from './src/routes/admin';
 export {readContributionPolicy,saveContributionPolicy,readContributionEvaluation} from './src/v5-contribution-store';
 export {ensureSubscriptionMeterSchema,readDailyMusicAllowance,prepareDailyMusicUsage} from './src/v5-subscription-meter';
 export {prepareMusicOrder,confirmMusicOrder} from './src/v5-music-subscription-orders';
+export {beginSubscriptionSession,meterSubscriptionPlayback} from './src/v5-subscription-playback';
+export {ensureLedgerAccount} from './src/economy-ledger';
 export {makeAccessToken} from './src/auth';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:dir+'/api.cjs',logLevel:'silent'});
 async function main(){
  const mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("isolated")}}',compatibilityDate:'2026-10-24',d1Databases:{DB:'isolated-v5-trace-d1'}});
@@ -38,6 +40,22 @@ async function main(){
   assert.equal((await api.prepareDailyMusicUsage(db,usage,meterStart+2000)).replayed,true);
   const overlapping=await api.prepareDailyMusicUsage(db,{...usage,usageKey:'runtime-overlap'},meterStart+2000);await assert.rejects(db.batch(overlapping.statements));
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM v5_music_usage_events').first()).n,1);
+  // Canonical wallet overage and quota checkpoint in an actual D1 batch.
+  const migration=fs.readFileSync('migrations/0003_v3_economy_ledger.sql','utf8').replace(/^--.*$/gm,'');
+  const triggers=migration.match(/CREATE TRIGGER[\s\S]*?END;/g)||[];
+  const tables=migration.replace(/CREATE TRIGGER[\s\S]*?END;/g,'').split(';').map(s=>s.trim()).filter(Boolean);
+  for(const statement of [...tables,...triggers])await db.prepare(statement).run();
+  await db.prepare("UPDATE v3_economy_assets SET decimals=4 WHERE asset_code='TL'").run();
+  await db.prepare('CREATE TABLE play_events(file_id INTEGER,player_user_id INTEGER,tl_deducted REAL,revenue_credited REAL,file_tl_after REAL,play_duration_seconds REAL,car_mode INTEGER)').run();
+  await db.prepare('INSERT INTO v5_music_entitlements VALUES(?,?,?,?,?,?,?,?,?)').bind('runtime-player',3,1,'UTC',meterStart,meterStart+7200000,'verified-player-fixture','live','active').run();
+  await api.beginSubscriptionSession(db,{sessionId:'sub_runtime_player_3',userId:3,fileId:10,durationMs:7200000},meterStart);
+  const player={sessionId:'sub_runtime_player_3',userId:3,fileId:10,creatorId:3,shareId:'song-runtime',playedMs:3600000};
+  assert.equal((await api.meterSubscriptionPlayback(db,player,meterStart+3600000)).charged_tl,0);
+  const wallet=await api.ensureLedgerAccount(db,'user',3,'TL','wallet_paid');
+  await db.prepare('UPDATE v3_economy_balances SET available_atoms=100000 WHERE account_id=?').bind(wallet).run();
+  const overage=await api.meterSubscriptionPlayback(db,{...player,playedMs:3610000},meterStart+3610000);assert.equal(overage.delta_tl,10);
+  assert.equal((await db.prepare('SELECT available_atoms n FROM v3_economy_balances WHERE account_id=?').bind(wallet).first()).n,70000);
+  assert.equal((await api.meterSubscriptionPlayback(db,{...player,playedMs:3610000},meterStart+3611000)).delta_tl,0);
   const musicStart=Date.parse('2026-11-10T09:00:00Z'),musicConfig={mode:'test',secret:'test_sk_fixture',timezone:'Asia/Seoul'};
   const musicOrder=await api.prepareMusicOrder(db,2,4,'runtime-music-order-00000',musicConfig,musicStart);
   const musicTransport=async()=>new Response(JSON.stringify({paymentKey:'runtime-music-pg',orderId:musicOrder.orderId,status:'DONE',totalAmount:4900,currency:'KRW',approvedAt:new Date(musicStart+1000).toISOString()}));

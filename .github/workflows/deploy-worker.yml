@@ -94,6 +94,7 @@ jobs:
         run: |
           node scripts/test-v5-music-orders.cjs
           node scripts/test-v5-subscription-meter.cjs
+          node scripts/test-v5-subscription-playback.cjs
           node scripts/test-v5-economy-renewal.cjs
 
       - name: Check Cloudflare credentials

@@ -1,3 +1,4 @@
+import {subscriptionPreflight,subscriptionSessionExists,meterSubscriptionPlayback,closeSubscriptionSession} from './v5-subscription-playback';
 import salesManagersRouter from './routes/sales-managers';
 import {certificateFeeQuote,chargeCertificateFee,ServiceFeeError,CERTIFICATE_ISSUE_FEE,CERTIFICATE_DOWNLOAD_FEE} from './v5-certificate-fees';
 import creatorEarningsRouter from './routes/creator-earnings';
@@ -2343,6 +2344,10 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
     const walletA=atomsToTl(walletAccounts.filter(a=>a.bucket==='wallet_ad').reduce((n,a)=>n+Number(a.available_atoms||0),0));
     const walletB=atomsToTl(walletAccounts.filter(a=>a.bucket==='wallet_bonus').reduce((n,a)=>n+Number(a.available_atoms||0),0));
     const walletBalance=Number((walletP+walletA+walletB).toFixed(4));
+    if(c.env.MUSIC_SUBSCRIPTION_PLAYBACK_ENABLED==='true'&&v5Duration){
+      const subscription=await subscriptionPreflight(c.env.DB,Number(user.id));
+      if(subscription)return c.json({ok:true,file_id:fileId,duration_ms:totalMs,required_tl:Math.max(0,totalMs-subscription.remaining_included_ms)/1000,asset_tl:assetBalance,tl_atom_scale:TL_ATOMS_PER_TL,...subscription,insufficient_tl:!subscription.can_play});
+    }
     const insufficientTL=assetBalance+1e-9<requiredTL;
     // Distinguish an uninitialized V3 wallet from a genuinely uncharged track.
     // Never treat legacy users.tl_balance as spendable V3 ledger funds.
@@ -2371,6 +2376,11 @@ app.post('/api/v1/tl3/play/stop/:id', async (c) => {
     const sessionId=String(body.session_id||'');
     if(!Number.isSafeInteger(fileId)||fileId<=0||!/^[A-Za-z0-9_-]{8,100}$/.test(sessionId))
       return c.json({ok:false,error:'재생 세션 정보가 올바르지 않습니다.'},400);
+    if(sessionId.startsWith('sub_')&&await subscriptionSessionExists(c.env.DB,sessionId,userId,fileId)){
+      const authorized=await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=?').bind(sessionId,userId,fileId).first();
+      if(!authorized)return c.json({ok:false,error:'인증된 구독 재생 세션이 없습니다.'},403);
+      return c.json(await closeSubscriptionSession(c.env.DB,sessionId,userId,fileId));
+    }
     const session=await c.env.DB.prepare('SELECT billed_seconds FROM tl3_play_meter_sessions WHERE session_id=? AND user_id=? AND file_id=?')
       .bind(sessionId,userId,fileId).first<any>();
     const authorized=await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=?')
@@ -2431,6 +2441,12 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const v5Session=await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=? AND expires_at>?').bind(sessionId,user.id,fileId,Math.floor(Date.now()/1000)).first().catch(()=>null);
     const isV5=!!(await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first().catch(()=>null));
     if(isV5&&!v5Session) return c.json({ok:false,error:'V5 Player 세션 인증이 필요합니다.'},403);
+    if(sessionId.startsWith('sub_')&&await subscriptionSessionExists(c.env.DB,sessionId,Number(user.id),fileId)){
+      if(c.env.MUSIC_SUBSCRIPTION_PLAYBACK_ENABLED!=='true')return c.json({ok:false,stop:true,error:'구독 재생 연결이 일시 중지되었습니다.'},409);
+      try{return c.json(await meterSubscriptionPlayback(c.env.DB,{sessionId,userId:Number(user.id),fileId,creatorId:Number(file.user_id),shareId:String(file.share_id),playedMs}));}
+      catch(error){console.error('subscription playback meter',error);return c.json({ok:false,stop:true,error:'구독 청취 정산을 확인할 수 없습니다. 다시 재생해 주세요.'},409);}
+    }
+
     // V5's encrypted inner manifest is the authoritative duration source.
     const v5Duration=await c.env.DB.prepare("SELECT duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed' LIMIT 1").bind(fileId).first<any>();
     const v4Duration=await c.env.DB.prepare(
