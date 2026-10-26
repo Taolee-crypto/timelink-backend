@@ -11,29 +11,45 @@ const payment = new Hono<{ Bindings: Env }>();
 payment.route('/v5/music',musicSubscriptionsRouter);
 
 /**
- * Share Place airtime pricing preview only. Server-owned independent draws;
- * never use this quote as payment authorization or a wallet mutation.
+ * V5 Share Place TEST checkout: persistent test-only receipts, never charges
+ * money, never changes real TL wallet balances. No production entitlement.
  */
 payment.post('/v5/shareplace-time/quote', async c => {
-  const userId=await authUserId(c);
-  if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
-  const body=await c.req.json<{hours?:number}>().catch(()=>null);
-  const hours=Number(body?.hours);
-  if(!Number.isFinite(hours)||hours<=0||hours>720)return c.json({ok:false,error:'INVALID_HOURS'},400);
-  const seconds=Math.round(hours*3600);
-  if(!Number.isSafeInteger(seconds)||seconds<1)return c.json({ok:false,error:'INVALID_DURATION'},400);
-  // Placeholder distribution pending administrator-controlled V5 discount policy.
-  // No checkout or entitlement is enabled while the policy remains unapproved.
-  const rates=[0,5,10,15,20,30,40,50,100];
-  const draw=()=>{const buf=new Uint32Array(1);crypto.getRandomValues(buf);return rates[buf[0]%rates.length];};
-  const first=draw(),second=draw();
-  const discountedTl=Math.ceil(seconds*(100-first)*(100-second)/10000);
-  return c.json({ok:true,seconds,nominalTl:seconds,firstDiscountPercent:first,
-    doubleDiscountPercent:second,discountedTl,entitlementTlB:seconds,
-    checkoutEnabled:false,quoteOnly:true,
-    note:'Preview only: discount probabilities, KRW conversion, ledger and payment are not approved.'});
+ const userId=await authUserId(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<{hours?:number}>().catch(()=>null),hours=Number(b?.hours);
+ if(!Number.isFinite(hours)||hours<=0||hours>720)return c.json({ok:false,error:'INVALID_HOURS'},400);
+ const seconds=Math.round(hours*3600);
+ if(!Number.isSafeInteger(seconds)||seconds<1)return c.json({ok:false,error:'INVALID_DURATION'},400);
+ const rates=[0,5,10,15,20,30,40,50,100];
+ const draw=()=>{const buf=new Uint32Array(1);crypto.getRandomValues(buf);return rates[buf[0]%rates.length];};
+ const first=draw(),second=draw(),discountedTl=Math.ceil(seconds*(100-first)*(100-second)/10000);
+ const quoteId=crypto.randomUUID();
+ try{
+  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS v5_shareplace_time_test_orders (
+   quote_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,seconds INTEGER NOT NULL,
+   first_discount INTEGER NOT NULL,second_discount INTEGER NOT NULL,
+   discounted_tl INTEGER NOT NULL,method TEXT,status TEXT NOT NULL DEFAULT 'quoted',
+   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,paid_at TEXT)`).run();
+  await c.env.DB.prepare('INSERT INTO v5_shareplace_time_test_orders (quote_id,user_id,seconds,first_discount,second_discount,discounted_tl) VALUES (?,?,?,?,?,?)').bind(quoteId,Number(userId),seconds,first,second,discountedTl).run();
+  return c.json({ok:true,quoteId,seconds,nominalTl:seconds,firstDiscountPercent:first,doubleDiscountPercent:second,
+   discountedTl,entitlementTlB:seconds,checkoutEnabled:true,testMode:true});
+ }catch(error){console.error('[SHAREPLACE_TIME_QUOTE]',error);return c.json({ok:false,error:'QUOTE_UNAVAILABLE'},503);}
 });
-
+payment.post('/v5/shareplace-time/test-checkout',async c=>{
+ const userId=await authUserId(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<{quoteId?:string;method?:string}>().catch(()=>null);
+ const quoteId=String(b?.quoteId||''),method=String(b?.method||'');
+ if(!/^[a-f0-9-]{36}$/i.test(quoteId)||!['tl','cash'].includes(method))return c.json({ok:false,error:'INVALID_REQUEST'},400);
+ try{
+  const order=await c.env.DB.prepare('SELECT * FROM v5_shareplace_time_test_orders WHERE quote_id=? AND user_id=?').bind(quoteId,Number(userId)).first<any>();
+  if(!order)return c.json({ok:false,error:'QUOTE_NOT_FOUND'},404);
+  if(order.status==='test_paid')return c.json({ok:true,testMode:true,alreadyCompleted:true,seconds:order.seconds,discountedTl:order.discounted_tl,method:order.method});
+  const result=await c.env.DB.prepare("UPDATE v5_shareplace_time_test_orders SET status='test_paid',method=?,paid_at=CURRENT_TIMESTAMP WHERE quote_id=? AND user_id=? AND status='quoted'").bind(method,quoteId,Number(userId)).run();
+  if(!result.meta?.changes)return c.json({ok:false,error:'ALREADY_PROCESSING'},409);
+  return c.json({ok:true,testMode:true,seconds:order.seconds,discountedTl:order.discounted_tl,method,
+   message:'테스트 결제 완료 (실제 결제·TL 차감·TL_B 지급 없음)'});
+ }catch(error){console.error('[SHAREPLACE_TIME_TEST_CHECKOUT]',error);return c.json({ok:false,error:'TEST_CHECKOUT_UNAVAILABLE'},503);}
+});
 
 // V5 TL PREMIUM: cash promotion prices are informational until a separate
 // verified PG order + airtime settlement pipeline is implemented.
