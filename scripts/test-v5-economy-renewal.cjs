@@ -65,6 +65,8 @@ async function main(){
  response=await api.admin.request('/contribution-policy',{headers:{Authorization:'Bearer '+adminToken}},env);assert.equal(response.status,200);let body=await response.json();assert.equal(body.definitions.length,24);assert.ok(body.products.every(p=>p.miningMode==='individual'));
  response=await api.admin.request('/contribution-policy',{method:'POST',headers:{Authorization:'Bearer '+adminToken,'Content-Type':'application/json'},body:JSON.stringify({expected_version:0,policy:changed,note:'stale'})},env);assert.equal(response.status,409);
  response=await api.eco.request('/contribution',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,200);body=await response.json();assert.equal(body.newMiningEnabled,false);
+ response=await api.eco.request('/daily-free-allowance',{},env);assert.equal(response.status,401);
+ response=await api.eco.request('/daily-free-allowance?user_id=3',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,200);body=await response.json();assert.equal(body.active,false);assert.equal(body.subscriptionCheckoutEnabled,false);
  response=await api.eco.request('/daily-free-products',{},env);body=await response.json();assert.equal(body.products.length,24);assert.equal(body.purchasable,false);
  // Consume a mixed funded pool: paid cash source vs gifted TL_B.
  const beforeTotal=sqlite.prepare('SELECT SUM(available_atoms) n FROM v3_economy_balances').get().n;

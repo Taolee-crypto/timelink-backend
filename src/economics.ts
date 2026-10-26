@@ -1,3 +1,4 @@
+import {readDailyMusicAllowance} from './v5-subscription-meter';
 import {readContributionEvaluation} from './v5-contribution-store';
 import {dailyFreeCatalogue} from './v5-daily-free-policy';
 import { Hono } from 'hono';
@@ -13,6 +14,10 @@ const eco = new Hono<{ Bindings: Env }>();
 
 // New policy is a separate preview until all verified producers are connected.
 eco.get('/daily-free-products',c=>c.json({ok:true,status:'design',purchasable:false,products:dailyFreeCatalogue()}));
+eco.get('/daily-free-allowance',async c=>{
+  const userId=await authId(c);if(!userId)return c.json({error:'인증 필요'},401);
+  return c.json({ok:true,...await readDailyMusicAllowance(c.env.DB,Number(userId))});
+});
 eco.get('/contribution',async c=>{
   const userId=await authId(c);if(!userId)return c.json({error:'인증 필요'},401);
   return c.json({ok:true,...await readContributionEvaluation(c.env.DB,Number(userId))});
