@@ -30,7 +30,7 @@ async function main(){
  assert.equal((await settle(10,'self-paid','self-paid-fixture')).replayed,true);assert.equal(await balance(paid),70000);
  await assert.rejects(settle(10,'self-paid','self-paid-empty'),/INSUFFICIENT_TRACK_TL/);
  await pool(1,'self-bonus','bonus',100000);await settle(10,'self-bonus','self-bonus-fixture');
- const ad=await api.ensureLedgerAccount(db,'user',1,'TL','wallet_ad');assert.equal(await balance(ad),70000);
+ const ad=await api.ensureLedgerAccount(db,'user',1,'TL','wallet_bonus');assert.equal(await balance(ad),70000);
  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM v3_economy_accounts WHERE bucket LIKE 'self_play_creator_share_%'").get().n,0);
  sqlite.exec(`INSERT INTO v5_creator_split_heads VALUES(30,1),(40,1);
  INSERT INTO v5_creator_split_versions(file_id,version,owner_user_id,total_bps) VALUES(30,1,1,10000),(40,1,1,10000);
@@ -50,7 +50,7 @@ async function main(){
  const preview=await api.releaseHistoricalSelfPlayIncome(db);assert.equal(preview.total_atoms,70000);assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM v3_economy_transactions').get().n,count);
  const total=sqlite.prepare('SELECT SUM(available_atoms) n FROM v3_economy_balances').get().n;
  const release=await api.releaseHistoricalSelfPlayIncome(db,true);assert.equal(release.posted,1);assert.equal(await balance(held),0);
- const historic=await api.ensureLedgerAccount(db,'user',3,'TL','wallet_ad');assert.equal(await balance(historic),70000);
+ const historic=await api.ensureLedgerAccount(db,'user',3,'TL','wallet_bonus');assert.equal(await balance(historic),70000);
  assert.equal(sqlite.prepare('SELECT SUM(available_atoms) n FROM v3_economy_balances').get().n,total);
  assert.equal((await api.releaseHistoricalSelfPlayIncome(db,true)).posted,0);
  const report=await api.readCreatorPayoutReport(db,3);assert.equal(report.summary.earned_tl,7);assert.equal(report.tracks[0].earned_tl,7);

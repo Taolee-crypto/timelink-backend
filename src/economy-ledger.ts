@@ -332,7 +332,9 @@ export async function settleTrackPlayback(
     const creatorPart=Math.round(consumed*CREATOR_SHARE_RATE);
     const platformPart=consumed-creatorPart;
     const pool=await ensureLedgerAccount(db,'user',userId,'TL','track_pool:'+shareId+':'+source);
-    const creatorBucket=source==='paid'?'wallet_paid':'wallet_ad';
+    // Cash-funded purchases retain a cash-settlement source. Platform-funded
+    // ad/bonus consumption produces non-cash TL_B, never paid TL or TL_A.
+    const creatorBucket=source==='paid'?'wallet_paid':'wallet_bonus';
     const platformAccount=await ensureLedgerAccount(db,'platform','timelink','TL','playback_revenue_'+source);
     add(pool,-consumed);add(platformAccount,platformPart);
     if(rightsSplit){
@@ -360,6 +362,8 @@ export async function settleTrackPlayback(
       file_id:fileId,share_id:shareId,played_seconds:playedSeconds,
       amount_atoms:amountAtoms,creator_share_atoms:creatorShareAtoms,
       platform_share_atoms:platformShareAtoms,source_allocation:used,
+      funding_policy:'cash_paid_vs_non_cash_bonus_v1',
+      creator_destination_buckets:{paid:'wallet_paid',ad:'wallet_bonus',bonus:'wallet_bonus'},
       rights_split_version:rightsSplit?.version??null,rights_split_pending:!!rightsSplit&&!rightsSplit.ready,
       self_play:userId===creatorId,self_play_held:false
     },

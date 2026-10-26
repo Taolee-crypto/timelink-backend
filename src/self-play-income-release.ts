@@ -35,7 +35,7 @@ export async function releaseHistoricalSelfPlayIncome(db:D1Database,apply=false)
  if(!apply)return {applied:false,posted:0,total_atoms:totalAtoms,plans:rows};
  let posted=0;
  for(const row of rows){
-  const bucket=row.bucket.endsWith('_paid')?'wallet_paid':'wallet_ad';
+  const bucket=row.bucket.endsWith('_paid')?'wallet_paid':'wallet_bonus';
   const target=await ensureLedgerAccount(db,'user',row.owner_id,'TL',bucket);
   const idempotencyKey='self-play-income-v1:'+row.account_id+':'+row.file_id+':'+row.watermark;
   const result=await postLedgerTransaction(db,{
