@@ -670,6 +670,24 @@ async function adminSum(db:Env['DB'],table:string,column:string):Promise<number|
   const row=await db.prepare('SELECT SUM("'+column+'") AS n FROM "'+table+'"').first<{n:number|null}>();
   return Number(row?.n??0);
 }
+// Read-only music analytics; do not manufacture BPM or genre measurements.
+router.get('/music/analytics',async c=>{
+  try{
+    const db=c.env.DB;
+    const cols=await adminTableColumns(db,'tl_shares');
+    if(!cols.includes('title'))return c.json({ok:true,available:false,totals:{total:null,pulse:null,avg_bpm:null},genres:[],bpm_dist:[],top_tracks:[]});
+    const total=await adminCount(db,'tl_shares');
+    const pulse=cols.includes('pulse')?await adminSum(db,'tl_shares','pulse'):null;
+    const bpm=cols.includes('bpm')?await db.prepare('SELECT AVG(bpm) AS n FROM tl_shares WHERE bpm>0').first<{n:number|null}>():null;
+    const genres=cols.includes('category')?(await db.prepare('SELECT category,COUNT(*) AS cnt FROM tl_shares GROUP BY category ORDER BY cnt DESC LIMIT 20').all()).results||[]:[];
+    const bpmDist=cols.includes('bpm')?(await db.prepare(`SELECT CASE WHEN bpm IS NULL OR bpm<=0 THEN '미측정' WHEN bpm<90 THEN '느림' WHEN bpm<120 THEN '보통' WHEN bpm<150 THEN '신남' ELSE '빠름' END AS range,COUNT(*) AS cnt FROM tl_shares GROUP BY 1 ORDER BY 1`).all()).results||[]:[];
+    const wanted=['title','artist','category','bpm','pulse','file_tl'];
+    const projection=wanted.map(k=>cols.includes(k)?'"'+k+'"':'NULL AS "'+k+'"').join(',');
+    const sort=cols.includes('pulse')?'pulse DESC':'rowid DESC';
+    const tracks=(await db.prepare('SELECT '+projection+' FROM tl_shares ORDER BY '+sort+' LIMIT 20').all()).results||[];
+    return c.json({ok:true,available:true,totals:{total,pulse,avg_bpm:bpm?.n??null},genres,bpm_dist:bpmDist,top_tracks:tracks});
+  }catch(error){console.error('[ADMIN_MUSIC_ANALYTICS]',error);return c.json({ok:false,error:'MUSIC_ANALYTICS_UNAVAILABLE'},503);}
+});
 router.get('/realtime',async c=>{
   if(!await requireAdmin(c))return c.json({ok:false,error:'관리자 권한 필요'},403);
   try{
