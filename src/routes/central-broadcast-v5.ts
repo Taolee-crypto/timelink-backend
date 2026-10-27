@@ -173,6 +173,30 @@ router.post('/airtime/record', async c => {
  * Internal broadcaster state gate. Requires a server-side secret; no browser
  * can use this to impersonate a broadcast worker. No audio is exposed here.
  */
+router.get('/airtime/freshness', async c => {
+  const secret=c.env.CENTRAL_BROADCAST_WORKER_SECRET;
+  if(!secret||c.req.header('X-Central-Broadcast-Secret')!==secret)
+    return c.json({ok:false,error:'UNAUTHORIZED'},403);
+  const adminId=Number(c.req.query('admin_id'));
+  if(!Number.isSafeInteger(adminId)||adminId<=0)
+    return c.json({ok:false,error:'INVALID_ADMIN_ID'},400);
+  const serviceId='central-tilo-'+adminId;
+  try{
+    const service=await c.env.DB.prepare(
+      'SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?'
+    ).bind(serviceId,adminId).first<{status:string}>();
+    if(!service)return c.json({ok:false,error:'SERVICE_NOT_FOUND'},404);
+    const latest=await c.env.DB.prepare(
+      'SELECT MAX(ended_at) AS last_ended_at FROM tilo_v5_verified_airtime WHERE service_id=?'
+    ).bind(serviceId).first<{last_ended_at:string|null}>();
+    const last=latest?.last_ended_at||null;
+    const age=last?Date.now()-new Date(last).getTime():NaN;
+    return c.json({ok:true,service_id:serviceId,enabled:service.status==='active',
+      last_airtime_ended_at:last,airtime_stale:!Number.isFinite(age)||age>300000,
+      threshold_seconds:300,measurement:'recorded_airtime_only'});
+  }catch{return c.json({ok:false,error:'AIRTIME_MONITOR_UNAVAILABLE'},503);}
+});
+
 router.get('/service-state', async c => {
   const configured=c.env.CENTRAL_BROADCAST_WORKER_SECRET;
   const provided=c.req.header('X-Central-Broadcast-Secret')||'';
