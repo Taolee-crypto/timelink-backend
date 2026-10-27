@@ -1,3 +1,4 @@
+import {ensureTimeFreeSchema,timeFreeGrantStatement,timeFreePreflight} from './v5-time-free';
 import musicSubscriptionsRouter from './routes/music-subscriptions';
 import { Hono } from 'hono';
 import type { Env } from './types';
@@ -12,7 +13,7 @@ payment.route('/v5/music',musicSubscriptionsRouter);
 
 /**
  * V5 Share Place TEST checkout: persistent test-only receipts, never charges
- * money, never changes real TL wallet balances. No production entitlement.
+ * money or TL balances. Grants TIME FREE listening access, never TL_B.
  */
 payment.post('/v5/shareplace-time/quote', async c => {
  const userId=await authUserId(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
@@ -32,8 +33,13 @@ payment.post('/v5/shareplace-time/quote', async c => {
    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,paid_at TEXT)`).run();
   await c.env.DB.prepare('INSERT INTO v5_shareplace_time_test_orders (quote_id,user_id,seconds,first_discount,second_discount,discounted_tl) VALUES (?,?,?,?,?,?)').bind(quoteId,Number(userId),seconds,first,second,discountedTl).run();
   return c.json({ok:true,quoteId,seconds,nominalTl:seconds,firstDiscountPercent:first,doubleDiscountPercent:second,
-   discountedTl,entitlementTlB:seconds,checkoutEnabled:true,testMode:true});
+   discountedTl,entitlementType:'time_free',entitlementSeconds:seconds,entitlementTlB:0,checkoutEnabled:true,testMode:true});
  }catch(error){console.error('[SHAREPLACE_TIME_QUOTE]',error);return c.json({ok:false,error:'QUOTE_UNAVAILABLE'},503);}
+});
+payment.get('/v5/shareplace-time/status',async c=>{
+ const userId=await authUserId(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const pass=await timeFreePreflight(c.env.DB,Number(userId));
+ return c.json({ok:true,...(pass||{billing_mode:'time_free',can_play:false,time_free_remaining_ms:0,remaining_included_ms:0,tl_reward:0,contribution_only:true})});
 });
 payment.post('/v5/shareplace-time/test-checkout',async c=>{
  const userId=await authUserId(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
@@ -43,11 +49,16 @@ payment.post('/v5/shareplace-time/test-checkout',async c=>{
  try{
   const order=await c.env.DB.prepare('SELECT * FROM v5_shareplace_time_test_orders WHERE quote_id=? AND user_id=?').bind(quoteId,Number(userId)).first<any>();
   if(!order)return c.json({ok:false,error:'QUOTE_NOT_FOUND'},404);
-  if(order.status==='test_paid')return c.json({ok:true,testMode:true,alreadyCompleted:true,seconds:order.seconds,discountedTl:order.discounted_tl,method:order.method});
-  const result=await c.env.DB.prepare("UPDATE v5_shareplace_time_test_orders SET status='test_paid',method=?,paid_at=CURRENT_TIMESTAMP WHERE quote_id=? AND user_id=? AND status='quoted'").bind(method,quoteId,Number(userId)).run();
-  if(!result.meta?.changes)return c.json({ok:false,error:'ALREADY_PROCESSING'},409);
+  await ensureTimeFreeSchema(c.env.DB);
+  if(order.status==='test_paid'){await c.env.DB.batch([timeFreeGrantStatement(c.env.DB,quoteId,Number(userId),Number(order.seconds),'test')]);return c.json({ok:true,testMode:true,alreadyCompleted:true,seconds:order.seconds,discountedTl:order.discounted_tl,method:order.method,entitlementType:'time_free',...await timeFreePreflight(c.env.DB,Number(userId))});}
+  if(order.status!=='quoted')return c.json({ok:false,error:'ALREADY_PROCESSING'},409);
+  await c.env.DB.batch([
+   c.env.DB.prepare("SELECT CASE WHEN EXISTS(SELECT 1 FROM v5_shareplace_time_test_orders WHERE quote_id=? AND user_id=? AND status='quoted') THEN 1 ELSE json_extract('TIME_ORDER_CONFLICT','$') END").bind(quoteId,Number(userId)),
+   c.env.DB.prepare("UPDATE v5_shareplace_time_test_orders SET status='test_paid',method=?,paid_at=CURRENT_TIMESTAMP WHERE quote_id=? AND user_id=? AND status='quoted'").bind(method,quoteId,Number(userId)),
+   timeFreeGrantStatement(c.env.DB,quoteId,Number(userId),Number(order.seconds),'test'),
+  ]);
   return c.json({ok:true,testMode:true,seconds:order.seconds,discountedTl:order.discounted_tl,method,
-   message:'테스트 결제 완료 (실제 결제·TL 차감·TL_B 지급 없음)'});
+   entitlementType:'time_free',...await timeFreePreflight(c.env.DB,Number(userId)),message:'TIME FREE 청취 이용권이 적용되었습니다. TL 보상 없이 기여만 기록합니다.'});
  }catch(error){console.error('[SHAREPLACE_TIME_TEST_CHECKOUT]',error);return c.json({ok:false,error:'TEST_CHECKOUT_UNAVAILABLE'},503);}
 });
 
@@ -60,12 +71,12 @@ payment.post('/v5/shareplace-time/toss/prepare',async c=>{
  const key=String(c.env.TOSS_CLIENT_KEY||''),secret=String(c.env.TOSS_SECRET_KEY||'');
  if(!key.startsWith('test_ck_')||!secret.startsWith('test_sk_'))return c.json({ok:false,error:'TOSS_TEST_KEYS_REQUIRED'},503);
  const o=await c.env.DB.prepare('SELECT * FROM v5_shareplace_time_test_orders WHERE quote_id=? AND user_id=?').bind(quoteId,Number(uid)).first<any>();
- if(!o||o.status!=='quoted')return c.json({ok:false,error:'QUOTE_NOT_AVAILABLE'},409);
+ if(!o||!['quoted','pending_toss'].includes(o.status))return c.json({ok:false,error:'QUOTE_NOT_AVAILABLE'},409);
  const amount=Number(o.discounted_tl);
  if(!Number.isSafeInteger(amount)||amount<1000)return c.json({ok:false,error:'TOSS_MINIMUM_1000_KRW'},400);
  const orderId='v5time_'+quoteId.replace(/-/g,'');
  const updated=await c.env.DB.prepare("UPDATE v5_shareplace_time_test_orders SET status='pending_toss',method='cash' WHERE quote_id=? AND user_id=? AND status='quoted'").bind(quoteId,Number(uid)).run();
- if(!updated.meta?.changes)return c.json({ok:false,error:'QUOTE_ALREADY_USED'},409);
+ if(!updated.meta?.changes&&o.status!=='pending_toss')return c.json({ok:false,error:'QUOTE_ALREADY_USED'},409);
  return c.json({ok:true,orderId,amount,clientKey:key,mode:'test',seconds:Number(o.seconds)});
 });
 payment.post('/v5/shareplace-time/toss/confirm',async c=>{
@@ -75,15 +86,19 @@ payment.post('/v5/shareplace-time/toss/confirm',async c=>{
  const quoteId=orderId.slice(7).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,'$1-$2-$3-$4-$5');
  const o=await c.env.DB.prepare('SELECT * FROM v5_shareplace_time_test_orders WHERE quote_id=? AND user_id=?').bind(quoteId,Number(uid)).first<any>();
  if(!o||Number(o.discounted_tl)!==amount)return c.json({ok:false,error:'ORDER_AMOUNT_MISMATCH'},403);
- if(o.status==='toss_paid')return c.json({ok:true,alreadyCompleted:true,seconds:o.seconds,amount});
+ if(o.status==='toss_paid')return c.json({ok:true,alreadyCompleted:true,seconds:o.seconds,amount,entitlementType:'time_free',...await timeFreePreflight(c.env.DB,Number(uid))});
  if(o.status!=='pending_toss')return c.json({ok:false,error:'ORDER_NOT_PENDING'},409);
  const secret=String(c.env.TOSS_SECRET_KEY||'');if(!secret.startsWith('test_sk_'))return c.json({ok:false,error:'TOSS_TEST_SECRET_REQUIRED'},503);
  try{
   const response=await fetch('https://api.tosspayments.com/v1/payments/confirm',{method:'POST',headers:{Authorization:'Basic '+btoa(secret+':'),'Content-Type':'application/json','Idempotency-Key':'v5time-'+orderId},body:JSON.stringify({paymentKey,orderId,amount})});
   const proof:any=await response.json().catch(()=>({}));
   if(!response.ok||proof.status!=='DONE'||proof.orderId!==orderId||Number(proof.totalAmount)!==amount||proof.paymentKey!==paymentKey)return c.json({ok:false,error:proof.message||'TOSS_CONFIRM_FAILED'},400);
-  await c.env.DB.prepare("UPDATE v5_shareplace_time_test_orders SET status='toss_paid',paid_at=CURRENT_TIMESTAMP WHERE quote_id=? AND user_id=? AND status='pending_toss'").bind(quoteId,Number(uid)).run();
-  return c.json({ok:true,seconds:o.seconds,amount,testPayment:true,tlBCredited:false});
+  await ensureTimeFreeSchema(c.env.DB);
+  await c.env.DB.batch([
+   c.env.DB.prepare("UPDATE v5_shareplace_time_test_orders SET status='toss_paid',paid_at=CURRENT_TIMESTAMP WHERE quote_id=? AND user_id=? AND status='pending_toss'").bind(quoteId,Number(uid)),
+   timeFreeGrantStatement(c.env.DB,quoteId,Number(uid),Number(o.seconds),'test'),
+  ]);
+  return c.json({ok:true,seconds:o.seconds,amount,testPayment:true,tlBCredited:false,entitlementType:'time_free',...await timeFreePreflight(c.env.DB,Number(uid))});
  }catch(e){console.error('[TIME_TOSS_CONFIRM]',e);return c.json({ok:false,error:'TOSS_CONFIRM_UNAVAILABLE'},503);}
 });
 
@@ -634,3 +649,4 @@ payment.get('/history', async (c) => {
 });
 
 export default payment;
+

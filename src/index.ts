@@ -1,3 +1,4 @@
+import {timeFreePreflight,timeFreeSessionExists,meterTimeFreePlayback,closeTimeFreeSession} from './v5-time-free';
 import {subscriptionPreflight,subscriptionSessionExists,meterSubscriptionPlayback,closeSubscriptionSession} from './v5-subscription-playback';
 import salesManagersRouter from './routes/sales-managers';
 import {certificateFeeQuote,chargeCertificateFee,ServiceFeeError,CERTIFICATE_ISSUE_FEE,CERTIFICATE_DOWNLOAD_FEE} from './v5-certificate-fees';
@@ -2336,6 +2337,8 @@ app.post('/api/v1/tl3/play/preflight/:id', async (c) => {
         : await c.env.DB.prepare('SELECT COALESCE(SUM(duration_ms),0) total_ms,COUNT(*) segment_count FROM tl3_segments WHERE file_id=?').bind(fileId).first<any>();
     const totalMs=Number(duration?.total_ms||0);
     if(totalMs<=0||Number(duration?.segment_count||0)<=0) return c.json({ok:false,error:'음원 재생시간 정보가 없습니다.'},409);
+    const timeFree=v5Duration?await timeFreePreflight(c.env.DB,Number(user.id)):null;
+    if(timeFree)return c.json({ok:true,file_id:fileId,duration_ms:totalMs,...timeFree,insufficient_tl:false});
     const requiredTL=Math.ceil(totalMs/1000-1e-9);
     const poolBalances=await getTrackPoolBalances(c.env.DB,user.id,String(file.share_id));
     const assetBalance=atomsToTl(poolBalances.ad+poolBalances.bonus+poolBalances.paid);
@@ -2376,6 +2379,12 @@ app.post('/api/v1/tl3/play/stop/:id', async (c) => {
     const sessionId=String(body.session_id||'');
     if(!Number.isSafeInteger(fileId)||fileId<=0||!/^[A-Za-z0-9_-]{8,100}$/.test(sessionId))
       return c.json({ok:false,error:'재생 세션 정보가 올바르지 않습니다.'},400);
+    if(sessionId.startsWith('tf_')){
+      if(!await timeFreeSessionExists(c.env.DB,sessionId,userId,fileId))return c.json({ok:false,error:'TIME_FREE_SESSION_MISSING'},403);
+      const authorized=await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=?').bind(sessionId,userId,fileId).first();
+      if(!authorized)return c.json({ok:false,error:'TIME_FREE_PLAYER_REQUIRED'},403);
+      return c.json(await closeTimeFreeSession(c.env.DB,sessionId,userId,fileId));
+    }
     if(sessionId.startsWith('sub_')&&await subscriptionSessionExists(c.env.DB,sessionId,userId,fileId)){
       const authorized=await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=?').bind(sessionId,userId,fileId).first();
       if(!authorized)return c.json({ok:false,error:'인증된 구독 재생 세션이 없습니다.'},403);
@@ -2441,6 +2450,11 @@ app.post('/api/v1/tl3/play/meter/:id', async (c) => {
     const v5Session=await c.env.DB.prepare('SELECT session_id FROM tl3_v5_sessions WHERE session_id=? AND user_id=? AND file_id=? AND expires_at>?').bind(sessionId,user.id,fileId,Math.floor(Date.now()/1000)).first().catch(()=>null);
     const isV5=!!(await c.env.DB.prepare("SELECT file_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(fileId).first().catch(()=>null));
     if(isV5&&!v5Session) return c.json({ok:false,error:'V5 Player 세션 인증이 필요합니다.'},403);
+    if(sessionId.startsWith('tf_')){
+      if(!isV5||!v5Session||!await timeFreeSessionExists(c.env.DB,sessionId,Number(user.id),fileId))return c.json({ok:false,stop:true,error:'TIME_FREE_PLAYER_REQUIRED'},403);
+      try{return c.json(await meterTimeFreePlayback(c.env.DB,{sessionId,userId:Number(user.id),fileId,playedMs}));}
+      catch(error){console.error('TIME_FREE meter',error);return c.json({ok:false,stop:true,error:'TIME FREE 사용시간을 확인할 수 없습니다. 다시 재생해 주세요.'},409);}
+    }
     if(sessionId.startsWith('sub_')&&await subscriptionSessionExists(c.env.DB,sessionId,Number(user.id),fileId)){
       if(c.env.MUSIC_SUBSCRIPTION_PLAYBACK_ENABLED!=='true')return c.json({ok:false,stop:true,error:'구독 재생 연결이 일시 중지되었습니다.'},409);
       try{return c.json(await meterSubscriptionPlayback(c.env.DB,{sessionId,userId:Number(user.id),fileId,creatorId:Number(file.user_id),shareId:String(file.share_id),playedMs}));}
@@ -4925,3 +4939,4 @@ export default {
     ctx.waitUntil(runMusicGateAnalysis(env).catch(()=>console.error('[MUSIC_GATE_WORKER] ANALYSIS_CYCLE_FAILED')));
   }
 };
+
