@@ -110,6 +110,51 @@ app.post('/candidates/:id/stage-source',async c=>{
 });
 
 
+
+/** Administrator-reviewed evidence gate. Discovery metadata never grants rights. */
+app.post('/candidates/:id/rights-review',async c=>{
+ const gate=await requireAdmin(c);if(gate.error)return gate.error;
+ let body:any;try{body=await c.req.json()}catch{return c.json({ok:false,code:'INVALID_JSON'},400)}
+ const candidateId=c.req.param('id');
+ const decision=String(body.decision||'');
+ if(!['approve','reject'].includes(decision))return c.json({ok:false,code:'INVALID_DECISION'},400);
+ const evidenceUrl=String(body.evidence_url||'').trim();
+ const reviewerNote=String(body.reviewer_note||'').trim();
+ if(!reviewerNote||reviewerNote.length>2000)return c.json({ok:false,code:'REVIEW_NOTE_REQUIRED'},400);
+ if(decision==='approve'){
+   let url:URL;try{url=new URL(evidenceUrl)}catch{return c.json({ok:false,code:'EVIDENCE_URL_REQUIRED'},400)}
+   if(url.protocol!=='https:'||url.username||url.password||evidenceUrl.length>1200)
+     return c.json({ok:false,code:'INVALID_EVIDENCE_URL'},400);
+   if(body.recording_rights_verified!==true||body.composition_rights_verified!==true||
+      body.commercial_use_allowed!==true||body.transformation_allowed!==true||
+      !/^[A-Z]{2}(,[A-Z]{2})*$/.test(String(body.territories||'')))
+     return c.json({ok:false,code:'RIGHTS_EVIDENCE_INCOMPLETE'},422);
+ }
+ try{
+   await init(c.env.DB);
+   const item=await c.env.DB.prepare('SELECT id,status FROM v5_music_bulk_candidates WHERE id=?').bind(candidateId).first<any>();
+   if(!item)return c.json({ok:false,code:'NOT_FOUND'},404);
+   if(item.status!=='rights_review')return c.json({ok:false,code:'REVIEW_ALREADY_DECIDED'},409);
+   await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS v5_music_candidate_rights_reviews(
+      candidate_id TEXT PRIMARY KEY,reviewer_id INTEGER NOT NULL,decision TEXT NOT NULL,
+      evidence_url TEXT NOT NULL,reviewer_note TEXT NOT NULL,
+      reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+   const status=decision==='approve'?'rights_approved':'rights_rejected';
+   const statements=[
+     c.env.DB.prepare(`UPDATE v5_music_bulk_candidates SET recording_rights=?,composition_rights=?,
+       commercial_use=?,transformation_allowed=?,territories=?,status=? WHERE id=? AND status='rights_review'`)
+       .bind(decision==='approve'?'verified':'rejected',decision==='approve'?'verified':'rejected',
+         decision==='approve'?1:0,decision==='approve'?1:0,
+         decision==='approve'?String(body.territories):'unverified',status,candidateId),
+     c.env.DB.prepare(`INSERT INTO v5_music_candidate_rights_reviews
+       (candidate_id,reviewer_id,decision,evidence_url,reviewer_note) VALUES(?,?,?,?,?)`)
+       .bind(candidateId,gate.uid,decision,evidenceUrl,reviewerNote)
+   ];
+   await c.env.DB.batch(statements);
+   return c.json({ok:true,candidate_id:candidateId,status,source_staged:false,tl3_converted:false,published:false});
+ }catch{return c.json({ok:false,code:'RIGHTS_REVIEW_FAILED'},503)}
+});
+
 const discoveryGenres=['classical','jazz','ambient','folk','blues','electronic','rock','hip hop','world','instrumental'];
 function classifyAudio(subject:unknown,title:unknown){
  const tags=(Array.isArray(subject)?subject:[subject]).filter(x=>typeof x==='string').map(x=>String(x).toLowerCase().slice(0,100));
