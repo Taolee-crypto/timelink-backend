@@ -76,7 +76,10 @@ if __name__ == "__main__":
             parser.error('--rights-confirmed is required with --source-sha256')
         if len(args.source_sha256) != 64 or any(c not in '0123456789abcdefABCDEF' for c in args.source_sha256):
             parser.error('--source-sha256 must be a 64-character hexadecimal digest')
-        with args.source.open('rb') as source_file:
+        source_path = args.source.resolve(strict=True)
+        if not source_path.is_file() or source_path.suffix.lower() not in {'.mp3', '.wav', '.flac'}:
+            parser.error('Expected a local MP3, WAV or FLAC file')
+        with source_path.open('rb') as source_file:
             digest = hashlib.file_digest(source_file, 'sha256').hexdigest()
         if digest.lower() != args.source_sha256.lower():
             raise ValueError('V5 source SHA-256 mismatch')
