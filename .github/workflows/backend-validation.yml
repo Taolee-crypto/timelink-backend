@@ -27,5 +27,7 @@ jobs:
         run: python scripts/validate-stream-auth.py
       - name: Verify song-linked TRACK V5 score contract
         run: node scripts/test-track-v5-score-status.cjs
+      - name: Verify owner draft security and no-charge contract
+        run: node scripts/test-v5-score-owner-draft.cjs
       - name: Validate Worker bundle (dry run only)
         run: npx wrangler deploy --dry-run --outdir .wrangler-dist
