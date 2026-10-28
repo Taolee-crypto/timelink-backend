@@ -46,6 +46,43 @@ function authId(c: any): string | null {
   return parseUserId((c.req.header('Authorization') || '').replace('Bearer ', '').trim());
 }
 
+// V5 TRACK score state: read only the actual sealed V5 asset, never the V3
+// tl3_releases header. A missing score is a normal state, not a 404/failed TL3.
+// No legacy wallet charge, no audio decryption, no unapproved asset issuance.
+router.get('/scores/v5/:reference', async (c) => {
+  const reference=String(c.req.param('reference')||'');
+  if (!reference || reference.length>180 || !/^[A-Za-z0-9_-]+$/.test(reference))
+    return c.json({ok:false,code:'INVALID_SCORE_REFERENCE'},400);
+  try {
+    const db=c.env.DB;
+    const id=/^[1-9][0-9]*$/.test(reference) && Number.isSafeInteger(Number(reference))
+      ? Number(reference) : /^tl3_[1-9][0-9]*$/.test(reference) && Number.isSafeInteger(Number(reference.slice(4)))
+        ? Number(reference.slice(4)) : 0;
+    const select="SELECT v.file_id,v.share_id,v.duration_ms,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0";
+    // TRACK numeric references denote file_id (Creator emits tl3_<file_id>);
+    // arbitrary shared IDs must match the real V5 share_id.
+    let row=id>0
+      ? await db.prepare(select+" AND v.file_id=?").bind(id).first<any>()
+      : await db.prepare(select+" AND v.share_id=?").bind(reference).first<any>();
+    if(!row && id>0)row=await db.prepare(select+" AND v.share_id=?").bind(reference).first<any>();
+    if(!row){
+      row=await db.prepare("SELECT v.file_id,v.share_id,v.duration_ms,f.title,f.artist FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_v5_releases v ON v.file_id=f.id AND v.status='sealed' WHERE CAST(s.id AS TEXT)=? AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1")
+        .bind(reference).first<any>().catch(()=>null);
+    }
+    if(!row)return c.json({ok:false,code:'V5_TRACK_NOT_FOUND',message:'이 곡의 TL3 V5 등록을 확인할 수 없습니다.'},404);
+    return c.json({
+      ok:true,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
+      title:String(row.title||''),artist:String(row.artist||''),
+      score_status:'not_generated',has_score:false,score:null,
+      tld_issued:false,analysis_ready:false,tl_charged:0,
+      message:'이 곡의 V5 TLD 악보는 아직 생성·발행되지 않았습니다.'
+    },200,{'Cache-Control':'no-store'});
+  }catch(e:any){
+    console.error('[V5_SCORE_STATUS]',e);
+    return c.json({ok:false,code:'V5_SCORE_STATUS_UNAVAILABLE',message:'V5 악보 상태를 확인하지 못했습니다.'},503);
+  }
+});
+
 // ─────────────────────────────────────────
 // DB 마이그레이션
 // ─────────────────────────────────────────
