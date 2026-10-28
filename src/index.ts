@@ -1050,6 +1050,30 @@ const USER_SELECT = `
 `;
 
 // GET /api/tracks
+// Actual DB inventory audit. Counts real stored files, not metadata-only discovery.
+app.get('/api/v5/music/inventory', async (c) => {
+  c.header('Cache-Control','no-store');
+  try {
+    const rows=await c.env.DB.prepare(`
+      SELECT
+        COUNT(*) AS stored_audio_files,
+        SUM(CASE WHEN f.shared=1 THEN 1 ELSE 0 END) AS shared_files,
+        SUM(CASE WHEN f.shared=1 AND COALESCE(f.revenue_held,0)=0
+          AND EXISTS(SELECT 1 FROM tl3_v5_releases v WHERE v.file_id=f.id AND v.status='sealed')
+          THEN 1 ELSE 0 END) AS sealed_shared_files
+      FROM tl_files f WHERE LOWER(f.file_type)='audio/tl3'
+    `).first<any>();
+    const genres=await c.env.DB.prepare(`
+      SELECT COALESCE(NULLIF(TRIM(genre),''),'미분류') AS genre,COUNT(*) AS tracks
+      FROM tl_files WHERE LOWER(file_type)='audio/tl3' AND shared=1
+      GROUP BY COALESCE(NULLIF(TRIM(genre),''),'미분류')
+      ORDER BY tracks DESC LIMIT 100
+    `).all();
+    return c.json({ok:true,source:'actual_database',counts:rows,genres:genres.results||[],
+      warning:'Inventory is not proof of territory-specific commercial broadcast rights'});
+  }catch{return c.json({ok:false,code:'MUSIC_INVENTORY_UNAVAILABLE'},503)}
+});
+
 // One store music queue. Promotion is an internal ordering signal, not a separate catalogue.
 app.get('/api/v5/store-radio/queue', async (c) => {
   c.header('Cache-Control','no-store');
