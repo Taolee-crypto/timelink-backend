@@ -67,5 +67,19 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path, help="Locally staged audio; never a URL")
+    parser.add_argument('--source-sha256', help='Expected 64-character V5 source SHA-256')
+    parser.add_argument('--rights-confirmed', action='store_true', help='Authorized operator confirmation')
     args = parser.parse_args()
-    print(json.dumps(transcribe_vocals(args.source), ensure_ascii=False))
+    draft = transcribe_vocals(args.source)
+    if args.source_sha256:
+        import hashlib
+        digest = hashlib.file_digest(args.source.open('rb'), 'sha256').hexdigest()
+        if digest.lower() != args.source_sha256.lower():
+            raise ValueError('V5 source SHA-256 mismatch')
+        if not args.rights_confirmed:
+            raise ValueError('Explicit rights confirmation required')
+        provenance = draft.pop('provenance')
+        draft.pop('lyrics_status', None)
+        print(json.dumps({'rights_confirmed': True, 'source_sha256': digest, 'provenance': provenance, 'score_data': draft}, ensure_ascii=False))
+    else:
+        print(json.dumps(draft, ensure_ascii=False))
