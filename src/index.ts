@@ -1116,7 +1116,22 @@ app.get('/api/v5/store-radio/queue', async (c) => {
     `).bind(country,genre.toLowerCase(),genre).all();
     return c.json({ok:true,tracks:rows.results||[],mode:'catalog_preview',playback_authorized:false,
       note:'Territorial store rights, time balance and billing must be checked before playback'});
-  }catch{return c.json({ok:false,code:'STORE_RADIO_QUEUE_UNAVAILABLE'},503)}
+  }catch{
+    // Promotion tables may not yet exist in older deployments. Keep the shared
+    // approved TL3 catalog readable without inventing promotional priority.
+    try{
+      const rows=await c.env.DB.prepare(`
+        SELECT f.id AS file_id,f.title,f.artist,f.genre,0 AS promotion_priority
+        FROM tl_files f
+        WHERE f.shared=1 AND LOWER(f.file_type)='audio/tl3'
+          AND COALESCE(f.revenue_held,0)=0
+          AND EXISTS (SELECT 1 FROM tl3_v5_releases v WHERE v.file_id=f.id AND v.status='sealed')
+          AND (?='all' OR LOWER(TRIM(f.genre))=LOWER(TRIM(?)))
+        ORDER BY f.id DESC LIMIT 100
+      `).bind(genre.toLowerCase(),genre).all();
+      return c.json({ok:true,tracks:rows.results||[],mode:'catalog_preview',playback_authorized:false,promotion_fallback:true});
+    }catch{return c.json({ok:false,code:'STORE_RADIO_QUEUE_UNAVAILABLE'},503)}
+  }
 });
 
 // Public approved genre catalog. External source mappings are never exposed until reviewed.
