@@ -4,7 +4,7 @@ const start=src.indexOf("router.post('/scores/v5/:reference/draft'");
 const end=src.indexOf('\n});',start)+4;
 let handler;
 let writes=0;
-vm.runInNewContext(src.slice(start,end).replaceAll('.first<any>()','.first()'),{
+vm.runInNewContext(src.slice(start,end).replaceAll('.first<any>()','.first()').replaceAll('.json<any>()','.json()'),{
  router:{post:(_path,fn)=>{handler=fn;}},v5ScoreUser:async()=>1,
  lookupV5Score:async()=>({file_id:178,user_id:1,source_sha256:'a'.repeat(64),duration_ms:120000}),
  ensureV5ScoreDrafts:async()=>{},console
