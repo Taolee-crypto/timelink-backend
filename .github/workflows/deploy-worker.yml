@@ -43,6 +43,9 @@ jobs:
       - name: Validate TypeScript
         run: npx --no-install tsc --noEmit
 
+      - name: Verify reviewed CC0 intake and encrypted store playback storage
+        run: node scripts/test-store-music-intake.cjs
+
       - name: Verify Music Gate analysis and review integration
         run: node scripts/test-v5-music-gate-worker.cjs
 

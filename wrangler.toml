@@ -7,9 +7,11 @@ binding = "DB"
 database_name = "timelink-db"
 database_id = "7a61cb9f-d368-439e-b175-f3e958aeb84f"
 
-[[r2_buckets]]
-binding = "STORE_MUSIC_BUCKET"
-bucket_name = "timelink-audio"
+# Provisioned with the Cloudflare management connection. Retain the existing
+# binding without requiring the CI deploy token to enumerate R2 buckets.
+[[unsafe.bindings]]
+name = "STORE_MUSIC_BUCKET"
+type = "inherit"
 
 
 [vars]
