@@ -1074,6 +1074,23 @@ app.get('/api/v5/music/inventory', async (c) => {
   }catch{return c.json({ok:false,code:'MUSIC_INVENTORY_UNAVAILABLE'},503)}
 });
 
+// Genres are derived from actual eligible tracks, never a static taxonomy.
+app.get('/api/v5/store-radio/available-genres', async (c) => {
+  c.header('Cache-Control','no-store');
+  try {
+    const rows=await c.env.DB.prepare(`
+      SELECT TRIM(f.genre) AS genre,COUNT(*) AS track_count
+      FROM tl_files f
+      WHERE f.shared=1 AND LOWER(f.file_type)='audio/tl3'
+        AND COALESCE(f.revenue_held,0)=0
+        AND TRIM(COALESCE(f.genre,''))<>''
+        AND EXISTS(SELECT 1 FROM tl3_v5_releases v WHERE v.file_id=f.id AND v.status='sealed')
+      GROUP BY LOWER(TRIM(f.genre)) ORDER BY track_count DESC,genre LIMIT 200
+    `).all();
+    return c.json({ok:true,genres:rows.results||[],source:'stored_tracks'});
+  }catch{return c.json({ok:false,code:'AVAILABLE_GENRES_UNAVAILABLE',genres:[]},503)}
+});
+
 // One store music queue. Promotion is an internal ordering signal, not a separate catalogue.
 app.get('/api/v5/store-radio/queue', async (c) => {
   c.header('Cache-Control','no-store');
