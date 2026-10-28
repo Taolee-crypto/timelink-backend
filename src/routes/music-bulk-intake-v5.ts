@@ -25,4 +25,23 @@ app.post('/batches',async c=>{
  const batchId=crypto.randomUUID();try{await init(c.env.DB);const statements=[c.env.DB.prepare("INSERT INTO v5_music_bulk_batches(id,created_by,source_name,total_items) VALUES(?,?,?,?)").bind(batchId,uid,source,clean.length),...clean.map(x=>c.env.DB.prepare("INSERT INTO v5_music_bulk_candidates(id,batch_id,source_id,title,artist,source_url,license_url,license_code,genre,weather,daypart,mood) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(crypto.randomUUID(),batchId,x.sourceId,x.title,x.artist,x.sourceUrl,x.licenseUrl,x.license,x.genre,x.weather,x.daypart,x.mood))];await c.env.DB.batch(statements);return c.json({ok:true,batch_id:batchId,count:clean.length,status:'rights_review',downloaded:false,tl3_converted:false,published:false},201)}catch(e){return c.json({ok:false,code:'BATCH_STORE_FAILED'},503)}
 });
 app.get('/batches/:id',async c=>{const gate=await requireAdmin(c);if(gate.error)return gate.error;const uid=gate.uid!;try{await init(c.env.DB);const batch=await c.env.DB.prepare("SELECT * FROM v5_music_bulk_batches WHERE id=? AND created_by=?").bind(c.req.param('id'),uid).first();if(!batch)return c.json({ok:false,code:'NOT_FOUND'},404);const items=await c.env.DB.prepare("SELECT id,title,artist,license_code,recording_rights,composition_rights,status,genre,weather,daypart,mood FROM v5_music_bulk_candidates WHERE batch_id=? LIMIT 100").bind(c.req.param('id')).all();return c.json({ok:true,batch,items:items.results||[]})}catch{return c.json({ok:false,code:'BATCH_UNAVAILABLE'},503)}});
+
+// Administrator-only discovery of Internet Archive audio metadata.
+// Returned candidates are never published or downloaded automatically.
+app.get('/discover',async c=>{
+ const gate=await requireAdmin(c);if(gate.error)return gate.error;
+ const term=String(c.req.query('q')||'classical').trim().slice(0,70);
+ const page=Math.max(1,Math.min(100,Number(c.req.query('page')||1)||1));
+ const query='mediatype:audio AND ('+term.replace(/[^\p{L}\p{N} \-]/gu,'').split(/\s+/).filter(Boolean).slice(0,5).map(w=>'title:'+w).join(' AND ')+')';
+ const params=new URLSearchParams({q:query,output:'json',rows:'50',page:String(page)});
+ for(const field of ['identifier','title','creator','licenseurl','rights','subject','date'])params.append('fl[]',field);
+ try{
+ const response=await fetch('https://archive.org/advancedsearch.php?'+params.toString(),{signal:AbortSignal.timeout(10000)});
+ if(!response.ok)return c.json({ok:false,code:'SOURCE_UNAVAILABLE'},502);
+ const data:any=await response.json();
+ const items=(data.response?.docs||[]).map((x:any)=>({source_id:String(x.identifier||''),title:String(x.title||''),artist:Array.isArray(x.creator)?x.creator.join(', '):String(x.creator||''),source_url:'https://archive.org/details/'+encodeURIComponent(String(x.identifier||'')),license_url:String(x.licenseurl||''),license_code:'UNKNOWN',rights_note:String(x.rights||''),subject:x.subject||[],status:'rights_review',genre:null,weather:null,daypart:null,mood:null}));
+ return c.json({ok:true,source:'Internet Archive',query:term,page,total:Number(data.response?.numFound||0),items,rights_verified:false,audio_downloaded:false});
+ }catch{return c.json({ok:false,code:'SOURCE_UNAVAILABLE'},502)}
+});
+
 export default app;
