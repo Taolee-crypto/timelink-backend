@@ -25,7 +25,7 @@ def recover_mp3(container: bytes, *, file_id: int, share_id: str,
         raise ValueError("Missing V5 master secret")
     if hashlib.sha256(container).hexdigest() != expected_container_sha256.lower():
         raise ValueError("TL3 container integrity mismatch")
-    if len(container) < 9 or container[:5] != b"TLNK\\x05":
+    if len(container) < 9 or container[:5] != b"TLNK\x05":
         raise ValueError("Not a TL3-V5 container")
     header_len = struct.unpack(">I", container[5:9])[0]
     if header_len < 1 or header_len > 4096 or len(container) < 9 + header_len + 16:
