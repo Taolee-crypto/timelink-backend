@@ -25,5 +25,7 @@ jobs:
         run: npm ci
       - name: Validate stream authorization regression guards
         run: python scripts/validate-stream-auth.py
+      - name: Verify song-linked TRACK V5 score contract
+        run: node scripts/test-track-v5-score-status.cjs
       - name: Validate Worker bundle (dry run only)
         run: npx wrangler deploy --dry-run --outdir .wrangler-dist
