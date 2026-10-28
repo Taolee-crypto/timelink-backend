@@ -90,4 +90,68 @@ app.post('/candidates/:id/stage-source',async c=>{
  }catch{return c.json({ok:false,code:'SOURCE_STAGING_FAILED'},503)}
 });
 
+
+const discoveryGenres=['classical','jazz','ambient','folk','blues','electronic','rock','hip hop','world','instrumental'];
+function classifyAudio(subject:unknown,title:unknown){
+ const tags=(Array.isArray(subject)?subject:[subject]).filter(x=>typeof x==='string').map(x=>String(x).toLowerCase().slice(0,100));
+ const haystack=[...tags,String(title||'').toLowerCase()].join(' ');
+ const genre=discoveryGenres.find(g=>haystack.includes(g))||'unclassified';
+ const languageMatch=tags.find(x=>/^language:/.test(x));
+ return {genre,language:languageMatch?languageMatch.slice(9).trim().slice(0,20):null,
+   tags:tags.slice(0,12),classification_status:'provisional_metadata',confidence:'unverified'};
+}
+// Explicitly triggered bounded discovery. Discovery never implies a license or downloads MP3.
+app.post('/discover/import',async c=>{
+ const gate=await requireAdmin(c);if(gate.error)return gate.error;
+ let body:any;try{body=await c.req.json()}catch{return c.json({ok:false,code:'INVALID_JSON'},400)}
+ const genre=String(body.genre||'classical').toLowerCase();
+ if(!discoveryGenres.includes(genre))return c.json({ok:false,code:'INVALID_GENRE',allowed:discoveryGenres},400);
+ const page=Number(body.page||1);
+ if(!Number.isSafeInteger(page)||page<1||page>100)return c.json({ok:false,code:'INVALID_PAGE'},400);
+ const params=new URLSearchParams({q:'mediatype:audio AND (subject:"'+genre+'")',output:'json',rows:'40',page:String(page)});
+ for(const key of ['identifier','title','creator','licenseurl','rights','subject','language'])params.append('fl[]',key);
+ let docs:any[];
+ try{
+   const response=await fetch('https://archive.org/advancedsearch.php?'+params,{redirect:'error',signal:AbortSignal.timeout(12000)});
+   if(!response.ok)return c.json({ok:false,code:'DISCOVERY_SOURCE_FAILED'},502);
+   const json:any=await response.json();docs=Array.isArray(json.response?.docs)?json.response.docs:[];
+ }catch{return c.json({ok:false,code:'DISCOVERY_SOURCE_UNAVAILABLE'},502)}
+ await init(c.env.DB);
+ await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS v5_music_candidate_classification(
+ candidate_id TEXT PRIMARY KEY,classification_status TEXT NOT NULL,
+ detected_genre TEXT,source_subjects TEXT NOT NULL DEFAULT '[]',
+ detected_language TEXT,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+ const batchId=crypto.randomUUID();
+ await c.env.DB.prepare("INSERT INTO v5_music_bulk_batches(id,created_by,source_name,total_items) VALUES(?,?,?,?)")
+   .bind(batchId,gate.uid,'Internet Archive discovery: '+genre,0).run();
+ let imported=0,skipped=0;
+ for(const doc of docs){
+   const sourceId=String(doc.identifier||'');
+   if(!/^[A-Za-z0-9_.-]{1,200}$/.test(sourceId)){skipped++;continue}
+   const title=String(doc.title||'').trim().slice(0,200);
+   const artist=(Array.isArray(doc.creator)?doc.creator.join(', '):String(doc.creator||'Unknown')).slice(0,200);
+   if(!title){skipped++;continue}
+   const sourceUrl='https://archive.org/details/'+encodeURIComponent(sourceId);
+   const licenseUrl=typeof doc.licenseurl==='string'&&doc.licenseurl.startsWith('https://')?doc.licenseurl:'https://archive.org/details/'+encodeURIComponent(sourceId);
+   const classification=classifyAudio(doc.subject,title);
+   const id=crypto.randomUUID();
+   const inserted=await c.env.DB.prepare(`INSERT OR IGNORE INTO v5_music_bulk_candidates
+   (id,batch_id,source_id,title,artist,source_url,license_url,license_code,genre,status)
+   VALUES(?,?,?,?,?,?,?,'UNKNOWN',?,'rights_review')`)
+   .bind(id,batchId,sourceId,title,artist,sourceUrl,licenseUrl,classification.genre).run();
+   if(!inserted.meta?.changes){skipped++;continue}
+   await c.env.DB.prepare(`INSERT INTO v5_music_candidate_classification
+   (candidate_id,classification_status,detected_genre,source_subjects,detected_language)
+   VALUES(?,?,?,?,?)`).bind(id,classification.classification_status,classification.genre,JSON.stringify(classification.tags),classification.language).run();
+   imported++;
+ }
+ await c.env.DB.prepare('UPDATE v5_music_bulk_batches SET total_items=? WHERE id=?').bind(imported,batchId).run();
+ return c.json({ok:true,batch_id:batchId,genre,page,discovered:docs.length,imported,skipped,
+   classification:'provisional_metadata',rights_verified:false,mp3_downloaded:false,tl3_converted:false,published:false});
+});
+app.get('/discovery/genres',async c=>{
+ const gate=await requireAdmin(c);if(gate.error)return gate.error;
+ return c.json({ok:true,genres:discoveryGenres,classification:'provisional_metadata',source:'Internet Archive'});
+});
+
 export default app;
