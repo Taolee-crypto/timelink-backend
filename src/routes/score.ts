@@ -140,7 +140,8 @@ router.post('/scores/v5/:reference/draft',async c=>{
     let lastEnd=0;
     for(const note of score.melody){
       const start=Number(note?.s),length=Number(note?.d),midi=Number(note?.m);
-      if(!Number.isFinite(start)||!Number.isFinite(length)||!Number.isInteger(midi)||
+      if(note?.s==null||String(note.s).trim()===''||note?.d==null||String(note.d).trim()===''||note?.m==null||String(note.m).trim()===''||
+        !Number.isFinite(start)||!Number.isFinite(length)||!Number.isInteger(midi)||
         start<0||length<=0||length>60||midi<21||midi>108||
         start+length>duration+1||start<lastEnd-0.03||
         (note.lyric!==undefined&&(typeof note.lyric!=='string'||note.lyric.length>120)))
