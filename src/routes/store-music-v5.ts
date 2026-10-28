@@ -14,20 +14,9 @@ const enc=new TextEncoder();
 const MAGIC=new Uint8Array([84,76,78,75,5]);
 const MAX_MP3_BYTES=16*1024*1024;
 router.use('/intake/*',bodyLimit({maxSize:MAX_MP3_BYTES}));
-const SOURCE_PAGE='https://kaino.dev/library/music';
-const CC0_LICENSE='https://creativecommons.org/publicdomain/zero/1.0/';
-const INITIAL_CC0=[
- ['acoustic-folk-01','Pale Window','Acoustic folk',90],
- ['acoustic-folk-02','Silent Voltage','Acoustic folk',90],
- ['acoustic-folk-03','Wandering Mirror','Acoustic folk',120],
- ['acoustic-folk-04','Rusted Pulse','Acoustic folk',120],
- ['acoustic-folk-05','Coastal Thunder','Acoustic folk',90],
- ['acoustic-folk-06','Crimson Anthem','Acoustic folk',90],
- ['acoustic-folk-07','Radiant Foundry','Acoustic folk',120],
- ['acoustic-folk-08','Velvet Forest','Acoustic folk',120],
- ['acoustic-folk-09','Turbo Echo','Acoustic folk',90],
- ['acoustic-folk-10','Copper Voltage','Acoustic folk',90]
-] as const;
+// 2026-10-29: all scraped CC0 store audio is retired by operator due to poor quality.
+// No source catalog or auto-seeding remains. Only explicitly licensed, reviewed
+// non-CC0 commercial assets can be considered in a future launch.
 function asBuffer(b:Uint8Array):ArrayBuffer{return b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength) as ArrayBuffer}
 function concat(...parts:Uint8Array[]){const b=new Uint8Array(parts.reduce((n,x)=>n+x.length,0));let p=0;for(const x of parts){b.set(x,p);p+=x.length}return b}
 function packU32(n:number){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,false);return b}
@@ -71,19 +60,12 @@ async function ensure(db:D1Database){
  await db.prepare("CREATE TABLE IF NOT EXISTS v5_store_music_plays (session_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,channel_id TEXT NOT NULL,track_key TEXT NOT NULL,grant_order_id TEXT NOT NULL,reserved_seconds INTEGER NOT NULL,consumed_seconds INTEGER NOT NULL DEFAULT 0,started_ms INTEGER NOT NULL,expires_ms INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'active',last_meter_ms INTEGER NOT NULL)").run();
  await db.prepare("CREATE INDEX IF NOT EXISTS idx_v5_store_music_active ON v5_store_music_plays(channel_id,status,expires_ms)").run();
 }
-async function seed(db:D1Database){
- const statements=INITIAL_CC0.map(([id,title,genre,secs])=>db.prepare("INSERT OR IGNORE INTO v5_store_music_tracks(track_key,title,artist,genre,source_page,source_download,license_code,license_url,rights_evidence,expected_seconds) VALUES(?,?, 'Kainotomic', ?, ?, ?, 'CC0', ?, ?, ?)").bind(
- id,title,genre,SOURCE_PAGE,'https://kaino.dev/api/library/music/'+id+'/download?format=mp3',CC0_LICENSE,
- 'Publisher asserts both copyright and related recording rights waived under CC0 1.0: '+SOURCE_PAGE,secs
- ));
- await db.batch(statements);
-}
 async function wrappingKey(secret:string){
  if(secret.length<24)throw Error('TL3_MASTER_SECRET_UNAVAILABLE');
  const hash=await crypto.subtle.digest('SHA-256',asBuffer(enc.encode(secret)));
  return crypto.subtle.importKey('raw',hash,'AES-GCM',false,['encrypt','decrypt']);
 }
-async function makeTL3(raw:Uint8Array,keyId:string,title:string,artist:string,duration_ms:number,source_hash:string,secret:string,proofUrl=SOURCE_PAGE){
+async function makeTL3(raw:Uint8Array,keyId:string,title:string,artist:string,duration_ms:number,source_hash:string,secret:string,proofUrl=''){
  const manifest={profile:'TL3-V5',version:5,scope:'commercial_broadcast_only',track_key:keyId,title,artist,duration_ms,
  source_sha256:source_hash,rights:{license:'CC0',proof_url:proofUrl,commercial_use:true,transformation:true},created_at:new Date().toISOString()};
  const metadata=enc.encode(JSON.stringify(manifest));
@@ -103,76 +85,14 @@ async function unwrapKey(secret:string,keyId:string,wrapped:string){
  const master=await wrappingKey(secret);
  return new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:asBuffer(buf.slice(0,12)),additionalData:asBuffer(enc.encode('timelink:store:v5:'+keyId))},master,asBuffer(buf.slice(12))));
 }
-/**
- * Bounded importer called from existing Worker cron. The source belongs to the
- * publisher and identifies both music and recording as CC0. No arbitrary URL,
- * license flag or user input can be used for this automatic path.
- */
-export async function runStoreMusicIntake(env:Env){
- await ensure(env.DB);await seed(env.DB);
- const candidate=await env.DB.prepare("SELECT track_key,title,artist,source_download,expected_seconds FROM v5_store_music_tracks WHERE status='queued' AND attempts<3 ORDER BY track_key LIMIT 1").first<any>();
- if(!candidate)return;
- const id=String(candidate.track_key);
- await env.DB.prepare("UPDATE v5_store_music_tracks SET attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE track_key=? AND status='queued'").bind(id).run();
- try{
-  const license=await fetch(SOURCE_PAGE,{signal:AbortSignal.timeout(12000)});
-  if(!license.ok||!(await license.text()).includes('CC0 1.0 Universal'))throw Error('CC0_SOURCE_ASSERTION_MISSING');
-  const source=await fetch(String(candidate.source_download),{signal:AbortSignal.timeout(25000)});
-  if(!source.ok)throw Error('SOURCE_HTTP_'+source.status);
-  const max=Number(source.headers.get('content-length')||0);
-  if(max>MAX_MP3_BYTES)throw Error('SOURCE_TOO_LARGE');
-  const raw=new Uint8Array(await source.arrayBuffer());
-  if(raw.length<1024||raw.length>MAX_MP3_BYTES)throw Error('INVALID_SOURCE_LENGTH');
-  const duration=mp3Duration(raw);
-  if(Math.abs(duration-Number(candidate.expected_seconds)*1000)>5000)throw Error('SOURCE_DURATION_MISMATCH');
-  const hash=await digest(raw);
-  const secret=String(env.TL3_MASTER_SECRET||'');
-  const sealed=await makeTL3(raw,id,String(candidate.title),String(candidate.artist),duration,hash,secret);
-  const containerHash=await digest(sealed.container);
-  const objectKey='store/tl3/v5/'+id+'/'+hash+'.tl3';
-  await ensureD1Storage(env.DB);
-  await putD1Object(env.DB,objectKey,sealed.container,'application/octet-stream',id+'.tl3');
-  await env.DB.prepare("UPDATE v5_store_music_tracks SET status='ready',duration_ms=?,object_key=?,source_sha256=?,container_sha256=?,wrapped_key=?,container_size=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE track_key=? AND status='queued'")
-   .bind(duration,objectKey,hash,containerHash,sealed.wrapped,sealed.container.length,id).run();
-  console.log('[STORE_MUSIC_READY]',id,duration,sealed.container.length);
- }catch(e:any){
-  const msg=String(e?.message||'IMPORT_FAILED').slice(0,180);
-  await env.DB.prepare("UPDATE v5_store_music_tracks SET last_error=?,status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'queued' END,updated_at=CURRENT_TIMESTAMP WHERE track_key=?").bind(msg,id).run();
-  console.error('[STORE_MUSIC_IMPORT_FAILED]',id,msg);
- }
-}
+/** Disabled permanently: retired scraped CC0 sources may never be re-seeded. */
+export async function runStoreMusicIntake(_env:Env){return;}
 async function balance(db:D1Database,uid:number,channel:string){
  const row=await db.prepare("SELECT COALESCE(SUM(granted_seconds-used_seconds),0) n FROM v5_store_airtime_grants WHERE user_id=? AND channel_id=? AND expires_at_ms>?").bind(uid,channel,Date.now()).first<any>();
  return Number(row?.n||0);
 }
-// One-off operator intake: a separately provisioned secret, a pre-reviewed DB
-// record and exact expected hash are all required. Disable by removing secret.
-router.put('/intake/:track',async c=>{
- const expected=c.env.STORE_MUSIC_INTAKE_SECRET;
- if(!expected||expected.length<32)return c.json({ok:false,code:'INTAKE_DISABLED'},404);
- const supplied=c.req.header('X-Store-Intake-Key')||'';
- const a=await digest(enc.encode(expected)),b=await digest(enc.encode(supplied));
- let difference=0;for(let i=0;i<a.length;i++)difference|=a.charCodeAt(i)^b.charCodeAt(i);
- if(difference)return c.json({ok:false,code:'FORBIDDEN'},403);
- const id=c.req.param('track');
- if(!/^global-20261028-[a-f0-9]{16}$/.test(id))return c.json({ok:false,code:'INVALID_BATCH_TRACK'},400);
- const track=await c.env.DB.prepare("SELECT * FROM v5_store_music_tracks WHERE track_key=? AND license_code='CC0'").bind(id).first<any>();
- if(!track||!['awaiting_upload','ready'].includes(track.status))return c.json({ok:false,code:'REVIEWED_TRACK_REQUIRED'},409);
- if(!c.env.STORE_MUSIC_BUCKET)return c.json({ok:false,code:'STORE_BUCKET_UNAVAILABLE'},503);
- const raw=new Uint8Array(await c.req.arrayBuffer());
- if(raw.length<1024||raw.length>MAX_MP3_BYTES)return c.json({ok:false,code:'INVALID_SOURCE_LENGTH'},413);
- const hash=await digest(raw);
- if(hash!==track.source_sha256)return c.json({ok:false,code:'SOURCE_HASH_MISMATCH'},422);
- if(track.status==='ready')return c.json({ok:true,track_key:id,already_ready:true});
- const duration=mp3Duration(raw);
- if(Math.abs(duration-Number(track.expected_seconds)*1000)>5000)return c.json({ok:false,code:'SOURCE_DURATION_MISMATCH'},422);
- const sealed=await makeTL3(raw,id,track.title,track.artist,duration,hash,String(c.env.TL3_MASTER_SECRET||''),track.source_page);
- const containerHash=await digest(sealed.container),key='store/tl3/v5/'+id+'/'+containerHash+'.tl3';
- await c.env.STORE_MUSIC_BUCKET.put(key,asBuffer(sealed.container),{httpMetadata:{contentType:'application/octet-stream'}});
- await c.env.DB.prepare("UPDATE v5_store_music_tracks SET status='ready',duration_ms=?,object_key=?,container_sha256=?,wrapped_key=?,container_size=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE track_key=? AND status='awaiting_upload' AND source_sha256=?")
-  .bind(duration,'r2:'+key,containerHash,sealed.wrapped,sealed.container.length,id,hash).run();
- return c.json({ok:true,track_key:id,duration_ms:duration,container_sha256:containerHash,container_size:sealed.container.length});
-});
+// Retired imported CC0 audio cannot be uploaded or re-sealed.
+router.put('/intake/:track',async c=>c.json({ok:false,code:'STORE_CC0_INTAKE_RETIRED'},410));
 router.get('/queue',async c=>{
  const uid=await owner(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
  const channel=String(c.req.query('channel_id')||'');
@@ -181,7 +101,7 @@ router.get('/queue',async c=>{
  try{
   await ensure(c.env.DB);
   const remaining=await balance(c.env.DB,uid,channel);
-  const rows=await c.env.DB.prepare("SELECT track_key,title,artist,genre,duration_ms,license_code,license_url,rights_evidence FROM v5_store_music_tracks WHERE status='ready' AND (LOWER(genre)=? OR ?='all') ORDER BY title LIMIT 200").bind(genre,genre).all<any>();
+  const rows=await c.env.DB.prepare("SELECT track_key,title,artist,genre,duration_ms,license_code,license_url,rights_evidence FROM v5_store_music_tracks WHERE status='ready' AND UPPER(license_code)<>'CC0' AND (LOWER(genre)=? OR ?='all') ORDER BY title LIMIT 200").bind(genre,genre).all<any>();
   c.header('Cache-Control','private,no-store');
   return c.json({ok:true,scope:'commercial_broadcast_only',channel_id:channel,remaining_seconds:remaining,tracks:rows.results||[],playback_enabled:remaining>0,other_catalog_tracks_included:false});
  }catch(e:any){console.error('[STORE_MUSIC_QUEUE]',e);return c.json({ok:false,code:'STORE_MUSIC_NOT_READY'},503)}
@@ -194,7 +114,7 @@ router.post('/session',async c=>{
  if(!jwk||jwk.kty!=='EC'||jwk.crv!=='P-256'||typeof jwk.x!=='string'||typeof jwk.y!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(jwk.x)||!/^[A-Za-z0-9_-]{43}$/.test(jwk.y))return c.json({ok:false,code:'PLAYER_KEY_INVALID'},400);
  try{
   await ensure(c.env.DB);await releaseExpiredStoreSessions(c.env);
-  const track=await c.env.DB.prepare("SELECT * FROM v5_store_music_tracks WHERE track_key=? AND status='ready'").bind(key).first<any>();
+  const track=await c.env.DB.prepare("SELECT * FROM v5_store_music_tracks WHERE track_key=? AND status='ready' AND UPPER(license_code)<>'CC0'").bind(key).first<any>();
   if(!track)return c.json({ok:false,code:'STORE_TRACK_NOT_READY'},404);
   const duration=Math.ceil(Number(track.duration_ms)/1000);
   const existing=await c.env.DB.prepare("SELECT session_id FROM v5_store_music_plays WHERE channel_id=? AND status='active' AND expires_ms>?").bind(channel,Date.now()).first();
@@ -230,7 +150,7 @@ router.get('/container/:track',async c=>{
  const uid=await owner(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
  const track=String(c.req.param('track')||''),session=String(c.req.query('session_id')||'');
  if(!/^sm_[a-f0-9]{32}$/.test(session))return c.json({ok:false,code:'SESSION_INVALID'},400);
- const row=await c.env.DB.prepare("SELECT t.object_key,t.container_sha256,t.container_size FROM v5_store_music_plays p JOIN v5_store_music_tracks t ON t.track_key=p.track_key WHERE p.session_id=? AND p.user_id=? AND p.track_key=? AND p.status='active' AND p.expires_ms>? AND t.status='ready'").bind(session,uid,track,Date.now()).first<any>().catch(()=>null);
+ const row=await c.env.DB.prepare("SELECT t.object_key,t.container_sha256,t.container_size FROM v5_store_music_plays p JOIN v5_store_music_tracks t ON t.track_key=p.track_key WHERE p.session_id=? AND p.user_id=? AND p.track_key=? AND p.status='active' AND p.expires_ms>? AND t.status='ready' AND UPPER(t.license_code)<>'CC0'").bind(session,uid,track,Date.now()).first<any>().catch(()=>null);
  if(!row)return c.json({ok:false,code:'STORE_PLAYBACK_DENIED'},403);
  let data:Uint8Array;
  if(String(row.object_key).startsWith('r2:')){
