@@ -70,14 +70,18 @@ if __name__ == "__main__":
     parser.add_argument('--source-sha256', help='Expected 64-character V5 source SHA-256')
     parser.add_argument('--rights-confirmed', action='store_true', help='Authorized operator confirmation')
     args = parser.parse_args()
-    draft = transcribe_vocals(args.source)
     if args.source_sha256:
         import hashlib
-        digest = hashlib.file_digest(args.source.open('rb'), 'sha256').hexdigest()
+        if not args.rights_confirmed:
+            parser.error('--rights-confirmed is required with --source-sha256')
+        if len(args.source_sha256) != 64 or any(c not in '0123456789abcdefABCDEF' for c in args.source_sha256):
+            parser.error('--source-sha256 must be a 64-character hexadecimal digest')
+        with args.source.open('rb') as source_file:
+            digest = hashlib.file_digest(source_file, 'sha256').hexdigest()
         if digest.lower() != args.source_sha256.lower():
             raise ValueError('V5 source SHA-256 mismatch')
-        if not args.rights_confirmed:
-            raise ValueError('Explicit rights confirmation required')
+    draft = transcribe_vocals(args.source)
+    if args.source_sha256:
         provenance = draft.pop('provenance')
         draft.pop('lyrics_status', None)
         print(json.dumps({'rights_confirmed': True, 'source_sha256': digest, 'provenance': provenance, 'score_data': draft}, ensure_ascii=False))
