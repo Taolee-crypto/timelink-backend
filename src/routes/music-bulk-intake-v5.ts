@@ -155,6 +155,35 @@ app.post('/candidates/:id/rights-review',async c=>{
  }catch{return c.json({ok:false,code:'RIGHTS_REVIEW_FAILED'},503)}
 });
 
+
+/**
+ * Dedicated commercial-only free music inventory.
+ * Not part of tl_files, tl_shares, Shared Place or central TILO station.
+ * Only source-staged, reviewed candidates can be listed.
+ */
+app.get('/commercial-library',async c=>{
+ const gate=await requireAdmin(c);if(gate.error)return gate.error;
+ const country=String(c.req.query('country')||'KR').toUpperCase();
+ if(!/^[A-Z]{2}$/.test(country))return c.json({ok:false,code:'INVALID_COUNTRY'},400);
+ try{
+   await init(c.env.DB);
+   await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS v5_music_source_staging(
+     candidate_id TEXT PRIMARY KEY,object_key TEXT NOT NULL,sha256 TEXT NOT NULL,
+     size_bytes INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'awaiting_tl3',
+     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+   const rows=await c.env.DB.prepare(`SELECT m.id,m.title,m.artist,m.genre,m.license_code,
+     m.territories,s.status AS conversion_status
+     FROM v5_music_bulk_candidates m JOIN v5_music_source_staging s ON s.candidate_id=m.id
+     WHERE m.status='rights_approved' AND m.recording_rights='verified'
+       AND m.composition_rights='verified' AND m.commercial_use=1
+       AND m.transformation_allowed=1 AND
+       (','||m.territories||',') LIKE ?
+     ORDER BY s.created_at DESC LIMIT 200`).bind('%,'+country+',%').all();
+   return c.json({ok:true,scope:'commercial_broadcast_only',country,items:rows.results||[],
+     shared_place:false,central_broadcast:false});
+ }catch{return c.json({ok:false,code:'COMMERCIAL_LIBRARY_UNAVAILABLE'},503)}
+});
+
 const discoveryGenres=['classical','jazz','ambient','folk','blues','electronic','rock','hip hop','world','instrumental'];
 function classifyAudio(subject:unknown,title:unknown){
  const tags=(Array.isArray(subject)?subject:[subject]).filter(x=>typeof x==='string').map(x=>String(x).toLowerCase().slice(0,100));
