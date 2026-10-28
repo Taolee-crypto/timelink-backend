@@ -107,7 +107,9 @@ router.get('/scores/v5/:reference',async c=>{
     return c.json({ok:true,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
       score_status:score?'draft':'not_generated',has_score:!!score,score,
-      can_generate:!!canGenerate,source_sha256:canGenerate?String(row.source_sha256):null,tld_issued:false,analysis_ready:!!canGenerate,tl_charged:0,
+      can_generate:false,source_sha256:null,tld_issued:false,analysis_ready:false,tl_charged:0,
+      analysis_code:"VOCAL_ANALYSIS_NOT_READY",
+      analysis_message:"보컬 분리 채보 서비스 연결을 준비 중입니다. 현재 자동 채보를 시작할 수 없습니다.",
       message:score?'자동 채보 초안입니다. 검수 전이며 정식 TLD는 발행되지 않았습니다.':'이 곡의 V5 TLD 악보는 아직 생성·발행되지 않았습니다.'
     },200,{'Cache-Control':'private, no-store'});
   }catch(e){console.error('[V5_SCORE_STATUS]',e);return c.json({ok:false,code:'V5_SCORE_STATUS_UNAVAILABLE',message:'V5 악보 상태를 확인하지 못했습니다.'},503);}
@@ -124,36 +126,9 @@ router.post('/scores/v5/:reference/draft',async c=>{
       .bind(Number(row.file_id),uid).first<any>();
     if(Number(rights?.rights_declared)!==1||!['owner','authorized_agent','licensee'].includes(String(rights?.rights_role||'')))
       return c.json({ok:false,code:'CREATOR_RIGHTS_REQUIRED'},403);
-    const raw=await c.req.text();
-    if(raw.length>450000)return c.json({ok:false,code:'SCORE_DRAFT_TOO_LARGE'},413);
-    const body=JSON.parse(raw);
-    if(body?.rights_confirmed!==true||String(body?.source_sha256||'')!==String(row.source_sha256))
-      return c.json({ok:false,code:'SCORE_SOURCE_OR_RIGHTS_INVALID'},422);
-    const score=body?.score_data;
-    if(!score||!Array.isArray(score.melody)||score.melody.length<3||score.melody.length>6000||
-       !Number.isFinite(Number(score.bpm))||Number(score.bpm)<40||Number(score.bpm)>220||
-       score.analysis?.source!=='v5_owner_authorized_playback'||
-       !score.melody.every((n:any)=>Number.isFinite(n.s)&&n.s>=0&&Number.isFinite(n.d)&&n.d>.04&&
-           Number.isSafeInteger(n.m)&&n.m>=40&&n.m<=90&&n.s+n.d<=Number(row.duration_ms)/1000+2))
-      return c.json({ok:false,code:'INVALID_SCORE_DRAFT'},422);
-    const safe={
-      version:1,algorithm:'track-v5-browser-yin-draft-v1',bpm:Number(score.bpm),
-      time_signature:'4/4',
-      key:{tonic:String(score.key?.tonic||'C').slice(0,3),mode:score.key?.mode==='minor'?'minor':'major',conf:0},
-      melody:score.melody.map((n:any)=>({s:n.s,d:n.d,m:n.m,conf:Number.isFinite(n.conf)?Math.max(0,Math.min(1,n.conf)):0.5})),
-      chords:[],analysis:{source:'v5_owner_authorized_playback',quality:'unreviewed_single_melody_draft',seconds:Number(row.duration_ms)/1000}
-    };
-    await ensureV5ScoreDrafts(c.env.DB);
-    await c.env.DB.prepare(`INSERT INTO v5_track_score_drafts
-      (file_id,owner_id,source_sha256,score_json,algorithm,status)
-      VALUES(?,?,?,?,?,'draft')
-      ON CONFLICT(file_id) DO UPDATE SET owner_id=excluded.owner_id,
-      source_sha256=excluded.source_sha256,score_json=excluded.score_json,
-      algorithm=excluded.algorithm,status='draft',updated_at=CURRENT_TIMESTAMP
-      WHERE v5_track_score_drafts.status='draft'`)
-      .bind(Number(row.file_id),uid,String(row.source_sha256),JSON.stringify(safe),safe.algorithm).run();
-    return c.json({ok:true,score_status:'draft',has_score:true,file_id:Number(row.file_id),
-      notes:safe.melody.length,tld_issued:false,tl_charged:0});
+    // Mixed-audio YIN was retired: do not spend analysis time or attempt a DB write.
+    return c.json({ok:false,code:"VOCAL_ANALYSIS_NOT_READY",message:"보컬 분리 채보 서비스 연결을 준비 중입니다. 현재 자동 채보를 시작할 수 없습니다.",retryable:false},409);
+
   }catch(e){console.error('[V5_SCORE_DRAFT]',e);return c.json({ok:false,code:'V5_SCORE_DRAFT_FAILED'},503);}
 });
 
