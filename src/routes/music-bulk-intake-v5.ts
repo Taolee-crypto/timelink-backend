@@ -25,6 +25,9 @@ app.post('/batches',async c=>{
  if(!title||title.length>200||artist.length>200||!sourceId||sourceId.length>200||!/^https:\/\//.test(sourceUrl)||sourceUrl.length>1200||!/^https:\/\//.test(licenseUrl)||licenseUrl.length>1200||!allowed.includes(license))return c.json({ok:false,code:'INVALID_ITEM'},400);
  clean.push({title,artist,sourceUrl,licenseUrl,sourceId,license,genre:String(item.genre||'').slice(0,100),weather:String(item.weather||'').slice(0,60),daypart:String(item.daypart||'').slice(0,60),mood:String(item.mood||'').slice(0,60),country:countryCode(item.country),language:String(item.language||'').trim().slice(0,20),cultural_tags:cleanTags(item.cultural_tags),season:String(item.season||'').trim().slice(0,40),occasion:String(item.occasion||'').trim().slice(0,60)});
  }
+ const columns=await c.env.DB.prepare('PRAGMA table_info(v5_music_candidate_classification)').all<any>();
+ if(!(columns.results||[]).some((x:any)=>x.name==='discovery_country'))await c.env.DB.prepare('ALTER TABLE v5_music_candidate_classification ADD COLUMN discovery_country TEXT').run();
+ if(!(columns.results||[]).some((x:any)=>x.name==='musical_styles'))await c.env.DB.prepare("ALTER TABLE v5_music_candidate_classification ADD COLUMN musical_styles TEXT NOT NULL DEFAULT '[]'").run();
  const batchId=crypto.randomUUID();try{await init(c.env.DB);await c.env.DB.prepare("CREATE TABLE IF NOT EXISTS v5_music_candidate_localization(candidate_id TEXT PRIMARY KEY,country TEXT,language TEXT,cultural_tags TEXT NOT NULL DEFAULT '[]',season TEXT,occasion TEXT)").run();const statements=[c.env.DB.prepare("INSERT INTO v5_music_bulk_batches(id,created_by,source_name,total_items) VALUES(?,?,?,?)").bind(batchId,uid,source,clean.length)];for(const x of clean){const id=crypto.randomUUID();statements.push(c.env.DB.prepare("INSERT INTO v5_music_bulk_candidates(id,batch_id,source_id,title,artist,source_url,license_url,license_code,genre,weather,daypart,mood) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(id,batchId,x.sourceId,x.title,x.artist,x.sourceUrl,x.licenseUrl,x.license,x.genre,x.weather,x.daypart,x.mood));statements.push(c.env.DB.prepare("INSERT INTO v5_music_candidate_localization(candidate_id,country,language,cultural_tags,season,occasion) VALUES(?,?,?,?,?,?)").bind(id,x.country,x.language,JSON.stringify(x.cultural_tags),x.season,x.occasion));};await c.env.DB.batch(statements);return c.json({ok:true,batch_id:batchId,count:clean.length,status:'rights_review',downloaded:false,tl3_converted:false,published:false},201)}catch(e){return c.json({ok:false,code:'BATCH_STORE_FAILED'},503)}
 });
 app.get('/batches/:id',async c=>{const gate=await requireAdmin(c);if(gate.error)return gate.error;const uid=gate.uid!;try{await init(c.env.DB);const batch=await c.env.DB.prepare("SELECT * FROM v5_music_bulk_batches WHERE id=? AND created_by=?").bind(c.req.param('id'),uid).first();if(!batch)return c.json({ok:false,code:'NOT_FOUND'},404);const items=await c.env.DB.prepare("SELECT m.id,m.title,m.artist,m.license_code,m.recording_rights,m.composition_rights,m.status,m.genre,m.weather,m.daypart,m.mood,l.country,l.language,l.cultural_tags,l.season,l.occasion FROM v5_music_bulk_candidates m LEFT JOIN v5_music_candidate_localization l ON l.candidate_id=m.id WHERE m.batch_id=? LIMIT 100").bind(c.req.param('id')).all();return c.json({ok:true,batch,items:items.results||[]})}catch{return c.json({ok:false,code:'BATCH_UNAVAILABLE'},503)}});
@@ -91,6 +94,26 @@ app.post('/candidates/:id/stage-source',async c=>{
 });
 
 
+const discoveryCountries:Record<string,string>={
+ KR:'Korea',JP:'Japan',CN:'China',IN:'India',US:'United States',GB:'United Kingdom',
+ FR:'France',DE:'Germany',IT:'Italy',ES:'Spain',BR:'Brazil',MX:'Mexico',
+ AR:'Argentina',NG:'Nigeria',ZA:'South Africa',EG:'Egypt',TR:'Turkey',
+ ID:'Indonesia',TH:'Thailand',VN:'Vietnam',PH:'Philippines',AU:'Australia',
+ CA:'Canada',RU:'Russia',UA:'Ukraine',SE:'Sweden',NO:'Norway'
+};
+const musicalStyles:Record<string,string[]>={
+ KR:['gugak','pansori','minyo','trot','k-pop'],JP:['enka','shamisen','gagaku','j-pop'],
+ IN:['raga','hindustani','carnatic','bollywood'],US:['bluegrass','gospel','country','soul'],
+ BR:['samba','bossa nova','forro','choro'],AR:['tango','milonga'],
+ NG:['afrobeat','highlife','juju'],ES:['flamenco'],TR:['makam','arabesque'],
+ ID:['gamelan','dangdut'],CN:['guqin','erhu','pipa'],FR:['chanson'],
+ EG:['maqam'],MX:['mariachi','ranchera'],ZA:['amapiano','kwaito']
+};
+function classifyCountryStyles(country:string,subjects:unknown,title:unknown){
+ const tags=(Array.isArray(subjects)?subjects:[subjects]).filter(x=>typeof x==='string').map(x=>String(x).toLowerCase());
+ const haystack=[...tags,String(title||'').toLowerCase()].join(' ');
+ return (musicalStyles[country]||[]).filter(style=>haystack.includes(style));
+}
 const discoveryGenres=['classical','jazz','ambient','folk','blues','electronic','rock','hip hop','world','instrumental'];
 function classifyAudio(subject:unknown,title:unknown){
  const tags=(Array.isArray(subject)?subject:[subject]).filter(x=>typeof x==='string').map(x=>String(x).toLowerCase().slice(0,100));
@@ -104,11 +127,13 @@ function classifyAudio(subject:unknown,title:unknown){
 app.post('/discover/import',async c=>{
  const gate=await requireAdmin(c);if(gate.error)return gate.error;
  let body:any;try{body=await c.req.json()}catch{return c.json({ok:false,code:'INVALID_JSON'},400)}
+ const country=String(body.country||'').toUpperCase();
+ if(!discoveryCountries[country])return c.json({ok:false,code:'INVALID_COUNTRY',allowed:Object.keys(discoveryCountries)},400);
  const genre=String(body.genre||'classical').toLowerCase();
  if(!discoveryGenres.includes(genre))return c.json({ok:false,code:'INVALID_GENRE',allowed:discoveryGenres},400);
  const page=Number(body.page||1);
  if(!Number.isSafeInteger(page)||page<1||page>100)return c.json({ok:false,code:'INVALID_PAGE'},400);
- const params=new URLSearchParams({q:'mediatype:audio AND (subject:"'+genre+'")',output:'json',rows:'40',page:String(page)});
+ const params=new URLSearchParams({q:'mediatype:audio AND (subject:"'+genre+'") AND (subject:"'+discoveryCountries[country]+'")',output:'json',rows:'40',page:String(page)});
  for(const key of ['identifier','title','creator','licenseurl','rights','subject','language'])params.append('fl[]',key);
  let docs:any[];
  try{
@@ -117,13 +142,14 @@ app.post('/discover/import',async c=>{
    const json:any=await response.json();docs=Array.isArray(json.response?.docs)?json.response.docs:[];
  }catch{return c.json({ok:false,code:'DISCOVERY_SOURCE_UNAVAILABLE'},502)}
  await init(c.env.DB);
+ await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS v5_music_candidate_localization(candidate_id TEXT PRIMARY KEY,country TEXT,language TEXT,cultural_tags TEXT NOT NULL DEFAULT '[]',season TEXT,occasion TEXT)`).run();
  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS v5_music_candidate_classification(
  candidate_id TEXT PRIMARY KEY,classification_status TEXT NOT NULL,
  detected_genre TEXT,source_subjects TEXT NOT NULL DEFAULT '[]',
- detected_language TEXT,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+ detected_language TEXT,discovery_country TEXT,musical_styles TEXT NOT NULL DEFAULT '[]',updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
  const batchId=crypto.randomUUID();
  await c.env.DB.prepare("INSERT INTO v5_music_bulk_batches(id,created_by,source_name,total_items) VALUES(?,?,?,?)")
-   .bind(batchId,gate.uid,'Internet Archive discovery: '+genre,0).run();
+   .bind(batchId,gate.uid,'Internet Archive discovery: '+country+'/'+genre,0).run();
  let imported=0,skipped=0;
  for(const doc of docs){
    const sourceId=String(doc.identifier||'');
@@ -140,18 +166,20 @@ app.post('/discover/import',async c=>{
    VALUES(?,?,?,?,?,?,?,'UNKNOWN',?,'rights_review')`)
    .bind(id,batchId,sourceId,title,artist,sourceUrl,licenseUrl,classification.genre).run();
    if(!inserted.meta?.changes){skipped++;continue}
+   const styles=classifyCountryStyles(country,doc.subject,title);
+   await c.env.DB.prepare(`INSERT INTO v5_music_candidate_localization(candidate_id,country,language,cultural_tags) VALUES(?,?,?,?)`).bind(id,null,classification.language,JSON.stringify(styles)).run();
    await c.env.DB.prepare(`INSERT INTO v5_music_candidate_classification
-   (candidate_id,classification_status,detected_genre,source_subjects,detected_language)
-   VALUES(?,?,?,?,?)`).bind(id,classification.classification_status,classification.genre,JSON.stringify(classification.tags),classification.language).run();
+   (candidate_id,classification_status,detected_genre,source_subjects,detected_language,discovery_country,musical_styles)
+   VALUES(?,?,?,?,?,?,?)`).bind(id,classification.classification_status,classification.genre,JSON.stringify(classification.tags),classification.language,country,JSON.stringify(styles)).run();
    imported++;
  }
  await c.env.DB.prepare('UPDATE v5_music_bulk_batches SET total_items=? WHERE id=?').bind(imported,batchId).run();
- return c.json({ok:true,batch_id:batchId,genre,page,discovered:docs.length,imported,skipped,
+ return c.json({ok:true,batch_id:batchId,country,genre,page,discovered:docs.length,imported,skipped,
    classification:'provisional_metadata',rights_verified:false,mp3_downloaded:false,tl3_converted:false,published:false});
 });
 app.get('/discovery/genres',async c=>{
  const gate=await requireAdmin(c);if(gate.error)return gate.error;
- return c.json({ok:true,genres:discoveryGenres,classification:'provisional_metadata',source:'Internet Archive'});
+ return c.json({ok:true,countries:discoveryCountries,musical_styles:musicalStyles,genres:discoveryGenres,classification:'provisional_metadata',source:'Internet Archive'});
 });
 
 export default app;
