@@ -236,12 +236,18 @@ router.post('/manufacture', async (c) => {
       const admin=await c.env.DB.prepare('SELECT role FROM users WHERE id=?').bind(userId).first<any>();
       if (!['admin','super_admin'].includes(String(admin?.role||''))) return c.json({ok:false,code:'ADMIN_REQUIRED'},403);
       const staged=await c.env.DB.prepare(`SELECT s.object_key,s.sha256,s.size_bytes,m.recording_rights,m.composition_rights,
-        m.commercial_use,m.transformation_allowed,m.territories
+        m.commercial_use,m.transformation_allowed,m.territories,m.title AS candidate_title,m.artist AS candidate_artist
         FROM v5_music_source_staging s JOIN v5_music_bulk_candidates m ON m.id=s.candidate_id
         WHERE s.candidate_id=? AND s.status='awaiting_tl3'`).bind(String(metadata.staged_candidate_id)).first<any>();
       if (!staged||staged.recording_rights!=='verified'||staged.composition_rights!=='verified'||
           Number(staged.commercial_use)!==1||Number(staged.transformation_allowed)!==1||
           !staged.territories||staged.territories==='unverified') return c.json({ok:false,code:'STAGED_RIGHTS_NOT_VERIFIED'},409);
+      // A staged source must be explicitly associated with the existing registered asset.
+      // Prevent manufacturing one licensed candidate into an unrelated file record.
+      if(String(metadata.source_reference||'')!==String(metadata.staged_candidate_id)||
+         String(file.title||'').trim()!==String(staged.candidate_title||'').trim()||
+         String(file.artist||'').trim()!==String(staged.candidate_artist||'').trim())
+        return c.json({ok:false,code:'STAGED_ASSET_IDENTITY_MISMATCH'},409);
       if (Number(staged.size_bytes)>MAX_MP3_BYTES) return c.json({ok:false,code:'SOURCE_TOO_LARGE'},413);
       raw=await readD1Range(c.env.DB,String(staged.object_key),0,Number(staged.size_bytes));
       if(raw.byteLength!==Number(staged.size_bytes)||hex(await sha256(raw))!==String(staged.sha256))
