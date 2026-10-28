@@ -61,7 +61,7 @@ app.post('/candidates/:id/stage-source',async c=>{
    return c.json({ok:false,code:'RIGHTS_NOT_VERIFIED'},409);
  let u:URL;try{u=new URL(String(item.source_url));}catch{return c.json({ok:false,code:'INVALID_SOURCE'},400)}
  // Only direct Archive file URLs are accepted. No arbitrary URL fetch or redirects.
- if(u.protocol!=='https:'||u.hostname!=='archive.org'||!u.pathname.startsWith('/download/')||
+ if(u.protocol!=='https:'||u.hostname!=='archive.org'||!/^\\/download\\/[A-Za-z0-9_.%-]+\\/.+\\.mp3$/i.test(u.pathname)||
     u.username||u.password||u.port)return c.json({ok:false,code:'SOURCE_NOT_ALLOWED'},400);
  try{
    const res=await fetch(u.toString(),{redirect:'error',signal:AbortSignal.timeout(20000)});
