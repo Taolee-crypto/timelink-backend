@@ -60,11 +60,30 @@ app.post('/candidates/:id/stage-source',async c=>{
     !item.territories||item.territories==='unverified')
    return c.json({ok:false,code:'RIGHTS_NOT_VERIFIED'},409);
  let u:URL;try{u=new URL(String(item.source_url));}catch{return c.json({ok:false,code:'INVALID_SOURCE'},400)}
- // Only direct Archive file URLs are accepted. No arbitrary URL fetch or redirects.
- if(u.protocol!=='https:'||u.hostname!=='archive.org'||!u.pathname.startsWith('/download/')||
-    u.username||u.password||u.port)return c.json({ok:false,code:'SOURCE_NOT_ALLOWED'},400);
+ // Discovery stores Archive item pages, so resolve the MP3 via Archive metadata.
+ // Never fetch arbitrary hosts, redirects or non-MP3 assets.
+ if(u.protocol!=='https:'||u.hostname!=='archive.org'||u.username||u.password||u.port)
+   return c.json({ok:false,code:'SOURCE_NOT_ALLOWED'},400);
  try{
-   const res=await fetch(u.toString(),{redirect:'error',signal:AbortSignal.timeout(20000)});
+   let downloadUrl=u.toString();
+   if(u.pathname.startsWith('/details/')){
+     const identifier=decodeURIComponent(u.pathname.slice('/details/'.length));
+     if(!/^[A-Za-z0-9_.-]{1,200}$/.test(identifier))
+       return c.json({ok:false,code:'INVALID_ARCHIVE_IDENTIFIER'},400);
+     const metadataResponse=await fetch('https://archive.org/metadata/'+encodeURIComponent(identifier),
+       {redirect:'error',signal:AbortSignal.timeout(12000)});
+     if(!metadataResponse.ok)return c.json({ok:false,code:'ARCHIVE_METADATA_UNAVAILABLE'},502);
+     const metadata:any=await metadataResponse.json();
+     const files=Array.isArray(metadata.files)?metadata.files:[];
+     const mp3=files.find((x:any)=>typeof x.name==='string'&&
+       /\\.mp3$/i.test(x.name)&&!x.name.includes('/')&&!x.name.includes('\\')&&
+       (x.source==='original'||!x.source)&&Number(x.size||0)>128&&Number(x.size)<=16*1024*1024);
+     if(!mp3)return c.json({ok:false,code:'NO_ELIGIBLE_ARCHIVE_MP3'},422);
+     downloadUrl='https://archive.org/download/'+encodeURIComponent(identifier)+'/'+encodeURIComponent(mp3.name);
+   }else if(!u.pathname.startsWith('/download/')){
+     return c.json({ok:false,code:'SOURCE_NOT_ALLOWED'},400);
+   }
+   const res=await fetch(downloadUrl,{redirect:'error',signal:AbortSignal.timeout(20000)});
    if(!res.ok)return c.json({ok:false,code:'DOWNLOAD_FAILED'},502);
    const len=Number(res.headers.get('content-length')||0);
    if(len>16*1024*1024)return c.json({ok:false,code:'SOURCE_TOO_LARGE'},413);
