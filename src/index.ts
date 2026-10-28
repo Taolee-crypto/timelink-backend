@@ -1,4 +1,5 @@
 import musicBulkIntakeRouter from './routes/music-bulk-intake-v5';
+import storeMusicV5Router,{runStoreMusicIntake,releaseExpiredStoreSessions} from './routes/store-music-v5';
 import {timeFreePreflight,timeFreeSessionExists,meterTimeFreePlayback,closeTimeFreeSession} from './v5-time-free';
 import {subscriptionPreflight,subscriptionSessionExists,meterSubscriptionPlayback,closeSubscriptionSession} from './v5-subscription-playback';
 import salesManagersRouter from './routes/sales-managers';
@@ -1027,6 +1028,7 @@ app.route('/api/payment', paymentRouter);
 app.route('/api/eco', ecoRouter);
 app.route('/api/v5/triple-luck', tripleLuckStoreRouter);
 app.route('/api/v5/music-bulk', musicBulkIntakeRouter);
+app.route('/api/v5/store-music',storeMusicV5Router);
 app.route('/api/v5/referrals', memberReferralsV5Router);
 app.route('/api/ads', adsRouter);
 app.route('/api/v1/suno', sunoVerifyRouter);
@@ -5059,6 +5061,8 @@ export default {
   fetch: app.fetch.bind(app),
   async scheduled(_event:ScheduledEvent,env:Env,ctx:ExecutionContext) {
     ctx.waitUntil(refreshTiloCountryClocks(env.DB).catch(error=>console.error('[TILO_CLOCK]',error)));
+    ctx.waitUntil(runStoreMusicIntake(env).catch(error=>console.error('[STORE_MUSIC_IMPORT]',error)));
+    ctx.waitUntil(releaseExpiredStoreSessions(env).catch(error=>console.error('[STORE_MUSIC_EXPIRE]',error)));
     ctx.waitUntil(runMusicGateAnalysis(env).catch(()=>console.error('[MUSIC_GATE_WORKER] ANALYSIS_CYCLE_FAILED')));
   }
 };
