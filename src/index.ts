@@ -1109,12 +1109,12 @@ app.get('/api/v5/store-radio/queue', async (c) => {
       FROM tl_files f
       WHERE f.shared=1 AND LOWER(f.file_type)='audio/tl3'
         AND COALESCE(f.revenue_held,0)=0
-        AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)
+        AND EXISTS (SELECT 1 FROM tl3_v5_releases v WHERE v.file_id=f.id AND v.status='sealed')
         AND (LOWER(TRIM(f.genre))=LOWER(TRIM(?)) OR EXISTS(
           SELECT 1 FROM v5_track_genre_assignments a
           WHERE a.track_source='tl_files' AND a.track_id=CAST(f.id AS TEXT)
           AND a.canonical_genre_id=? AND a.classification_status='verified'))
-      ORDER BY promotion_priority DESC, f.pulse DESC, f.id DESC LIMIT 100
+      ORDER BY promotion_priority DESC, f.id DESC LIMIT 100
     `).bind(country,genre,genre).all();
     return c.json({ok:true,tracks:rows.results||[],mode:'catalog_preview',playback_authorized:false,
       note:'Territorial store rights, time balance and billing must be checked before playback'});
