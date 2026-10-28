@@ -1050,6 +1050,36 @@ const USER_SELECT = `
 `;
 
 // GET /api/tracks
+// One store music queue. Promotion is an internal ordering signal, not a separate catalogue.
+app.get('/api/v5/store-radio/queue', async (c) => {
+  c.header('Cache-Control','no-store');
+  const country=String(c.req.query('country')||'').trim().toUpperCase();
+  const genre=String(c.req.query('genre')||'').trim();
+  if(!/^[A-Z]{2}$/.test(country)||!genre||genre.length>120)return c.json({ok:false,code:'INVALID_FILTER'},400);
+  try{
+    const rows=await c.env.DB.prepare(`
+      SELECT f.id AS file_id,f.title,f.artist,f.genre,
+        CASE WHEN EXISTS (
+          SELECT 1 FROM tilo_promotion_campaigns p
+          WHERE p.file_id=f.id AND p.status='active'
+            AND p.target_country=? AND p.starts_at<=datetime('now')
+            AND p.ends_at>datetime('now') AND p.spent_atoms<p.budget_atoms
+        ) THEN 1 ELSE 0 END AS promotion_priority
+      FROM tl_files f
+      WHERE f.shared=1 AND LOWER(f.file_type)='audio/tl3'
+        AND COALESCE(f.revenue_held,0)=0
+        AND EXISTS (SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)
+        AND (LOWER(TRIM(f.genre))=LOWER(TRIM(?)) OR EXISTS(
+          SELECT 1 FROM v5_track_genre_assignments a
+          WHERE a.track_source='tl_files' AND a.track_id=CAST(f.id AS TEXT)
+          AND a.canonical_genre_id=? AND a.classification_status='verified'))
+      ORDER BY promotion_priority DESC, f.pulse DESC, f.id DESC LIMIT 100
+    `).bind(country,genre,genre).all();
+    return c.json({ok:true,tracks:rows.results||[],mode:'catalog_preview',playback_authorized:false,
+      note:'Territorial store rights, time balance and billing must be checked before playback'});
+  }catch{return c.json({ok:false,code:'STORE_RADIO_QUEUE_UNAVAILABLE'},503)}
+});
+
 // Public approved genre catalog. External source mappings are never exposed until reviewed.
 app.get('/api/v5/genres', async (c) => {
   try {
