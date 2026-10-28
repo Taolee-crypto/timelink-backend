@@ -12,7 +12,7 @@ const fallback=handler.indexOf("lookupBy === 'share_id' &&");
 const notFound=handler.indexOf("'TL3 V5 자산을 찾을 수 없습니다.'");
 assert.ok(exact>=0&&mapped>exact&&fallback>mapped&&notFound>fallback,
   'preserve exact numeric share ID and mapped share before numeric file ID fallback');
-assert.match(handler,/\^\[1-9\]\\d\*\$\/\.test\(rawId\)/,'fallback only accepts positive numeric TRACK references');
+assert.ok(handler.includes("lookupBy === 'share_id' && /^[1-9]\\d*$/.test(rawId)"),'fallback only accepts positive numeric TRACK references');
 assert.match(handler,/v\.file_id=\?/,'fallback queries actual V5 file ID');
 assert.match(handler,/v\.status='sealed'/);
 assert.match(handler,/f\.shared=1/);
