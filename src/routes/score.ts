@@ -107,7 +107,7 @@ router.get('/scores/v5/:reference',async c=>{
     return c.json({ok:true,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
       score_status:score?'draft':'not_generated',has_score:!!score,score,
-      can_generate:!!canGenerate,tld_issued:false,analysis_ready:!!canGenerate,tl_charged:0,
+      can_generate:!!canGenerate,source_sha256:canGenerate?String(row.source_sha256):null,tld_issued:false,analysis_ready:!!canGenerate,tl_charged:0,
       message:score?'자동 채보 초안입니다. 검수 전이며 정식 TLD는 발행되지 않았습니다.':'이 곡의 V5 TLD 악보는 아직 생성·발행되지 않았습니다.'
     },200,{'Cache-Control':'private, no-store'});
   }catch(e){console.error('[V5_SCORE_STATUS]',e);return c.json({ok:false,code:'V5_SCORE_STATUS_UNAVAILABLE',message:'V5 악보 상태를 확인하지 못했습니다.'},503);}
