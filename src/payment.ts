@@ -86,6 +86,85 @@ payment.post('/v5/commercial-time/quote',async c=>{
    note:'Server quote only. Payment and commercial airtime ledger are not yet connected.'});
 });
 
+
+// Store airtime uses the existing Toss payment SDK and confirmation provider.
+// Its entitlements are scoped to an actual registered store, never the personal
+// TIME FREE wallet. Only sandbox keys are enabled here.
+async function ensureStoreAirtimeSchema(db:Env['DB']){
+ await db.prepare("CREATE TABLE IF NOT EXISTS v5_store_airtime_orders (order_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,channel_id TEXT NOT NULL,hours INTEGER NOT NULL,period TEXT NOT NULL,area_tier INTEGER NOT NULL,seconds INTEGER NOT NULL CHECK(seconds>0),amount_krw INTEGER NOT NULL CHECK(amount_krw>0),status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','paid')),payment_key TEXT UNIQUE,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,paid_at TEXT)").run();
+ await db.prepare("CREATE TABLE IF NOT EXISTS v5_store_airtime_grants (order_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,channel_id TEXT NOT NULL,granted_seconds INTEGER NOT NULL CHECK(granted_seconds>0),used_seconds INTEGER NOT NULL DEFAULT 0 CHECK(used_seconds>=0 AND used_seconds<=granted_seconds),expires_at_ms INTEGER NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+ await db.prepare("CREATE INDEX IF NOT EXISTS idx_v5_store_airtime_grants_channel ON v5_store_airtime_grants(channel_id,expires_at_ms)").run();
+}
+function validatedStoreAirtime(input:any){
+ const hours=Number(input?.hours),area=Number(input?.area_tier??0),period=String(input?.period||'');
+ const days:Record<string,number>={hour:1,day:1,month:30,year:365};
+ const periods:Record<string,number>={hour:1,day:1,month:0.8,year:0.65};
+ if(!Object.prototype.hasOwnProperty.call(days,period)||!Number.isSafeInteger(hours)||hours<1||hours>24||!Number.isSafeInteger(area)||area<0||area>4)return null;
+ const seconds=hours*3600*days[period];
+ const amountKrw=Math.round(seconds*[1,1.2,1.5,2,3][area]*periods[period]);
+ return {hours,area,period,days:days[period],seconds,amountKrw};
+}
+async function ownedStore(db:Env['DB'],userId:number,channelId:string){
+ if(!/^[a-zA-Z0-9_-]{1,100}$/.test(channelId))return false;
+ const store=await db.prepare("SELECT channel_id FROM cafe_channels WHERE channel_id=? AND owner_id=? AND status='active'").bind(channelId,userId).first();
+ return !!store;
+}
+payment.post('/v5/commercial-time/toss/prepare',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null),p=validatedStoreAirtime(b),channelId=String(b?.channel_id||'');
+ if(!p)return c.json({ok:false,error:'INVALID_STORE_TIME_SELECTION'},400);
+ if(b?.requested_events?.triple_luck||b?.requested_events?.referral)return c.json({ok:false,error:'STORE_EVENT_NOT_CONFIGURED'},409);
+ const clientKey=String(c.env.TOSS_CLIENT_KEY||''),secret=String(c.env.TOSS_SECRET_KEY||'');
+ if(!clientKey.startsWith('test_ck_')||!secret.startsWith('test_sk_'))return c.json({ok:false,error:'TOSS_TEST_KEYS_REQUIRED'},503);
+ if(p.amountKrw<1000)return c.json({ok:false,error:'TOSS_MINIMUM_1000_KRW'},400);
+ try{
+  if(!await ownedStore(c.env.DB,Number(uid),channelId))return c.json({ok:false,error:'STORE_OWNER_REQUIRED'},403);
+  await ensureStoreAirtimeSchema(c.env.DB);
+  const orderId='v5store_'+crypto.randomUUID().replace(/-/g,'');
+  await c.env.DB.prepare("INSERT INTO v5_store_airtime_orders(order_id,user_id,channel_id,hours,period,area_tier,seconds,amount_krw) VALUES(?,?,?,?,?,?,?,?)").bind(orderId,Number(uid),channelId,p.hours,p.period,p.area,p.seconds,p.amountKrw).run();
+  return c.json({ok:true,orderId,amount:p.amountKrw,seconds:p.seconds,channelId,clientKey,mode:'test'});
+ }catch(e){console.error('[STORE_AIRTIME_PREPARE]',e);return c.json({ok:false,error:'STORE_ORDER_UNAVAILABLE'},503);}
+});
+payment.post('/v5/commercial-time/toss/confirm',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null),orderId=String(b?.orderId||''),paymentKey=String(b?.paymentKey||''),amount=Number(b?.amount);
+ if(!/^v5store_[a-f0-9]{32}$/.test(orderId)||!paymentKey||paymentKey.length>200||!Number.isSafeInteger(amount)||amount<1000)return c.json({ok:false,error:'INVALID_CONFIRMATION'},400);
+ try{
+  await ensureStoreAirtimeSchema(c.env.DB);
+  const o=await c.env.DB.prepare("SELECT * FROM v5_store_airtime_orders WHERE order_id=? AND user_id=?").bind(orderId,Number(uid)).first<any>();
+  if(!o||Number(o.amount_krw)!==amount)return c.json({ok:false,error:'ORDER_AMOUNT_MISMATCH'},403);
+  if(o.status==='paid'){
+   if(o.payment_key!==paymentKey)return c.json({ok:false,error:'PAYMENT_KEY_MISMATCH'},403);
+   const grant=await c.env.DB.prepare("SELECT granted_seconds FROM v5_store_airtime_grants WHERE order_id=?").bind(orderId).first<any>();
+   return c.json({ok:true,alreadyCompleted:true,seconds:Number(grant?.granted_seconds||0),channelId:o.channel_id,mode:'test'});
+  }
+  if(o.status!=='pending')return c.json({ok:false,error:'ORDER_NOT_PENDING'},409);
+  const secret=String(c.env.TOSS_SECRET_KEY||'');
+  if(!secret.startsWith('test_sk_'))return c.json({ok:false,error:'TOSS_TEST_SECRET_REQUIRED'},503);
+  const response=await fetch('https://api.tosspayments.com/v1/payments/confirm',{method:'POST',headers:{Authorization:'Basic '+btoa(secret+':'),'Content-Type':'application/json','Idempotency-Key':orderId},body:JSON.stringify({paymentKey,orderId,amount})});
+  const proof:any=await response.json().catch(()=>({}));
+  if(!response.ok||proof.status!=='DONE'||proof.orderId!==orderId||proof.paymentKey!==paymentKey||Number(proof.totalAmount)!==amount)return c.json({ok:false,error:proof.message||'TOSS_CONFIRM_FAILED'},400);
+  const paidAtMs=Date.now(),days=({hour:1,day:1,month:30,year:365} as Record<string,number>)[String(o.period)];
+  if(!days)return c.json({ok:false,error:'ORDER_PERIOD_INVALID'},503);
+  await c.env.DB.batch([
+   c.env.DB.prepare("UPDATE v5_store_airtime_orders SET status='paid',payment_key=?,paid_at=CURRENT_TIMESTAMP WHERE order_id=? AND user_id=? AND status='pending'").bind(paymentKey,orderId,Number(uid)),
+   c.env.DB.prepare("INSERT OR IGNORE INTO v5_store_airtime_grants(order_id,user_id,channel_id,granted_seconds,expires_at_ms) SELECT order_id,user_id,channel_id,seconds,? FROM v5_store_airtime_orders WHERE order_id=? AND user_id=? AND status='paid'").bind(paidAtMs+days*86400000,orderId,Number(uid))
+  ]);
+  const grant=await c.env.DB.prepare("SELECT granted_seconds FROM v5_store_airtime_grants WHERE order_id=?").bind(orderId).first<any>();
+  if(!grant)return c.json({ok:false,error:'ENTITLEMENT_NOT_GRANTED'},503);
+  return c.json({ok:true,seconds:Number(grant.granted_seconds),amount,channelId:o.channel_id,mode:'test',entitlementType:'store_airtime',tlBCredited:false});
+ }catch(e){console.error('[STORE_AIRTIME_CONFIRM]',e);return c.json({ok:false,error:'STORE_CONFIRM_UNAVAILABLE'},503);}
+});
+payment.get('/v5/commercial-time/balance',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const channelId=String(c.req.query('channel_id')||'');
+ try{
+  if(!await ownedStore(c.env.DB,Number(uid),channelId))return c.json({ok:false,error:'STORE_OWNER_REQUIRED'},403);
+  await ensureStoreAirtimeSchema(c.env.DB);
+  const row=await c.env.DB.prepare("SELECT COALESCE(SUM(granted_seconds-used_seconds),0) remaining_seconds FROM v5_store_airtime_grants WHERE channel_id=? AND user_id=? AND expires_at_ms>?").bind(channelId,Number(uid),Date.now()).first<any>();
+  return c.json({ok:true,channelId,remainingSeconds:Number(row?.remaining_seconds||0)});
+ }catch(e){console.error('[STORE_AIRTIME_BALANCE]',e);return c.json({ok:false,error:'STORE_BALANCE_UNAVAILABLE'},503);}
+});
 payment.post('/v5/shareplace-time/quote', async c => {
  const userId=await authUserId(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
  const b=await c.req.json<{hours?:number}>().catch(()=>null),hours=Number(b?.hours);
