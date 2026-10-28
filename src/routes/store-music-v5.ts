@@ -1,4 +1,5 @@
 import {Hono} from 'hono';
+import {bodyLimit} from 'hono/body-limit';
 import type {Env} from '../types';
 import {verifyToken} from '../auth';
 import {ensureD1Storage,putD1Object,getD1ObjectMeta,readD1Range} from '../d1-storage';
@@ -12,6 +13,7 @@ const router=new Hono<{Bindings:Env}>();
 const enc=new TextEncoder();
 const MAGIC=new Uint8Array([84,76,78,75,5]);
 const MAX_MP3_BYTES=16*1024*1024;
+router.use('/intake/*',bodyLimit({maxSize:MAX_MP3_BYTES}));
 const SOURCE_PAGE='https://kaino.dev/library/music';
 const CC0_LICENSE='https://creativecommons.org/publicdomain/zero/1.0/';
 const INITIAL_CC0=[
@@ -81,9 +83,9 @@ async function wrappingKey(secret:string){
  const hash=await crypto.subtle.digest('SHA-256',asBuffer(enc.encode(secret)));
  return crypto.subtle.importKey('raw',hash,'AES-GCM',false,['encrypt','decrypt']);
 }
-async function makeTL3(raw:Uint8Array,keyId:string,title:string,artist:string,duration_ms:number,source_hash:string,secret:string){
+async function makeTL3(raw:Uint8Array,keyId:string,title:string,artist:string,duration_ms:number,source_hash:string,secret:string,proofUrl=SOURCE_PAGE){
  const manifest={profile:'TL3-V5',version:5,scope:'commercial_broadcast_only',track_key:keyId,title,artist,duration_ms,
- source_sha256:source_hash,rights:{license:'CC0',proof_url:SOURCE_PAGE,commercial_use:true,transformation:true},created_at:new Date().toISOString()};
+ source_sha256:source_hash,rights:{license:'CC0',proof_url:proofUrl,commercial_use:true,transformation:true},created_at:new Date().toISOString()};
  const metadata=enc.encode(JSON.stringify(manifest));
  const plain=concat(packU32(metadata.length),metadata,raw);
  const contentKey=crypto.getRandomValues(new Uint8Array(32));
@@ -143,6 +145,34 @@ async function balance(db:D1Database,uid:number,channel:string){
  const row=await db.prepare("SELECT COALESCE(SUM(granted_seconds-used_seconds),0) n FROM v5_store_airtime_grants WHERE user_id=? AND channel_id=? AND expires_at_ms>?").bind(uid,channel,Date.now()).first<any>();
  return Number(row?.n||0);
 }
+// One-off operator intake: a separately provisioned secret, a pre-reviewed DB
+// record and exact expected hash are all required. Disable by removing secret.
+router.put('/intake/:track',async c=>{
+ const expected=c.env.STORE_MUSIC_INTAKE_SECRET;
+ if(!expected||expected.length<32)return c.json({ok:false,code:'INTAKE_DISABLED'},404);
+ const supplied=c.req.header('X-Store-Intake-Key')||'';
+ const a=await digest(enc.encode(expected)),b=await digest(enc.encode(supplied));
+ let difference=0;for(let i=0;i<a.length;i++)difference|=a.charCodeAt(i)^b.charCodeAt(i);
+ if(difference)return c.json({ok:false,code:'FORBIDDEN'},403);
+ const id=c.req.param('track');
+ if(!/^global-20261028-[a-f0-9]{16}$/.test(id))return c.json({ok:false,code:'INVALID_BATCH_TRACK'},400);
+ const track=await c.env.DB.prepare("SELECT * FROM v5_store_music_tracks WHERE track_key=? AND license_code='CC0'").bind(id).first<any>();
+ if(!track||!['awaiting_upload','ready'].includes(track.status))return c.json({ok:false,code:'REVIEWED_TRACK_REQUIRED'},409);
+ if(!c.env.STORE_MUSIC_BUCKET)return c.json({ok:false,code:'STORE_BUCKET_UNAVAILABLE'},503);
+ const raw=new Uint8Array(await c.req.arrayBuffer());
+ if(raw.length<1024||raw.length>MAX_MP3_BYTES)return c.json({ok:false,code:'INVALID_SOURCE_LENGTH'},413);
+ const hash=await digest(raw);
+ if(hash!==track.source_sha256)return c.json({ok:false,code:'SOURCE_HASH_MISMATCH'},422);
+ if(track.status==='ready')return c.json({ok:true,track_key:id,already_ready:true});
+ const duration=mp3Duration(raw);
+ if(Math.abs(duration-Number(track.expected_seconds)*1000)>5000)return c.json({ok:false,code:'SOURCE_DURATION_MISMATCH'},422);
+ const sealed=await makeTL3(raw,id,track.title,track.artist,duration,hash,String(c.env.TL3_MASTER_SECRET||''),track.source_page);
+ const containerHash=await digest(sealed.container),key='store/tl3/v5/'+id+'/'+containerHash+'.tl3';
+ await c.env.STORE_MUSIC_BUCKET.put(key,asBuffer(sealed.container),{httpMetadata:{contentType:'application/octet-stream'}});
+ await c.env.DB.prepare("UPDATE v5_store_music_tracks SET status='ready',duration_ms=?,object_key=?,container_sha256=?,wrapped_key=?,container_size=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE track_key=? AND status='awaiting_upload' AND source_sha256=?")
+  .bind(duration,'r2:'+key,containerHash,sealed.wrapped,sealed.container.length,id,hash).run();
+ return c.json({ok:true,track_key:id,duration_ms:duration,container_sha256:containerHash,container_size:sealed.container.length});
+});
 router.get('/queue',async c=>{
  const uid=await owner(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
  const channel=String(c.req.query('channel_id')||'');
@@ -202,9 +232,16 @@ router.get('/container/:track',async c=>{
  if(!/^sm_[a-f0-9]{32}$/.test(session))return c.json({ok:false,code:'SESSION_INVALID'},400);
  const row=await c.env.DB.prepare("SELECT t.object_key,t.container_sha256,t.container_size FROM v5_store_music_plays p JOIN v5_store_music_tracks t ON t.track_key=p.track_key WHERE p.session_id=? AND p.user_id=? AND p.track_key=? AND p.status='active' AND p.expires_ms>? AND t.status='ready'").bind(session,uid,track,Date.now()).first<any>().catch(()=>null);
  if(!row)return c.json({ok:false,code:'STORE_PLAYBACK_DENIED'},403);
- const meta=await getD1ObjectMeta(c.env.DB,String(row.object_key));
- if(!meta||meta.size!==Number(row.container_size))return c.json({ok:false,code:'STORE_CONTAINER_MISSING'},503);
- const data=await readD1Range(c.env.DB,String(row.object_key),0,meta.size);
+ let data:Uint8Array;
+ if(String(row.object_key).startsWith('r2:')){
+  const object=await c.env.STORE_MUSIC_BUCKET?.get(String(row.object_key).slice(3));
+  if(!object||object.size!==Number(row.container_size))return c.json({ok:false,code:'STORE_CONTAINER_MISSING'},503);
+  data=new Uint8Array(await object.arrayBuffer());
+ }else{
+  const meta=await getD1ObjectMeta(c.env.DB,String(row.object_key));
+  if(!meta||meta.size!==Number(row.container_size))return c.json({ok:false,code:'STORE_CONTAINER_MISSING'},503);
+  data=await readD1Range(c.env.DB,String(row.object_key),0,meta.size);
+ }
  if(await digest(data)!==String(row.container_sha256))return c.json({ok:false,code:'STORE_CONTAINER_CORRUPT'},503);
  return new Response(asBuffer(data),{status:200,headers:{'Content-Type':'application/octet-stream','Content-Length':String(data.length),'Cache-Control':'private,no-store','X-TL3-Version':'5','X-TL3-Scope':'commercial_broadcast_only'}});
 });

@@ -1,5 +1,7 @@
 export interface Env {
   DB: D1Database;
+  STORE_MUSIC_BUCKET?: R2Bucket;
+  STORE_MUSIC_INTAKE_SECRET?: string;
   TOSS_SECRET_KEY?: string;
   TOSS_CLIENT_KEY?: string;
   MUSIC_SUBSCRIPTION_PLAYBACK_ENABLED?: string;
