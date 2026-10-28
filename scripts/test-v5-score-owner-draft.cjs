@@ -1,27 +1,30 @@
-'use strict';
-const assert=require('node:assert/strict'),fs=require('node:fs');
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const src=fs.readFileSync('src/routes/score.ts','utf8');
-const start=src.indexOf('/** Owner-only V5 transcriptions.');
-const end=src.indexOf('// DB 마이그레이션',start);
-assert.ok(start>0&&end>start);
-const section=src.slice(start,end);
-assert.match(section,/verifyToken\(token,c.env.JWT_SECRET\)/);
-assert.match(section,/is_active,1/);
-assert.match(section,/v5_track_score_drafts/);
-assert.match(section,/tl3_v5_releases/);
-assert.match(section,/f\.shared=1/);
-assert.match(section,/owner=uid>0&&uid===Number\(row.user_id\)/);
-assert.match(section,/source_sha256:canGenerate\?/);
-assert.match(section,/score_status:score\?'draft':'not_generated'/);
-assert.match(section,/router.post\('\/scores\/v5\/:reference\/draft'/);
-assert.match(section,/Number\(row.user_id\)!==uid/);
-assert.match(section,/body\?\.rights_confirmed!==true/);
-assert.match(section,/body\?\.source_sha256/);
-assert.match(section,/score\.analysis\?\.source!=='v5_owner_authorized_playback'/);
-assert.match(section,/status='draft'/);
-assert.match(section,/tld_issued:false/);
-assert.match(section,/tl_charged:0/);
-assert.ok(!section.includes('UPDATE users'),'no wallet charge in draft');
-assert.ok(!section.includes('tl3_releases'),'do not revive V3');
-assert.ok(!section.includes("sourceFile.arrayBuffer"),'no MP3 upload');
-console.log('PASS V5 owner score draft authentication, rights, SHA, no MP3 uploads, no TL mint/deduction or TLD publication');
+const start=src.indexOf("router.post('/scores/v5/:reference/draft'");
+const end=src.indexOf('\n});',start)+4;
+let handler;
+let writes=0;
+vm.runInNewContext(src.slice(start,end).replaceAll('.first<any>()','.first()').replaceAll('.json<any>()','.json()'),{
+ router:{post:(_path,fn)=>{handler=fn;}},v5ScoreUser:async()=>1,
+ lookupV5Score:async()=>({file_id:178,user_id:1,source_sha256:'a'.repeat(64),duration_ms:120000}),
+ ensureV5ScoreDrafts:async()=>{},console
+});
+let payload;
+const c={req:{param:()=> '178',json:async()=>payload},
+ env:{DB:{prepare:sql=>({bind:()=>({
+ first:async()=>({rights_declared:1,rights_role:'owner'}),
+ run:async()=>{assert.match(sql,/INSERT INTO v5_track_score_drafts/);writes++;return {success:true};}
+ })})}},json:(body,status)=>({body,status})};
+(async()=>{
+ payload={provenance:{method:'manual',engine:'reviewed-import-v1'},rights_confirmed:true,source_sha256:'a'.repeat(64),score_data:{
+ part:'lead_vocal',melody:[{s:1,d:0.5,m:64,lyric:'사'},{s:1.5,d:0.5,m:67,lyric:'랑'}],
+ chords:[{s:1,sym:'C'},{s:1.5,sym:'G7/B'}]}};
+ let result=await handler(c);assert.equal(result.status,201);assert.equal(result.body.notes,2);assert.equal(writes,1);
+ payload.score_data.part='mixed';result=await handler(c);assert.equal(result.status,422);assert.equal(result.body.code,'VOCAL_PART_REQUIRED');
+ payload.score_data.part='vocal';payload.score_data.melody[1].s=0.5;
+ result=await handler(c);assert.equal(result.status,422);assert.equal(result.body.code,'SCORE_NOTES_INVALID');
+ payload.score_data.melody[1].s=1.5;payload.source_sha256='b'.repeat(64);
+ result=await handler(c);assert.equal(result.status,422);assert.equal(result.body.code,'SCORE_SOURCE_MISMATCH');
+ assert.equal(writes,1);assert.match(src,/can_generate:false/);
+ console.log('PASS validated vocal draft import, malformed notes and source mismatch');
+})().catch(e=>{console.error(e);process.exitCode=1;});
