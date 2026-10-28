@@ -1091,12 +1091,13 @@ app.get('/api/v5/store-radio/available-genres', async (c) => {
   }catch{return c.json({ok:false,code:'AVAILABLE_GENRES_UNAVAILABLE',genres:[]},503)}
 });
 
-// One store music queue. Promotion is an internal ordering signal, not a separate catalogue.
+// One shared TL3 catalog, including the all-genres selection. Optional genre mappings
+// are not required for basic playback catalog discovery.
 app.get('/api/v5/store-radio/queue', async (c) => {
   c.header('Cache-Control','no-store');
   const country=String(c.req.query('country')||'').trim().toUpperCase();
-  const genre=String(c.req.query('genre')||'').trim();
-  if(!/^[A-Z]{2}$/.test(country)||!genre||genre.length>120)return c.json({ok:false,code:'INVALID_FILTER'},400);
+  const genre=String(c.req.query('genre')||'all').trim();
+  if(!/^[A-Z]{2}$/.test(country)||genre.length>120)return c.json({ok:false,code:'INVALID_FILTER'},400);
   try{
     const rows=await c.env.DB.prepare(`
       SELECT f.id AS file_id,f.title,f.artist,f.genre,
@@ -1110,12 +1111,9 @@ app.get('/api/v5/store-radio/queue', async (c) => {
       WHERE f.shared=1 AND LOWER(f.file_type)='audio/tl3'
         AND COALESCE(f.revenue_held,0)=0
         AND EXISTS (SELECT 1 FROM tl3_v5_releases v WHERE v.file_id=f.id AND v.status='sealed')
-        AND (LOWER(TRIM(f.genre))=LOWER(TRIM(?)) OR EXISTS(
-          SELECT 1 FROM v5_track_genre_assignments a
-          WHERE a.track_source='tl_files' AND a.track_id=CAST(f.id AS TEXT)
-          AND a.canonical_genre_id=? AND a.classification_status='verified'))
+        AND (?='all' OR LOWER(TRIM(f.genre))=LOWER(TRIM(?)))
       ORDER BY promotion_priority DESC, f.id DESC LIMIT 100
-    `).bind(country,genre,genre).all();
+    `).bind(country,genre.toLowerCase(),genre).all();
     return c.json({ok:true,tracks:rows.results||[],mode:'catalog_preview',playback_authorized:false,
       note:'Territorial store rights, time balance and billing must be checked before playback'});
   }catch{return c.json({ok:false,code:'STORE_RADIO_QUEUE_UNAVAILABLE'},503)}
