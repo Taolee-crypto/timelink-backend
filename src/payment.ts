@@ -15,6 +15,56 @@ payment.route('/v5/music',musicSubscriptionsRouter);
  * V5 Share Place TEST checkout: persistent test-only receipts, never charges
  * money or TL balances. Grants TIME FREE listening access, never TL_B.
  */
+
+/** Unified nominal pricing: 1 playback second = 1 TL = 1 KRW.
+ * Admin-editable period discounts and contribution weights. No payment or entitlement side effects.
+ */
+const DEFAULT_PERIOD_POLICY:Record<string,{days:number;discountPercent:number;contributionWeight:number}>={
+ hour:{days:1,discountPercent:0,contributionWeight:1},
+ day:{days:1,discountPercent:10,contributionWeight:1.1},
+ month:{days:30,discountPercent:25,contributionWeight:1.3},
+ year:{days:365,discountPercent:40,contributionWeight:1.5}
+};
+async function periodPolicy(db:Env['DB'],period:string){
+ await db.prepare(`CREATE TABLE IF NOT EXISTS v5_unified_period_pricing(
+ period TEXT PRIMARY KEY,discount_percent REAL NOT NULL,contribution_weight REAL NOT NULL,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+ const row=await db.prepare('SELECT discount_percent,contribution_weight FROM v5_unified_period_pricing WHERE period=?').bind(period).first<any>();
+ const base=DEFAULT_PERIOD_POLICY[period];
+ return {...base,discountPercent:row?Number(row.discount_percent):base.discountPercent,
+   contributionWeight:row?Number(row.contribution_weight):base.contributionWeight};
+}
+payment.post('/v5/unified-time/quote',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null),period=String(b?.period||'');
+ const hours=Number(b?.hours),scope=String(b?.scope||'');
+ if(!Object.prototype.hasOwnProperty.call(DEFAULT_PERIOD_POLICY,period)||
+    !['personal','commercial'].includes(scope)||!Number.isSafeInteger(hours)||hours<1||hours>24)
+   return c.json({ok:false,code:'INVALID_SELECTION'},400);
+ try{
+  const policy=await periodPolicy(c.env.DB,period);
+  if(!Number.isFinite(policy.discountPercent)||policy.discountPercent<0||policy.discountPercent>100||
+     !Number.isFinite(policy.contributionWeight)||policy.contributionWeight<0||policy.contributionWeight>10)
+    return c.json({ok:false,code:'INVALID_PRICING_POLICY'},503);
+  const seconds=hours*3600*policy.days;
+  const nominalKrw=seconds;
+  const amountKrw=Math.ceil(seconds*(100-policy.discountPercent)/100);
+  return c.json({ok:true,scope,period,days:policy.days,seconds,nominalTl:seconds,nominalKrw,
+    discountPercent:policy.discountPercent,contributionWeight:policy.contributionWeight,
+    amountKrw,currency:'KRW',checkoutEnabled:false,entitlementGranted:false,
+    contributionAccrual:'actual_playback_only'});
+ }catch{return c.json({ok:false,code:'QUOTE_UNAVAILABLE'},503)}
+});
+payment.get('/v5/unified-time/policy',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
+ try{
+  const entries=await Promise.all(Object.keys(DEFAULT_PERIOD_POLICY).map(async period=>({
+   period,...await periodPolicy(c.env.DB,period)
+  })));
+  return c.json({ok:true,nominalKrwPerSecond:1,nominalTlPerSecond:1,periods:entries});
+ }catch{return c.json({ok:false,code:'POLICY_UNAVAILABLE'},503)}
+});
+
 payment.post('/v5/shareplace-time/quote', async c => {
  const userId=await authUserId(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
  const b=await c.req.json<{hours?:number}>().catch(()=>null),hours=Number(b?.hours);
