@@ -387,6 +387,12 @@ router.get('/resolve/:id', async (c) => {
     if (!row && lookupBy !== 'file_id') {
       row = await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.status,f.title,f.artist FROM tl_shares s JOIN tl_files f ON f.stream_url=s.stream_url JOIN tl3_v5_releases v ON v.file_id=f.id AND v.status='sealed' WHERE CAST(s.id AS TEXT)=? AND f.shared=1 AND COALESCE(f.revenue_held,0)=0 LIMIT 1").bind(rawId).first<any>().catch(()=>null);
     }
+    // Numeric TRACK URLs sometimes contain a file_id even when V5 share_id
+    // is prefixed (file 178, share tl3_178). Preserve exact share_id and
+    // tl_shares matches first, then fall back to the sealed V5 file_id only.
+    if (!row && lookupBy === 'share_id' && /^[1-9]\d*$/.test(rawId) && numeric) {
+      row = await c.env.DB.prepare("SELECT v.file_id,v.user_id,v.share_id,v.duration_ms,v.container_bytes,v.container_sha256,v.status,f.title,f.artist FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE v.file_id=? AND v.status='sealed' AND f.shared=1 AND COALESCE(f.revenue_held,0)=0").bind(numeric).first<any>();
+    }
     if (!row) return c.json({ok:false,error:'TL3 V5 자산을 찾을 수 없습니다.'},404);
     return c.json({ok:true,version:5,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
