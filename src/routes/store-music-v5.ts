@@ -169,8 +169,9 @@ router.post('/session',async c=>{
   const duration=Math.ceil(Number(track.duration_ms)/1000);
   const existing=await c.env.DB.prepare("SELECT session_id FROM v5_store_music_plays WHERE channel_id=? AND status='active' AND expires_ms>?").bind(channel,Date.now()).first();
   if(existing)return c.json({ok:false,code:'STORE_PLAYER_ALREADY_ACTIVE'},409);
-  const grant=await c.env.DB.prepare("SELECT order_id,granted_seconds-used_seconds available FROM v5_store_airtime_grants WHERE user_id=? AND channel_id=? AND expires_at_ms>? AND granted_seconds-used_seconds>=? ORDER BY expires_at_ms,order_id LIMIT 1").bind(uid,channel,Date.now(),duration).first<any>();
+  const grant=await c.env.DB.prepare("SELECT order_id,granted_seconds-used_seconds available FROM v5_store_airtime_grants WHERE user_id=? AND channel_id=? AND expires_at_ms>? AND granted_seconds-used_seconds>0 ORDER BY expires_at_ms,order_id LIMIT 1").bind(uid,channel,Date.now()).first<any>();
   if(!grant)return c.json({ok:false,code:'STORE_TIME_INSUFFICIENT'},402);
+  const reservedSeconds=Math.min(duration,Number(grant.available));
   const contentKey=await unwrapKey(String(c.env.TL3_MASTER_SECRET||''),key,String(track.wrapped_key));
   const memberPublic=await crypto.subtle.importKey('jwk',{kty:'EC',crv:'P-256',x:jwk.x,y:jwk.y,ext:true},{name:'ECDH',namedCurve:'P-256'},false,[]);
   const ephemeral=await crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']) as CryptoKeyPair;
@@ -184,13 +185,13 @@ router.post('/session',async c=>{
   const exported=await crypto.subtle.exportKey('jwk',ephemeral.publicKey) as JsonWebKey;
   const started=Date.now(),expires=started+Math.max(60000,Math.min(900000,duration*1000+90000));
   await c.env.DB.batch([
-   c.env.DB.prepare("UPDATE v5_store_airtime_grants SET used_seconds=used_seconds+? WHERE order_id=? AND granted_seconds-used_seconds>=? AND expires_at_ms>?").bind(duration,String(grant.order_id),duration,started),
-   c.env.DB.prepare("INSERT INTO v5_store_music_plays(session_id,user_id,channel_id,track_key,grant_order_id,reserved_seconds,consumed_seconds,started_ms,expires_ms,last_meter_ms) SELECT ?,?,?,?,?,?,0,?,?,? WHERE (SELECT changes())=1").bind(sessionId,uid,channel,key,String(grant.order_id),duration,started,expires,started)
+   c.env.DB.prepare("UPDATE v5_store_airtime_grants SET used_seconds=used_seconds+? WHERE order_id=? AND granted_seconds-used_seconds>=? AND expires_at_ms>?").bind(reservedSeconds,String(grant.order_id),reservedSeconds,started),
+   c.env.DB.prepare("INSERT INTO v5_store_music_plays(session_id,user_id,channel_id,track_key,grant_order_id,reserved_seconds,consumed_seconds,started_ms,expires_ms,last_meter_ms) SELECT ?,?,?,?,?,?,0,?,?,? WHERE (SELECT changes())=1").bind(sessionId,uid,channel,key,String(grant.order_id),reservedSeconds,started,expires,started)
   ]);
   const session=await c.env.DB.prepare("SELECT session_id FROM v5_store_music_plays WHERE session_id=? AND status='active'").bind(sessionId).first();
   if(!session)return c.json({ok:false,code:'STORE_TIME_CONFLICT'},409);
   c.header('Cache-Control','private,no-store');
-  return c.json({ok:true,session_id:sessionId,track_key:key,channel_id:channel,duration_ms:Number(track.duration_ms),reserved_seconds:duration,encrypted_container:true,
+  return c.json({ok:true,session_id:sessionId,track_key:key,channel_id:channel,duration_ms:Number(track.duration_ms),reserved_seconds:reservedSeconds,encrypted_container:true,
    salt:b64(salt),nonce:b64(iv),wrapped_content_key:b64(wrapped),ephemeral_public_key:{kty:'EC',crv:'P-256',x:exported.x,y:exported.y},info:['timelink:store:v5:license',uid,channel,key,sessionId].join(':'),
    container_url:'/api/v5/store-music/container/'+key+'?session_id='+encodeURIComponent(sessionId),expires_ms:expires});
  }catch(e:any){console.error('[STORE_SESSION]',e);return c.json({ok:false,code:'STORE_LICENSE_FAILED'},503)}
