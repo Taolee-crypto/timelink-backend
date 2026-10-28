@@ -95,9 +95,9 @@ router.get('/scores/v5/:reference',async c=>{
     let score=null;
     if(owner){
       await ensureV5ScoreDrafts(c.env.DB);
-      const stored=await c.env.DB.prepare("SELECT source_sha256,score_json,status FROM v5_track_score_drafts WHERE file_id=? AND owner_id=?")
+      const stored=await c.env.DB.prepare("SELECT source_sha256,score_json,status,algorithm FROM v5_track_score_drafts WHERE file_id=? AND owner_id=?")
         .bind(Number(row.file_id),uid).first<any>();
-      if(stored&&String(stored.source_sha256)===String(row.source_sha256)&&stored.status==='draft'){
+      if(stored&&String(stored.source_sha256)===String(row.source_sha256)&&stored.status==='draft'&&stored.algorithm==='timelink-score-vocal-lyrics-v1'){
         try{
           const value=JSON.parse(String(stored.score_json));
           if(value&&Array.isArray(value.melody)&&value.melody.length)score=value;
@@ -107,54 +107,27 @@ router.get('/scores/v5/:reference',async c=>{
     return c.json({ok:true,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
       score_status:score?'draft':'not_generated',has_score:!!score,score,
-      can_generate:!!canGenerate,source_sha256:canGenerate?String(row.source_sha256):null,tld_issued:false,analysis_ready:!!canGenerate,tl_charged:0,
-      message:score?'자동 채보 초안입니다. 검수 전이며 정식 TLD는 발행되지 않았습니다.':'이 곡의 V5 TLD 악보는 아직 생성·발행되지 않았습니다.'
+      can_generate:!!canGenerate,source_sha256:canGenerate?String(row.source_sha256):null,tld_issued:false,analysis_ready:false,required_pipeline:'demucs-vocals+pitch+verified-lyrics-alignment',tl_charged:0,
+      message:score?'보컬 선율과 가사를 정렬한 검수용 초안입니다. 아직 TLD는 발행되지 않았습니다.':'드럼·반주 분석 방식은 폐기했습니다. 보컬 분리와 가사 정렬을 통과한 악보만 제공할 예정입니다.'
     },200,{'Cache-Control':'private, no-store'});
   }catch(e){console.error('[V5_SCORE_STATUS]',e);return c.json({ok:false,code:'V5_SCORE_STATUS_UNAVAILABLE',message:'V5 악보 상태를 확인하지 못했습니다.'},503);}
 });
-// Store ONLY structured score notes (never MP3 bytes). Owner-authenticated and
-// bound to the exact source SHA, without minting TLD or changing TL balances.
+// IMPORTANT: The former browser YIN transcription of the FULL MIX often
+// picked up bass/drums instead of the singer and cannot attach verified lyrics.
+// Disable all untrusted user-submitted score drafts until a trusted separated
+// VOCALS + pitch + time-aligned registered lyrics inference worker is deployed.
+// Avoid letting a client forge an arbitrary "vocal_only" flag to bypass this.
 router.post('/scores/v5/:reference/draft',async c=>{
-  const uid=await v5ScoreUser(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
-  try{
-    const row=await lookupV5Score(c.env.DB,c.req.param('reference'));
-    if(!row)return c.json({ok:false,code:'V5_TRACK_NOT_FOUND'},404);
-    if(Number(row.user_id)!==uid)return c.json({ok:false,code:'CREATOR_REQUIRED'},403);
-    const rights=await c.env.DB.prepare("SELECT rights_role,rights_declared FROM tl_creator_metadata WHERE file_id=? AND user_id=?")
-      .bind(Number(row.file_id),uid).first<any>();
-    if(Number(rights?.rights_declared)!==1||!['owner','authorized_agent','licensee'].includes(String(rights?.rights_role||'')))
-      return c.json({ok:false,code:'CREATOR_RIGHTS_REQUIRED'},403);
-    const raw=await c.req.text();
-    if(raw.length>450000)return c.json({ok:false,code:'SCORE_DRAFT_TOO_LARGE'},413);
-    const body=JSON.parse(raw);
-    if(body?.rights_confirmed!==true||String(body?.source_sha256||'')!==String(row.source_sha256))
-      return c.json({ok:false,code:'SCORE_SOURCE_OR_RIGHTS_INVALID'},422);
-    const score=body?.score_data;
-    if(!score||!Array.isArray(score.melody)||score.melody.length<3||score.melody.length>6000||
-       !Number.isFinite(Number(score.bpm))||Number(score.bpm)<40||Number(score.bpm)>220||
-       score.analysis?.source!=='v5_owner_authorized_playback'||
-       !score.melody.every((n:any)=>Number.isFinite(n.s)&&n.s>=0&&Number.isFinite(n.d)&&n.d>.04&&
-           Number.isSafeInteger(n.m)&&n.m>=40&&n.m<=90&&n.s+n.d<=Number(row.duration_ms)/1000+2))
-      return c.json({ok:false,code:'INVALID_SCORE_DRAFT'},422);
-    const safe={
-      version:1,algorithm:'track-v5-browser-yin-draft-v1',bpm:Number(score.bpm),
-      time_signature:'4/4',
-      key:{tonic:String(score.key?.tonic||'C').slice(0,3),mode:score.key?.mode==='minor'?'minor':'major',conf:0},
-      melody:score.melody.map((n:any)=>({s:n.s,d:n.d,m:n.m,conf:Number.isFinite(n.conf)?Math.max(0,Math.min(1,n.conf)):0.5})),
-      chords:[],analysis:{source:'v5_owner_authorized_playback',quality:'unreviewed_single_melody_draft',seconds:Number(row.duration_ms)/1000}
-    };
-    await ensureV5ScoreDrafts(c.env.DB);
-    await c.env.DB.prepare(`INSERT INTO v5_track_score_drafts
-      (file_id,owner_id,source_sha256,score_json,algorithm,status)
-      VALUES(?,?,?,?,?,'draft')
-      ON CONFLICT(file_id) DO UPDATE SET owner_id=excluded.owner_id,
-      source_sha256=excluded.source_sha256,score_json=excluded.score_json,
-      algorithm=excluded.algorithm,status='draft',updated_at=CURRENT_TIMESTAMP
-      WHERE v5_track_score_drafts.status='draft'`)
-      .bind(Number(row.file_id),uid,String(row.source_sha256),JSON.stringify(safe),safe.algorithm).run();
-    return c.json({ok:true,score_status:'draft',has_score:true,file_id:Number(row.file_id),
-      notes:safe.melody.length,tld_issued:false,tl_charged:0});
-  }catch(e){console.error('[V5_SCORE_DRAFT]',e);return c.json({ok:false,code:'V5_SCORE_DRAFT_FAILED'},503);}
+  const uid=await v5ScoreUser(c);
+  if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
+  const song=await lookupV5Score(c.env.DB,c.req.param('reference'));
+  if(!song)return c.json({ok:false,code:'V5_TRACK_NOT_FOUND'},404);
+  if(Number(song.user_id)!==uid)return c.json({ok:false,code:'CREATOR_REQUIRED'},403);
+  return c.json({
+    ok:false,code:'VOCAL_SCORE_PIPELINE_NOT_DEPLOYED',
+    message:'반주와 드럼을 제거한 보컬 분리·실제 가사 정렬 분석 서비스가 연결되기 전까지 자동 채보 초안 저장이 중지됩니다.',
+    tl_charged:0,tld_issued:false
+  },503,{'Cache-Control':'no-store'});
 });
 
 // ─────────────────────────────────────────
