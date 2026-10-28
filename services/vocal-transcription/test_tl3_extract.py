@@ -24,7 +24,7 @@ class TL3RecoveryTest(unittest.TestCase):
         bootstrap = json.dumps({"profile": "TL3-V5", "algorithm": "AES-256-GCM",
             "nonce": base64.urlsafe_b64encode(nonce).decode().rstrip("="),
             "ciphertext_bytes": len(plain) + 16}).encode()
-        prefix = b"TLNK\\x05" + struct.pack(">I", len(bootstrap)) + bootstrap
+        prefix = b"TLNK\x05" + struct.pack(">I", len(bootstrap)) + bootstrap
         container = prefix + AESGCM(content_key).encrypt(nonce, plain, prefix)
         kwargs = dict(file_id=file_id, share_id=share_id, wrapped_content_key=wrapped,
             master_secret=secret, expected_source_sha256=source_sha,
