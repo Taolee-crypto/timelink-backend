@@ -27,6 +27,7 @@ import { CREATOR_SHARE_RATE } from './economy-policy';
 import { getTrackPoolBalances, getLedgerWallet, chargeTrackPool, settleTrackPlayback, settleV5EarlyStop, atomsToTl, tlToAtoms, TL_ATOMS_PER_TL } from './economy-ledger';
 
 import memberReferralsV5Router from './routes/member-referrals-v5';
+import tripleLuckStoreRouter from './routes/triple-luck-store';
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
 import { readRewardPolicy } from './v5-reward-policy';
@@ -1023,6 +1024,7 @@ app.route('/api/v1/disputes', disputesRouter);
 app.route('/api/v1/charts', chartsRouter);
 app.route('/api/payment', paymentRouter);
 app.route('/api/eco', ecoRouter);
+app.route('/api/v5/triple-luck', tripleLuckStoreRouter);
 app.route('/api/v5/referrals', memberReferralsV5Router);
 app.route('/api/ads', adsRouter);
 app.route('/api/v1/suno', sunoVerifyRouter);
