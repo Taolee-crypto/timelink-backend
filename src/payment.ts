@@ -86,6 +86,56 @@ payment.post('/v5/commercial-time/quote',async c=>{
    note:'Server quote only. Payment and commercial airtime ledger are not yet connected.'});
 });
 
+
+async function commercialTables(db:Env['DB']){
+ await db.prepare("CREATE TABLE IF NOT EXISTS v5_store_time_orders (order_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,hours INTEGER NOT NULL,period TEXT NOT NULL,area_tier INTEGER NOT NULL,seconds INTEGER NOT NULL,amount INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending',payment_key TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,paid_at TEXT)").run();
+ await db.prepare("CREATE TABLE IF NOT EXISTS v5_store_time_balance (user_id INTEGER PRIMARY KEY,purchased_seconds INTEGER NOT NULL DEFAULT 0,used_seconds INTEGER NOT NULL DEFAULT 0)").run();
+}
+payment.post('/v5/commercial-time/toss/prepare',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null),hours=Number(b?.hours),period=String(b?.period||''),area=Number(b?.area_tier??0);
+ const days:Record<string,number>={hour:1,day:1,month:30,year:365},weights:Record<string,number>={hour:1,day:1,month:0.8,year:0.65};
+ if(!Object.prototype.hasOwnProperty.call(days,period)||!Number.isSafeInteger(hours)||hours<1||hours>24||!Number.isSafeInteger(area)||area<0||area>4)return c.json({ok:false,error:'INVALID_SELECTION'},400);
+ if(b?.requested_events?.triple_luck||b?.requested_events?.referral)return c.json({ok:false,error:'EVENT_NOT_AVAILABLE'},409);
+ const clientKey=String(c.env.TOSS_CLIENT_KEY||''),secret=String(c.env.TOSS_SECRET_KEY||'');
+ if(!clientKey.startsWith('test_ck_')||!secret.startsWith('test_sk_'))return c.json({ok:false,error:'TOSS_TEST_KEYS_REQUIRED'},503);
+ const seconds=hours*3600*days[period],amount=Math.round(seconds*[1,1.2,1.5,2,3][area]*weights[period]);
+ if(amount<1000)return c.json({ok:false,error:'TOSS_MINIMUM_1000_KRW'},400);
+ const orderId='v5store_'+crypto.randomUUID().replace(/-/g,'');
+ try{
+  await commercialTables(c.env.DB);
+  await c.env.DB.prepare("INSERT INTO v5_store_time_orders(order_id,user_id,hours,period,area_tier,seconds,amount) VALUES(?,?,?,?,?,?,?)").bind(orderId,Number(uid),hours,period,area,seconds,amount).run();
+  return c.json({ok:true,orderId,amount,seconds,clientKey,mode:'test',successUrl:'/store-payment-success.html',failUrl:'/payment-fail.html'});
+ }catch(e){console.error('[STORE_PREPARE]',e);return c.json({ok:false,error:'STORE_ORDER_UNAVAILABLE'},503);}
+});
+payment.post('/v5/commercial-time/toss/confirm',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null),orderId=String(b?.orderId||''),paymentKey=String(b?.paymentKey||''),amount=Number(b?.amount);
+ if(!/^v5store_[a-f0-9]{32}$/.test(orderId)||!paymentKey||!Number.isSafeInteger(amount))return c.json({ok:false,error:'INVALID_REQUEST'},400);
+ try{
+  await commercialTables(c.env.DB);
+  const o=await c.env.DB.prepare("SELECT * FROM v5_store_time_orders WHERE order_id=? AND user_id=?").bind(orderId,Number(uid)).first<any>();
+  if(!o||Number(o.amount)!==amount)return c.json({ok:false,error:'ORDER_AMOUNT_MISMATCH'},403);
+  if(o.status==='paid')return c.json({ok:true,alreadyCompleted:true,seconds:o.seconds});
+  if(o.status!=='pending')return c.json({ok:false,error:'ORDER_NOT_PENDING'},409);
+  const secret=String(c.env.TOSS_SECRET_KEY||'');
+  if(!secret.startsWith('test_sk_'))return c.json({ok:false,error:'TOSS_TEST_SECRET_REQUIRED'},503);
+  const response=await fetch('https://api.tosspayments.com/v1/payments/confirm',{method:'POST',headers:{Authorization:'Basic '+btoa(secret+':'),'Content-Type':'application/json','Idempotency-Key':orderId},body:JSON.stringify({paymentKey,orderId,amount})});
+  const proof:any=await response.json().catch(()=>({}));
+  if(!response.ok||proof.status!=='DONE'||proof.orderId!==orderId||Number(proof.totalAmount)!==amount||proof.paymentKey!==paymentKey)return c.json({ok:false,error:proof.message||'TOSS_CONFIRM_FAILED'},400);
+  await c.env.DB.batch([
+   c.env.DB.prepare("UPDATE v5_store_time_orders SET status='paid',payment_key=?,paid_at=CURRENT_TIMESTAMP WHERE order_id=? AND user_id=? AND status='pending'").bind(paymentKey,orderId,Number(uid)),
+   c.env.DB.prepare("INSERT INTO v5_store_time_balance(user_id,purchased_seconds,used_seconds) SELECT ?,?,0 WHERE (SELECT changes())=1 ON CONFLICT(user_id) DO UPDATE SET purchased_seconds=purchased_seconds+excluded.purchased_seconds").bind(Number(uid),Number(o.seconds))
+  ]);
+  return c.json({ok:true,seconds:o.seconds,amount,testPayment:true,entitlementType:'commercial_airtime'});
+ }catch(e){console.error('[STORE_CONFIRM]',e);return c.json({ok:false,error:'STORE_CONFIRM_UNAVAILABLE'},503);}
+});
+payment.get('/v5/commercial-time/balance',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ await commercialTables(c.env.DB);
+ const x=await c.env.DB.prepare('SELECT purchased_seconds,used_seconds FROM v5_store_time_balance WHERE user_id=?').bind(Number(uid)).first<any>();
+ return c.json({ok:true,remainingSeconds:Math.max(0,Number(x?.purchased_seconds||0)-Number(x?.used_seconds||0))});
+});
 payment.post('/v5/shareplace-time/quote', async c => {
  const userId=await authUserId(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
  const b=await c.req.json<{hours?:number}>().catch(()=>null),hours=Number(b?.hours);
