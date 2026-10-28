@@ -30,7 +30,11 @@ def transcribe_vocals(source: Path) -> dict:
         vocals = output / "htdemucs" / source.stem / "vocals.wav"
         if not vocals.is_file():
             raise RuntimeError("Demucs did not produce a vocals stem")
+        # SoundFile can read the separated WAV; reject invalid or empty stems.
         audio, sample_rate = sf.read(str(vocals))
+        if sample_rate <= 0 or len(audio) == 0:
+            raise ValueError("Empty or invalid vocal stem")
+
         duration = len(audio) / sample_rate
         _, _, events = predict(str(vocals))
         notes = []
