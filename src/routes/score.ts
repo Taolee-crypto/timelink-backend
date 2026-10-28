@@ -150,7 +150,7 @@ router.post('/scores/v5/:reference/draft',async c=>{
     if(score.chords!==undefined&&(!Array.isArray(score.chords)||score.chords.length>5000))
       return c.json({ok:false,code:'SCORE_CHORDS_INVALID'},422);
     for(const chord of score.chords||[]){
-      if(!Number.isFinite(Number(chord?.s))||Number(chord.s)<0||Number(chord.s)>duration+1||
+      if(chord?.s==null||String(chord.s).trim()===''||!Number.isFinite(Number(chord.s))||Number(chord.s)<0||Number(chord.s)>duration+1||
         !/^[A-G][#b]?(?:[a-zA-Z0-9+#°øΔ()/-]{0,24})$/.test(String(chord.sym||chord.symbol||'')))
         return c.json({ok:false,code:'SCORE_CHORDS_INVALID'},422);
     }
