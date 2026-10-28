@@ -1,0 +1,20 @@
+name: V5 vocal transcription contract
+on:
+  pull_request:
+    paths:
+      - 'services/vocal-transcription/**'
+      - '.github/workflows/v5-vocal-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'services/vocal-transcription/**'
+      - '.github/workflows/v5-vocal-contract.yml'
+jobs:
+  python-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m unittest discover -s services/vocal-transcription -p 'test_*.py' -v
