@@ -174,7 +174,7 @@ router.post('/session',async c=>{
   const contentKey=await unwrapKey(String(c.env.TL3_MASTER_SECRET||''),key,String(track.wrapped_key));
   const memberPublic=await crypto.subtle.importKey('jwk',{kty:'EC',crv:'P-256',x:jwk.x,y:jwk.y,ext:true},{name:'ECDH',namedCurve:'P-256'},false,[]);
   const ephemeral=await crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']) as CryptoKeyPair;
-  const shared=await crypto.subtle.deriveBits({name:'ECDH',public:memberPublic},ephemeral.privateKey,256);
+  const shared=await crypto.subtle.deriveBits({name:'ECDH',public:memberPublic} as any,ephemeral.privateKey,256);
   const salt=crypto.getRandomValues(new Uint8Array(32)),iv=crypto.getRandomValues(new Uint8Array(12));
   const sessionId='sm_'+crypto.randomUUID().replace(/-/g,'');
   const info=enc.encode(['timelink:store:v5:license',uid,channel,key,sessionId].join(':'));
