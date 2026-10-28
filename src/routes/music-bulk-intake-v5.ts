@@ -76,7 +76,7 @@ app.post('/candidates/:id/stage-source',async c=>{
      const metadata:any=await metadataResponse.json();
      const files=Array.isArray(metadata.files)?metadata.files:[];
      const mp3=files.find((x:any)=>typeof x.name==='string'&&
-       /\\.mp3$/i.test(x.name)&&!x.name.includes('/')&&!x.name.includes('\\\\')&&
+       /\\.mp3$/i.test(x.name)&&!x.name.includes('/')&&!x.name.includes('\\')&&
        (x.source==='original'||!x.source)&&Number(x.size||0)>128&&Number(x.size)<=16*1024*1024);
      if(!mp3)return c.json({ok:false,code:'NO_ELIGIBLE_ARCHIVE_MP3'},422);
      downloadUrl='https://archive.org/download/'+encodeURIComponent(identifier)+'/'+encodeURIComponent(mp3.name);
