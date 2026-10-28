@@ -63,6 +63,7 @@ payment.get('/v5/unified-time/policy',async c=>{
   })));
   return c.json({ok:true,nominalKrwPerSecond:1,nominalTlPerSecond:1,periods:entries});
  }catch{return c.json({ok:false,code:'POLICY_UNAVAILABLE'},503)}
+});
 
 // Commercial music: one-second = one TL = one KRW nominal.
 // Quote is authoritative, but does not grant airtime or initiate a payment.
