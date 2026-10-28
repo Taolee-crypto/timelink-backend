@@ -1050,6 +1050,39 @@ const USER_SELECT = `
 `;
 
 // GET /api/tracks
+// Public approved genre catalog. External source mappings are never exposed until reviewed.
+app.get('/api/v5/genres', async (c) => {
+  try {
+    const rows = await c.env.DB.prepare("SELECT genre_id,display_name,parent_genre_id FROM v5_genre_standard WHERE status='approved' ORDER BY display_name LIMIT 1000").all();
+    return c.json({ok:true,genres:rows.results||[],source:'v5_genre_standard'});
+  } catch {
+    return c.json({ok:false,code:'GENRE_STANDARD_UNAVAILABLE',genres:[]},503);
+  }
+});
+
+// Read-only genre-filtered track lookup: canonical approved mappings + legacy exact genre.
+app.get('/api/v5/genres/:genreId/tracks', async (c) => {
+  const genreId=c.req.param('genreId');
+  if(!/^[a-zA-Z0-9_.:-]{1,100}$/.test(genreId))return c.json({ok:false,code:'INVALID_GENRE'},400);
+  try {
+    const genre=await c.env.DB.prepare("SELECT genre_id,display_name FROM v5_genre_standard WHERE genre_id=? AND status='approved'").bind(genreId).first() as any;
+    if(!genre)return c.json({ok:false,code:'GENRE_NOT_FOUND'},404);
+    const rows=await c.env.DB.prepare(`
+      SELECT DISTINCT f.id,f.title,f.artist,f.genre,f.stream_url,f.file_type
+      FROM tl_files f
+      WHERE f.shared=1 AND f.stream_url IS NOT NULL AND f.stream_url!=''
+        AND LOWER(f.file_type)='audio/tl3' AND COALESCE(f.revenue_held,0)=0
+        AND EXISTS(SELECT 1 FROM tl3_releases r WHERE r.file_id=f.id AND r.status='released' AND r.rights_confirmed=1)
+        AND (LOWER(TRIM(f.genre))=LOWER(TRIM(?)) OR EXISTS (
+          SELECT 1 FROM v5_track_genre_assignments a
+          WHERE a.track_source='tl_files' AND a.track_id=CAST(f.id AS TEXT)
+            AND a.canonical_genre_id=? AND a.classification_status='verified'
+        ))
+      ORDER BY f.id DESC LIMIT 100`).bind(genre.display_name,genreId).all();
+    return c.json({ok:true,genre,tracks:rows.results||[],rights_scope:'catalog_verified_only_not_territory_cleared'});
+  }catch{return c.json({ok:false,code:'GENRE_TRACKS_UNAVAILABLE'},503)}
+});
+
 app.get('/api/tracks', async (c) => {
   try {
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_releases (
