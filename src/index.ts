@@ -1,3 +1,4 @@
+import musicBulkIntakeRouter from './routes/music-bulk-intake-v5';
 import {timeFreePreflight,timeFreeSessionExists,meterTimeFreePlayback,closeTimeFreeSession} from './v5-time-free';
 import {subscriptionPreflight,subscriptionSessionExists,meterSubscriptionPlayback,closeSubscriptionSession} from './v5-subscription-playback';
 import salesManagersRouter from './routes/sales-managers';
@@ -1025,6 +1026,7 @@ app.route('/api/v1/charts', chartsRouter);
 app.route('/api/payment', paymentRouter);
 app.route('/api/eco', ecoRouter);
 app.route('/api/v5/triple-luck', tripleLuckStoreRouter);
+app.route('/api/v5/music-bulk', musicBulkIntakeRouter);
 app.route('/api/v5/referrals', memberReferralsV5Router);
 app.route('/api/ads', adsRouter);
 app.route('/api/v1/suno', sunoVerifyRouter);

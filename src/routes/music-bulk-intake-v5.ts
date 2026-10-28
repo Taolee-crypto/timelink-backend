@@ -1,0 +1,30 @@
+import { Hono } from 'hono';
+import type { Env } from '../types';
+import { verifyToken } from '../auth';
+
+// Metadata-only intake. No third-party audio download, publishing or royalty assignment.
+// Rights and source evidence must be reviewed before any TL3 conversion.
+const app=new Hono<{Bindings:Env}>();
+async function member(c:any){const raw=(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();if(!raw)return null;try{const claim=await verifyToken(raw,c.env.JWT_SECRET);const id=Number(claim?.sub||0);return Number.isSafeInteger(id)&&id>0?id:null;}catch{return null;}}
+async function init(db:D1Database){
+ await db.prepare("CREATE TABLE IF NOT EXISTS v5_music_bulk_batches(id TEXT PRIMARY KEY,created_by INTEGER NOT NULL,source_name TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'rights_review',total_items INTEGER NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+ await db.prepare("CREATE TABLE IF NOT EXISTS v5_music_bulk_candidates(id TEXT PRIMARY KEY,batch_id TEXT NOT NULL,source_id TEXT NOT NULL,title TEXT NOT NULL,artist TEXT NOT NULL,source_url TEXT NOT NULL,license_url TEXT NOT NULL,license_code TEXT NOT NULL,recording_rights TEXT NOT NULL DEFAULT 'unverified',composition_rights TEXT NOT NULL DEFAULT 'unverified',commercial_use INTEGER NOT NULL DEFAULT 0,transformation_allowed INTEGER NOT NULL DEFAULT 0,territories TEXT NOT NULL DEFAULT 'unverified',genre TEXT,weather TEXT,daypart TEXT,mood TEXT,status TEXT NOT NULL DEFAULT 'rights_review',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(source_url,source_id))").run();
+}
+const allowed=['CC0','CC-BY-4.0','PUBLIC_DOMAIN_CLAIM','OTHER_LICENSE','UNKNOWN'];
+app.post('/batches',async c=>{
+ const uid=await member(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
+ // Do not allow ordinary users to create platform-owned intake records.
+ const admin=await c.env.DB.prepare("SELECT role FROM users WHERE id=? LIMIT 1").bind(uid).first().catch(()=>null);
+ if(!admin||!['admin','super_admin'].includes(String((admin as any).role)))return c.json({ok:false,code:'FORBIDDEN'},403);
+ let payload:any;try{payload=await c.req.json()}catch{return c.json({ok:false,code:'INVALID_JSON'},400)}
+ const source=String(payload.source_name||'').trim(),items=payload.items;
+ if(!source||source.length>100||!Array.isArray(items)||items.length<1||items.length>100)return c.json({ok:false,code:'INVALID_BATCH'},400);
+ const clean:any[]=[];
+ for(const item of items){const title=String(item.title||'').trim(),artist=String(item.artist||'').trim(),sourceUrl=String(item.source_url||''),licenseUrl=String(item.license_url||''),sourceId=String(item.source_id||'').trim(),license=String(item.license_code||'UNKNOWN');
+ if(!title||title.length>200||artist.length>200||!sourceId||sourceId.length>200||!/^https:\/\//.test(sourceUrl)||sourceUrl.length>1200||!/^https:\/\//.test(licenseUrl)||licenseUrl.length>1200||!allowed.includes(license))return c.json({ok:false,code:'INVALID_ITEM'},400);
+ clean.push({title,artist,sourceUrl,licenseUrl,sourceId,license,genre:String(item.genre||'').slice(0,100),weather:String(item.weather||'').slice(0,60),daypart:String(item.daypart||'').slice(0,60),mood:String(item.mood||'').slice(0,60)});
+ }
+ const batchId=crypto.randomUUID();try{await init(c.env.DB);const statements=[c.env.DB.prepare("INSERT INTO v5_music_bulk_batches(id,created_by,source_name,total_items) VALUES(?,?,?,?)").bind(batchId,uid,source,clean.length),...clean.map(x=>c.env.DB.prepare("INSERT INTO v5_music_bulk_candidates(id,batch_id,source_id,title,artist,source_url,license_url,license_code,genre,weather,daypart,mood) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(crypto.randomUUID(),batchId,x.sourceId,x.title,x.artist,x.sourceUrl,x.licenseUrl,x.license,x.genre,x.weather,x.daypart,x.mood))];await c.env.DB.batch(statements);return c.json({ok:true,batch_id:batchId,count:clean.length,status:'rights_review',downloaded:false,tl3_converted:false,published:false},201)}catch(e){return c.json({ok:false,code:'BATCH_STORE_FAILED'},503)}
+});
+app.get('/batches/:id',async c=>{const uid=await member(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);try{await init(c.env.DB);const batch=await c.env.DB.prepare("SELECT * FROM v5_music_bulk_batches WHERE id=? AND created_by=?").bind(c.req.param('id'),uid).first();if(!batch)return c.json({ok:false,code:'NOT_FOUND'},404);const items=await c.env.DB.prepare("SELECT id,title,artist,license_code,recording_rights,composition_rights,status,genre,weather,daypart,mood FROM v5_music_bulk_candidates WHERE batch_id=? LIMIT 100").bind(c.req.param('id')).all();return c.json({ok:true,batch,items:items.results||[]})}catch{return c.json({ok:false,code:'BATCH_UNAVAILABLE'},503)}});
+export default app;
