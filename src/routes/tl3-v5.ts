@@ -210,7 +210,7 @@ router.post('/manufacture', async (c) => {
     const sourceFile = form['file'] instanceof File ? form['file'] as File : null;
     let metadata: any = {};
     try { metadata = JSON.parse(String(form['metadata'] || '{}')); } catch { metadata = {}; }
-    if (!sourceFile || sourceFile.size <= 0 || sourceFile.size > MAX_MP3_BYTES) {
+    if ((!sourceFile && !metadata.staged_candidate_id) || (sourceFile && (sourceFile.size <= 0 || sourceFile.size > MAX_MP3_BYTES))) {
       return c.json({ ok:false, error:'V5 1차 버전은 MP3 원본 16MB 이하를 지원합니다.' }, 413);
     }
     if (metadata.rights_confirmed !== true) return c.json({ ok:false, error:'저작권 또는 적법한 이용 권한 확인이 필요합니다.' }, 400);
@@ -230,7 +230,25 @@ router.post('/manufacture', async (c) => {
         !['master_recording','distribution_license','delegated_scope'].includes(String(rightsDeclaration.rights_scope||''))) {
       return c.json({ok:false,error:'Creator에서 권리 관계를 선택하고 확인 선언을 먼저 제출해야 합니다.',code:'CREATOR_RIGHTS_DECLARATION_REQUIRED'},400);
     }
-    const raw = new Uint8Array(await sourceFile.arrayBuffer());
+    let raw: Uint8Array;
+    if (metadata.staged_candidate_id) {
+      if (sourceFile) return c.json({ok:false,code:'AMBIGUOUS_SOURCE'},400);
+      const admin=await c.env.DB.prepare('SELECT role FROM users WHERE id=?').bind(userId).first<any>();
+      if (!['admin','super_admin'].includes(String(admin?.role||''))) return c.json({ok:false,code:'ADMIN_REQUIRED'},403);
+      const staged=await c.env.DB.prepare(`SELECT s.object_key,s.sha256,s.size_bytes,m.recording_rights,m.composition_rights,
+        m.commercial_use,m.transformation_allowed,m.territories
+        FROM v5_music_source_staging s JOIN v5_music_bulk_candidates m ON m.id=s.candidate_id
+        WHERE s.candidate_id=? AND s.status='awaiting_tl3'`).bind(String(metadata.staged_candidate_id)).first<any>();
+      if (!staged||staged.recording_rights!=='verified'||staged.composition_rights!=='verified'||
+          Number(staged.commercial_use)!==1||Number(staged.transformation_allowed)!==1||
+          !staged.territories||staged.territories==='unverified') return c.json({ok:false,code:'STAGED_RIGHTS_NOT_VERIFIED'},409);
+      if (Number(staged.size_bytes)>MAX_MP3_BYTES) return c.json({ok:false,code:'SOURCE_TOO_LARGE'},413);
+      raw=await readD1Range(c.env.DB,String(staged.object_key),0,Number(staged.size_bytes));
+      if(raw.byteLength!==Number(staged.size_bytes)||hex(await sha256(raw))!==String(staged.sha256))
+        return c.json({ok:false,code:'STAGED_SOURCE_INTEGRITY_FAILED'},422);
+    } else {
+      raw=new Uint8Array(await sourceFile!.arrayBuffer());
+    }
     const frameDuration = mp3FrameDurationMs(raw);
     if (Math.abs(frameDuration - clientDuration) > 3000) {
       return c.json({ ok:false, error:'브라우저 재생시간과 MP3 프레임 분석 결과가 일치하지 않습니다.', code:'MP3_DURATION_MISMATCH', browser_duration_ms:clientDuration, frame_duration_ms:frameDuration }, 422);
@@ -330,6 +348,10 @@ router.post('/manufacture', async (c) => {
     if(String(file.stream_url||'')){
       await c.env.DB.prepare("UPDATE tl_shares SET stream_url=?,file_type='audio/tl3' WHERE stream_url=? AND CAST(user_id AS INTEGER)=?")
         .bind('https://api.timelink.digital/api/v1/tl3/v5/resolve/' + fileId,String(file.stream_url),userId).run().catch(()=>{});
+    }
+    if(metadata.staged_candidate_id) {
+      await c.env.DB.prepare("UPDATE v5_music_source_staging SET status='tl3_manufactured' WHERE candidate_id=? AND status='awaiting_tl3'")
+        .bind(String(metadata.staged_candidate_id)).run();
     }
     return c.json({
       ok:true, profile:'TL3-V5', version:5, status:'released',
