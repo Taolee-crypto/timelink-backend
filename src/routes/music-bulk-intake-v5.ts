@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
+import { putD1Object, ensureD1Storage } from '../d1-storage';
 
 // Metadata-only intake. No third-party audio download, publishing or royalty assignment.
 // Rights and source evidence must be reviewed before any TL3 conversion.
@@ -44,6 +45,49 @@ app.get('/discover',async c=>{
  const items=(data.response?.docs||[]).map((x:any)=>({source_id:String(x.identifier||''),title:String(x.title||''),artist:Array.isArray(x.creator)?x.creator.join(', '):String(x.creator||''),source_url:'https://archive.org/details/'+encodeURIComponent(String(x.identifier||'')),license_url:String(x.licenseurl||''),license_code:'UNKNOWN',rights_note:String(x.rights||''),subject:x.subject||[],status:'rights_review',genre:null,weather:null,daypart:null,mood:null}));
  return c.json({ok:true,source:'Internet Archive',query:term,page,total:Number(data.response?.numFound||0),items,rights_verified:false,audio_downloaded:false});
  }catch{return c.json({ok:false,code:'SOURCE_UNAVAILABLE'},502)}
+});
+
+
+// Admin-controlled source staging. Never publishes raw MP3 or marks it TL3.
+app.post('/candidates/:id/stage-source',async c=>{
+ const gate=await requireAdmin(c);if(gate.error)return gate.error;
+ const id=c.req.param('id');
+ const item=await c.env.DB.prepare(`SELECT m.*,b.created_by FROM v5_music_bulk_candidates m
+   JOIN v5_music_bulk_batches b ON b.id=m.batch_id WHERE m.id=?`).bind(id).first<any>().catch(()=>null);
+ if(!item||Number(item.created_by)!==gate.uid)return c.json({ok:false,code:'NOT_FOUND'},404);
+ if(item.recording_rights!=='verified'||item.composition_rights!=='verified'||
+    Number(item.commercial_use)!==1||Number(item.transformation_allowed)!==1||
+    !item.territories||item.territories==='unverified')
+   return c.json({ok:false,code:'RIGHTS_NOT_VERIFIED'},409);
+ let u:URL;try{u=new URL(String(item.source_url));}catch{return c.json({ok:false,code:'INVALID_SOURCE'},400)}
+ // Only direct Archive file URLs are accepted. No arbitrary URL fetch or redirects.
+ if(u.protocol!=='https:'||u.hostname!=='archive.org'||!u.pathname.startsWith('/download/')||
+    u.username||u.password||u.port)return c.json({ok:false,code:'SOURCE_NOT_ALLOWED'},400);
+ try{
+   const res=await fetch(u.toString(),{redirect:'error',signal:AbortSignal.timeout(20000)});
+   if(!res.ok)return c.json({ok:false,code:'DOWNLOAD_FAILED'},502);
+   const len=Number(res.headers.get('content-length')||0);
+   if(len>16*1024*1024)return c.json({ok:false,code:'SOURCE_TOO_LARGE'},413);
+   const raw=new Uint8Array(await res.arrayBuffer());
+   if(raw.byteLength<128||raw.byteLength>16*1024*1024)return c.json({ok:false,code:'INVALID_SIZE'},422);
+   const id3=raw[0]===73&&raw[1]===68&&raw[2]===51;
+   const frame=raw[0]===255&&(raw[1]&224)===224;
+   if(!id3&&!frame)return c.json({ok:false,code:'NOT_MP3'},422);
+   const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',raw))).map(x=>x.toString(16).padStart(2,'0')).join('');
+   const key='bulk-source/'+id+'/'+hash+'.mp3';
+   await ensureD1Storage(c.env.DB);
+   await putD1Object(c.env.DB,key,raw,'audio/mpeg',id+'.mp3');
+   await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS v5_music_source_staging(
+      candidate_id TEXT PRIMARY KEY,object_key TEXT NOT NULL,sha256 TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'awaiting_tl3',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+   await c.env.DB.prepare(`INSERT INTO v5_music_source_staging(candidate_id,object_key,sha256,size_bytes)
+      VALUES(?,?,?,?) ON CONFLICT(candidate_id) DO UPDATE SET
+      object_key=excluded.object_key,sha256=excluded.sha256,size_bytes=excluded.size_bytes,status='awaiting_tl3'`)
+      .bind(id,key,hash,raw.byteLength).run();
+   return c.json({ok:true,candidate_id:id,source_staged:true,source_sha256:hash,
+     tl3_converted:false,published:false,next:'TL3 V5 manufacture adapter required'});
+ }catch{return c.json({ok:false,code:'SOURCE_STAGING_FAILED'},503)}
 });
 
 export default app;
