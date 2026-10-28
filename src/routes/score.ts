@@ -158,7 +158,14 @@ router.post('/scores/v5/:reference/draft',async c=>{
       return c.json({ok:false,code:'SCORE_TEMPO_INVALID'},422);
     if(score.time_signature!==undefined&&!/^(?:[1-9]|1[0-2])\/(?:2|4|8|16)$/.test(String(score.time_signature)))
       return c.json({ok:false,code:'SCORE_METER_INVALID'},422);
-    const serialized=JSON.stringify(score);
+    // An imported draft is not evidence that a separation model actually ran.
+    // Preserve provenance so reviewers can distinguish manual from model output.
+    const provenance=body.provenance;
+    if(!provenance||!['manual','vocal_separation'].includes(String(provenance.method||''))||
+      typeof provenance.engine!=='string'||!provenance.engine.trim()||provenance.engine.length>120)
+      return c.json({ok:false,code:'SCORE_PROVENANCE_REQUIRED',message:'채보 출처와 분석 엔진을 명시해야 합니다.'},422);
+    const normalizedScore={...score,provenance:{method:provenance.method,engine:provenance.engine.trim()}};
+    const serialized=JSON.stringify(normalizedScore);
     if(serialized.length>900000)return c.json({ok:false,code:'SCORE_TOO_LARGE'},413);
     await ensureV5ScoreDrafts(c.env.DB);
     await c.env.DB.prepare(`INSERT INTO v5_track_score_drafts(file_id,owner_id,source_sha256,score_json,algorithm,status)
