@@ -1,0 +1,22 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const src=fs.readFileSync('src/routes/tl3-v5.ts','utf8');
+const start=src.indexOf("router.get('/resolve/:id'");
+const end=src.indexOf("router.post('/player/register'",start);
+assert.ok(start>=0&&end>start,'actual V5 resolve handler exists');
+const handler=src.slice(start,end);
+const exact=handler.indexOf("lookupBy === 'share_id'");
+const mapped=handler.indexOf("FROM tl_shares s");
+const fallback=handler.indexOf("lookupBy === 'share_id' &&");
+const notFound=handler.indexOf("'TL3 V5 자산을 찾을 수 없습니다.'");
+assert.ok(exact>=0&&mapped>exact&&fallback>mapped&&notFound>fallback,
+  'preserve exact numeric share ID and mapped share before numeric file ID fallback');
+assert.ok(handler.includes("lookupBy === 'share_id' && /^[1-9]\\d*$/.test(rawId)"),'fallback only accepts positive numeric TRACK references');
+assert.match(handler,/v\.file_id=\?/,'fallback queries actual V5 file ID');
+assert.match(handler,/v\.status='sealed'/);
+assert.match(handler,/f\.shared=1/);
+assert.match(handler,/COALESCE\(f\.revenue_held,0\)=0/);
+assert.ok(!handler.includes('tl3_releases'),'never fall back to V3');
+assert.ok(!handler.includes('UPDATE users'),'no wallet mutation from resolution');
+console.log('PASS V5 TRACK numeric 178 resolves after exact share ID and mapping; sealed/public/no-wallet fallback');

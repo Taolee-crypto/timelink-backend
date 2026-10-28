@@ -27,6 +27,8 @@ jobs:
         run: python scripts/validate-stream-auth.py
       - name: Verify song-linked TRACK V5 score contract
         run: node scripts/test-track-v5-score-status.cjs
+      - name: Verify numeric TRACK references resolve to V5 file IDs
+        run: node scripts/test-v5-numeric-resolve.cjs
       - name: Verify owner draft security and no-charge contract
         run: node scripts/test-v5-score-owner-draft.cjs
       - name: Validate Worker bundle (dry run only)
