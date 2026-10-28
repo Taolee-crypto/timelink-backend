@@ -144,6 +144,9 @@ app.post('/discover/import',async c=>{
  candidate_id TEXT PRIMARY KEY,classification_status TEXT NOT NULL,
  detected_genre TEXT,source_subjects TEXT NOT NULL DEFAULT '[]',
  detected_language TEXT,discovery_country TEXT,musical_styles TEXT NOT NULL DEFAULT '[]',updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+ const columns=await c.env.DB.prepare('PRAGMA table_info(v5_music_candidate_classification)').all<any>();
+ if(!(columns.results||[]).some((x:any)=>x.name==='discovery_country'))await c.env.DB.prepare('ALTER TABLE v5_music_candidate_classification ADD COLUMN discovery_country TEXT').run();
+ if(!(columns.results||[]).some((x:any)=>x.name==='musical_styles'))await c.env.DB.prepare("ALTER TABLE v5_music_candidate_classification ADD COLUMN musical_styles TEXT NOT NULL DEFAULT '[]'").run();
  const batchId=crypto.randomUUID();
  await c.env.DB.prepare("INSERT INTO v5_music_bulk_batches(id,created_by,source_name,total_items) VALUES(?,?,?,?)")
    .bind(batchId,gate.uid,'Internet Archive discovery: '+country+'/'+genre,0).run();
