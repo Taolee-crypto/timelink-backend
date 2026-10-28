@@ -126,8 +126,43 @@ router.post('/scores/v5/:reference/draft',async c=>{
       .bind(Number(row.file_id),uid).first<any>();
     if(Number(rights?.rights_declared)!==1||!['owner','authorized_agent','licensee'].includes(String(rights?.rights_role||'')))
       return c.json({ok:false,code:'CREATOR_RIGHTS_REQUIRED'},403);
-    // Mixed-audio YIN was retired: do not spend analysis time or attempt a DB write.
-    return c.json({ok:false,code:"VOCAL_ANALYSIS_NOT_READY",message:"보컬 분리 채보 서비스 연결을 준비 중입니다. 현재 자동 채보를 시작할 수 없습니다.",retryable:false},409);
+    // Accept independently verified vocal transcription drafts; this endpoint does
+    // not perform transcription, grant rights, issue TLD or charge TL.
+    const body=await c.req.json<any>().catch(()=>null);
+    if(!body||body.rights_confirmed!==true||String(body.source_sha256||'').toLowerCase()!==String(row.source_sha256||'').toLowerCase())
+      return c.json({ok:false,code:'SCORE_SOURCE_MISMATCH',message:'권리 확인 또는 V5 원본 지문이 일치하지 않습니다.'},422);
+    const score=body.score_data;
+    if(!score||!Array.isArray(score.melody)||score.melody.length<1||score.melody.length>20000)
+      return c.json({ok:false,code:'SCORE_NOTES_INVALID'},422);
+    if(!['vocal','lead_vocal'].includes(String(score.part||'')))
+      return c.json({ok:false,code:'VOCAL_PART_REQUIRED',message:'보컬 전용으로 분리·검증된 악보만 저장할 수 있습니다.'},422);
+    const duration=Number(row.duration_ms)/1000;
+    let lastEnd=0;
+    for(const note of score.melody){
+      const start=Number(note?.s),length=Number(note?.d),midi=Number(note?.m);
+      if(!Number.isFinite(start)||!Number.isFinite(length)||!Number.isInteger(midi)||
+        start<0||length<=0||length>60||midi<21||midi>108||
+        start+length>duration+1||start<lastEnd-0.03||
+        (note.lyric!==undefined&&(typeof note.lyric!=='string'||note.lyric.length>120)))
+        return c.json({ok:false,code:'SCORE_NOTES_INVALID',message:'보컬 음표의 길이·순서·음높이 또는 가사 데이터가 올바르지 않습니다.'},422);
+      lastEnd=start+length;
+    }
+    if(score.chords!==undefined&&(!Array.isArray(score.chords)||score.chords.length>5000))
+      return c.json({ok:false,code:'SCORE_CHORDS_INVALID'},422);
+    for(const chord of score.chords||[]){
+      if(!Number.isFinite(Number(chord?.s))||Number(chord.s)<0||Number(chord.s)>duration+1||
+        !/^[A-G][#b]?(?:[a-zA-Z0-9+#°øΔ()/-]{0,24})$/.test(String(chord.sym||chord.symbol||'')))
+        return c.json({ok:false,code:'SCORE_CHORDS_INVALID'},422);
+    }
+    const serialized=JSON.stringify(score);
+    if(serialized.length>900000)return c.json({ok:false,code:'SCORE_TOO_LARGE'},413);
+    await ensureV5ScoreDrafts(c.env.DB);
+    await c.env.DB.prepare(`INSERT INTO v5_track_score_drafts(file_id,owner_id,source_sha256,score_json,algorithm,status)
+      VALUES(?,?,?,?,?,'draft') ON CONFLICT(file_id) DO UPDATE SET
+      owner_id=excluded.owner_id,source_sha256=excluded.source_sha256,
+      score_json=excluded.score_json,algorithm=excluded.algorithm,status='draft',updated_at=CURRENT_TIMESTAMP`)
+      .bind(Number(row.file_id),uid,String(row.source_sha256),serialized,'verified-vocal-import-v1').run();
+    return c.json({ok:true,score_status:'draft',notes:score.melody.length,tld_issued:false,tl_charged:0},201);
 
   }catch(e){console.error('[V5_SCORE_DRAFT]',e);return c.json({ok:false,code:'V5_SCORE_DRAFT_FAILED'},503);}
 });
