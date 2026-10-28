@@ -16,7 +16,7 @@ const c={req:{param:()=> '178',json:async()=>payload},
  run:async()=>{assert.match(sql,/INSERT INTO v5_track_score_drafts/);writes++;return {success:true};}
  })})}},json:(body,status)=>({body,status})};
 (async()=>{
- payload={rights_confirmed:true,source_sha256:'a'.repeat(64),score_data:{
+ payload={provenance:{method:'manual',engine:'reviewed-import-v1'},rights_confirmed:true,source_sha256:'a'.repeat(64),score_data:{
  part:'lead_vocal',melody:[{s:1,d:0.5,m:64,lyric:'사'},{s:1.5,d:0.5,m:67,lyric:'랑'}],
  chords:[{s:1,sym:'C'},{s:1.5,sym:'G7/B'}]}};
  let result=await handler(c);assert.equal(result.status,201);assert.equal(result.body.notes,2);assert.equal(writes,1);
