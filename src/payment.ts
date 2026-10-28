@@ -125,7 +125,7 @@ payment.post('/v5/commercial-time/toss/confirm',async c=>{
   if(!response.ok||proof.status!=='DONE'||proof.orderId!==orderId||Number(proof.totalAmount)!==amount||proof.paymentKey!==paymentKey)return c.json({ok:false,error:proof.message||'TOSS_CONFIRM_FAILED'},400);
   await c.env.DB.batch([
    c.env.DB.prepare("UPDATE v5_store_time_orders SET status='paid',payment_key=?,paid_at=CURRENT_TIMESTAMP WHERE order_id=? AND user_id=? AND status='pending'").bind(paymentKey,orderId,Number(uid)),
-   c.env.DB.prepare("INSERT INTO v5_store_time_balance(user_id,purchased_seconds,used_seconds) VALUES(?,?,0) ON CONFLICT(user_id) DO UPDATE SET purchased_seconds=purchased_seconds+excluded.purchased_seconds").bind(Number(uid),Number(o.seconds))
+   c.env.DB.prepare("INSERT INTO v5_store_time_balance(user_id,purchased_seconds,used_seconds) SELECT ?,?,0 WHERE (SELECT changes())=1 ON CONFLICT(user_id) DO UPDATE SET purchased_seconds=purchased_seconds+excluded.purchased_seconds").bind(Number(uid),Number(o.seconds))
   ]);
   return c.json({ok:true,seconds:o.seconds,amount,testPayment:true,entitlementType:'commercial_airtime'});
  }catch(e){console.error('[STORE_CONFIRM]',e);return c.json({ok:false,error:'STORE_CONFIRM_UNAVAILABLE'},503);}
