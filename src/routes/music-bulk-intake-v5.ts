@@ -125,12 +125,15 @@ app.post('/discover/import',async c=>{
  const gate=await requireAdmin(c);if(gate.error)return gate.error;
  let body:any;try{body=await c.req.json()}catch{return c.json({ok:false,code:'INVALID_JSON'},400)}
  const country=String(body.country||'').toUpperCase();
- if(!discoveryCountries[country])return c.json({ok:false,code:'INVALID_COUNTRY',allowed:Object.keys(discoveryCountries)},400);
+ if(country!=='ALL'&&!discoveryCountries[country])return c.json({ok:false,code:'INVALID_COUNTRY',allowed:['ALL',...Object.keys(discoveryCountries)]},400);
  const genre=String(body.genre||'classical').toLowerCase();
- if(!discoveryGenres.includes(genre))return c.json({ok:false,code:'INVALID_GENRE',allowed:discoveryGenres},400);
+ if(genre!=='all'&&!discoveryGenres.includes(genre))return c.json({ok:false,code:'INVALID_GENRE',allowed:['all',...discoveryGenres]},400);
  const page=Number(body.page||1);
  if(!Number.isSafeInteger(page)||page<1||page>100)return c.json({ok:false,code:'INVALID_PAGE'},400);
- const params=new URLSearchParams({q:'mediatype:audio AND (subject:"'+genre+'") AND (subject:"'+discoveryCountries[country]+'")',output:'json',rows:'40',page:String(page)});
+ const terms=['mediatype:audio'];
+ if(genre!=='all')terms.push('subject:"'+genre+'"');
+ if(country!=='ALL')terms.push('subject:"'+discoveryCountries[country]+'"');
+ const params=new URLSearchParams({q:terms.join(' AND '),output:'json',rows:'40',page:String(page)});
  for(const key of ['identifier','title','creator','licenseurl','rights','subject','language'])params.append('fl[]',key);
  let docs:any[];
  try{
@@ -179,7 +182,7 @@ app.post('/discover/import',async c=>{
 });
 app.get('/discovery/genres',async c=>{
  const gate=await requireAdmin(c);if(gate.error)return gate.error;
- return c.json({ok:true,countries:discoveryCountries,musical_styles:musicalStyles,genres:discoveryGenres,classification:'provisional_metadata',source:'Internet Archive'});
+ return c.json({ok:true,countries:{ALL:'모두',...discoveryCountries},musical_styles:musicalStyles,genres:['all',...discoveryGenres],classification:'provisional_metadata',source:'Internet Archive'});
 });
 
 export default app;
