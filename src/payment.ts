@@ -15,6 +15,28 @@ payment.route('/v5/music',musicSubscriptionsRouter);
  * V5 Share Place TEST checkout: persistent test-only receipts, never charges
  * money or TL balances. Grants TIME FREE listening access, never TL_B.
  */
+
+// Commercial music: one-second = one TL = one KRW nominal.
+// Quote is authoritative, but does not grant airtime or initiate a payment.
+payment.post('/v5/commercial-time/quote',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
+ const body=await c.req.json<any>().catch(()=>null);
+ const hours=Number(body?.hours),period=String(body?.period||''),area=Number(body?.area_tier??0);
+ const days:Record<string,number>={hour:1,day:1,month:30,year:365};
+ if(!Object.prototype.hasOwnProperty.call(days,period)||!Number.isSafeInteger(hours)||hours<1||hours>24||
+   !Number.isSafeInteger(area)||area<0||area>4)
+   return c.json({ok:false,code:'INVALID_COMMERCIAL_TIME_SELECTION'},400);
+ const seconds=hours*3600*days[period];
+ const areaWeights=[1,1.2,1.5,2,3],periodWeights:Record<string,number>={hour:1,day:1,month:0.8,year:0.65};
+ const weight=areaWeights[area]*periodWeights[period];
+ const amountKrw=Math.round(seconds*weight);
+ return c.json({ok:true,product:'commercial_music_time',seconds,nominalTl:seconds,
+   nominalKrw:seconds,areaWeight:areaWeights[area],periodWeight:periodWeights[period],
+   discountPercent:0,amountKrw,currency:'KRW',checkoutEnabled:false,
+   entitlementGranted:false,scope:'commercial_broadcast_only',
+   note:'Server quote only. Payment and commercial airtime ledger are not yet connected.'});
+});
+
 payment.post('/v5/shareplace-time/quote', async c => {
  const userId=await authUserId(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
  const b=await c.req.json<{hours?:number}>().catch(()=>null),hours=Number(b?.hours);
