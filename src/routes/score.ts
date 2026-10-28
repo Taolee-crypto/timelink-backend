@@ -154,6 +154,10 @@ router.post('/scores/v5/:reference/draft',async c=>{
         !/^[A-G][#b]?(?:[a-zA-Z0-9+#°øΔ()/-]{0,24})$/.test(String(chord.sym||chord.symbol||'')))
         return c.json({ok:false,code:'SCORE_CHORDS_INVALID'},422);
     }
+    if(score.bpm!==undefined&&(!Number.isFinite(Number(score.bpm))||Number(score.bpm)<20||Number(score.bpm)>300))
+      return c.json({ok:false,code:'SCORE_TEMPO_INVALID'},422);
+    if(score.time_signature!==undefined&&!/^(?:[1-9]|1[0-2])\/(?:2|4|8|16)$/.test(String(score.time_signature)))
+      return c.json({ok:false,code:'SCORE_METER_INVALID'},422);
     const serialized=JSON.stringify(score);
     if(serialized.length>900000)return c.json({ok:false,code:'SCORE_TOO_LARGE'},413);
     await ensureV5ScoreDrafts(c.env.DB);
