@@ -155,6 +155,41 @@ payment.post('/v5/commercial-time/toss/confirm',async c=>{
   return c.json({ok:true,seconds:Number(grant.granted_seconds),amount,channelId:o.channel_id,mode:'test',entitlementType:'store_airtime',tlBCredited:false});
  }catch(e){console.error('[STORE_AIRTIME_CONFIRM]',e);return c.json({ok:false,error:'STORE_CONFIRM_UNAVAILABLE'},503);}
 });
+
+// Store owner lucky draw: separate from the two SharePlace TIME FREE price discounts.
+// Only sandbox Store Toss orders can enter. Until finance/legal cashback policy is
+// signed off, the draw is a non-redeemable demonstration, not issued KRW/TL/TLC.
+async function storeLuckyResult(db:Env['DB'],uid:number,orderId:string) {
+ await db.prepare("CREATE TABLE IF NOT EXISTS v5_store_lucky_draws (order_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, channel_id TEXT NOT NULL, ticket_number INTEGER NOT NULL CHECK(ticket_number BETWEEN 0 AND 9999), tier TEXT NOT NULL, preview_bonus_krw INTEGER NOT NULL DEFAULT 0, credit_krw INTEGER NOT NULL DEFAULT 0 CHECK(credit_krw=0), mode TEXT NOT NULL DEFAULT 'sandbox', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+ // Existing v5_store_airtime_grants is the proof that the purchase was completed.
+ const order=await db.prepare("SELECT o.channel_id,o.amount_krw FROM v5_store_airtime_orders o JOIN v5_store_airtime_grants g ON g.order_id=o.order_id AND g.user_id=o.user_id AND g.channel_id=o.channel_id WHERE o.order_id=? AND o.user_id=? AND o.status='paid' AND o.payment_key IS NOT NULL").bind(orderId,uid).first<any>();
+ if(!order)return null;
+ // Sample test-only draw weights are NOT a cashback business rule.
+ // Operations must approve odds, funding, expiry and redemption rules before live issuance.
+ const ticket=crypto.getRandomValues(new Uint32Array(1))[0]%10000;
+ const tier=ticket<500?'gold':ticket<2000?'silver':ticket<5500?'bronze':'none';
+ const preview=tier==='gold'?3000:tier==='silver'?1000:tier==='bronze'?500:0;
+ await db.prepare("INSERT OR IGNORE INTO v5_store_lucky_draws(order_id,user_id,channel_id,ticket_number,tier,preview_bonus_krw,credit_krw,mode) VALUES(?,?,?,?,?,?,0,'sandbox')").bind(orderId,uid,String(order.channel_id),ticket,tier,preview).run();
+ const draw=await db.prepare("SELECT channel_id,tier,preview_bonus_krw,credit_krw,created_at FROM v5_store_lucky_draws WHERE order_id=? AND user_id=?").bind(orderId,uid).first<any>();
+ if(!draw)return null;
+ return {mode:'sandbox',status:'preview_only',tier:String(draw.tier),previewBonusKrw:Number(draw.preview_bonus_krw),creditedKrw:0,cashbackRedeemable:false,channelId:String(draw.channel_id),createdAt:String(draw.created_at)};
+}
+
+// Idempotent: one verified paid store order = one draw. Owner-only.
+// Not called from order preparation, price quotes, or failed PG callbacks.
+payment.post('/v5/commercial-time/luck/draw',async c=>{
+ const uid=await authUserId(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
+ const b=await c.req.json<any>().catch(()=>null);
+ const orderId=String(b?.orderId||'');
+ if(!/^v5store_[a-f0-9]{32}$/.test(orderId))return c.json({ok:false,code:'INVALID_ORDER'},400);
+ try{
+  await ensureStoreAirtimeSchema(c.env.DB);
+  const draw=await storeLuckyResult(c.env.DB,Number(uid),orderId);
+  if(!draw)return c.json({ok:false,code:'VERIFIED_STORE_PAYMENT_REQUIRED'},403);
+  return c.json({ok:true,draw});
+ }catch(e){console.error('[STORE_LUCK_DRAW]',e);return c.json({ok:false,code:'STORE_LUCK_UNAVAILABLE'},503);}
+});
+
 payment.get('/v5/commercial-time/balance',async c=>{
  const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
  const channelId=String(c.req.query('channel_id')||'');
