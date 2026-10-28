@@ -39,6 +39,8 @@ def transcribe_vocals(source: Path) -> dict:
         _, _, events = predict(str(vocals))
         notes = []
         for start, end, pitch, confidence, *_ in sorted(events, key=lambda n: n[0]):
+            if not all(math.isfinite(float(v)) for v in (start, end, pitch, confidence)):
+                continue
             start, end, pitch = float(start), float(end), int(pitch)
             if not all(math.isfinite(v) for v in (start, end, confidence)):
                 continue
