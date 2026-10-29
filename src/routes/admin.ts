@@ -439,15 +439,19 @@ router.post('/tl/initial-issuance', async (c) => {
       return c.json({ok:false,code:'TL_LEDGER_NOT_EMPTY',error:'V5 경제원장이 비어 있지 않습니다. 중복 발행을 방지하기 위해 중단했습니다.'},409);
     }
     const accountId=crypto.randomUUID();
+    const sourceId=crypto.randomUUID();
     const transactionId=crypto.randomUUID();
     const atoms=1000000*10000;
     // One-time issuance is not a transfer: record a positive mint entry and provenance.
     // Atomic batch prevents an issuance transaction without its wallet credit.
     await db.batch([
       db.prepare("INSERT INTO v3_economy_accounts(id,owner_type,owner_id,asset_code,bucket) VALUES (?,'user',?,'TL','wallet_bonus')").bind(accountId,String(adminId)),
+      db.prepare("INSERT INTO v3_economy_accounts(id,owner_type,owner_id,asset_code,bucket) VALUES (?,'system','v5-initial-bootstrap','TL','issuance')").bind(sourceId),
       db.prepare("INSERT INTO v3_economy_balances(account_id,available_atoms) VALUES (?,?)").bind(accountId,atoms),
+      db.prepare("INSERT INTO v3_economy_balances(account_id,available_atoms) VALUES (?,0)").bind(sourceId),
       db.prepare("INSERT INTO v3_economy_transactions(id,idempotency_key,transaction_type,source,reference_type,reference_id,actor_user_id,description,metadata_json) VALUES (?,'initial_dev_tl_issuance_20261022','initial_issuance','admin','user',?,?,'관리자 개발용 최초 TL 1,000,000 지급',?)").bind(transactionId,String(adminId),String(adminId),JSON.stringify({amount_atoms:atoms,non_redeemable:true,development_only:true})),
-      db.prepare("INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES (?,?,'TL',?)").bind(transactionId,accountId,atoms)
+      db.prepare("INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES (?,?,'TL',?)").bind(transactionId,accountId,atoms),
+      db.prepare("INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES (?,?,'TL',?)").bind(transactionId,sourceId,-atoms)
     ]);
     return c.json({ok:true,admin_user_id:adminId,issued_tl:1000000,bucket:'wallet_bonus',development_only:true});
   }catch(e:any){return c.json({ok:false,error:e?.message||'최초 TL 지급 실패'},500);}
@@ -515,7 +519,14 @@ router.post('/tl/adjust', async (c) => {
       bucket,amount,non_redeemable:true,balanced:true});
   }catch(e:any){
     const existing=await db.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>().catch(()=>null);
-    if(existing)return c.json({ok:true,replayed:true,transaction_id:existing.id});
+    if(existing){
+      const recorded=await db.prepare('SELECT metadata_json FROM v3_economy_transactions WHERE id=?').bind(existing.id).first<any>().catch(()=>null);
+      try{
+        if(JSON.parse(recorded?.metadata_json||'{}').adjustment_fingerprint===fingerprint)
+          return c.json({ok:true,replayed:true,transaction_id:existing.id});
+      }catch(_){}
+      return c.json({ok:false,code:'IDEMPOTENCY_CONFLICT',error:'요청 식별자가 다른 작업에 사용되었습니다.'},409);
+    }
     return c.json({ok:false,error:e?.message||'TL 원장 반영 실패'},500);
   }
 });
