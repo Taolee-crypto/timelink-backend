@@ -574,6 +574,10 @@ async function calculateServerPoc(db:D1Database,userId:string){
 
     // 월 하드캡: TL_P 월소비의 30%
     const monthHardCap = monthlyTlP * policy.mining_month_cap;
+    const today=new Date().toISOString().slice(0,10);
+    const priorToday=await db.prepare("SELECT id FROM tlc_mining_v2 WHERE user_id=? AND DATE(created_at)=? LIMIT 1")
+      .bind(userId,today).first<any>();
+    const availableToday=priorToday?0:Math.min(dailyTLC,monthHardCap/30);
 
     return {
       ok: true,
@@ -588,7 +592,7 @@ async function calculateServerPoc(db:D1Database,userId:string){
         score:   Number(scoreScore.toFixed(3)),
       },
       tlc_mining: {
-        daily_max: Number(Math.min(dailyTLC,monthHardCap/30).toFixed(9)),
+        daily_max: Number(availableToday.toFixed(9)),
         monthly_hard_cap: Number(monthHardCap.toFixed(4)),
         monthly_eligible_tl_p: Number(monthlyTlP.toFixed(4)),
         theoretical_daily_max: Number(dailyTLC.toFixed(9)),
@@ -676,8 +680,8 @@ eco.post('/mine-tlc', async (c) => {
         .bind(snapshotId,userId,date.slice(0,7)+'-01',date,Math.max(0.1,Math.min(5,Number(preview.poc_index))),JSON.stringify(snapshot),'server-activity-v1',Number(preview.source_event_count||0)),
       db.prepare("INSERT INTO v3_tlc_mining_records(id,user_id,idempotency_key,period_date,poc_snapshot_id,eligible_tl_spend_atoms,poc_index,plan_code,multiplier,requested_atoms,minted_atoms,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'posted')")
          .bind(miningId,userId,receiptKey,date,snapshotId,Math.round(Number(preview.tlc_mining.monthly_eligible_tl_p||0)*10000),Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amountAtoms,amountAtoms),
-      db.prepare('UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)+? WHERE id=?')
-        .bind(amount,userId),
+      db.prepare('UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)+?,poc_index=? WHERE id=?')
+        .bind(amount,Number(preview.poc_index),userId),
       db.prepare("INSERT INTO tlc_mining_v2(user_id,tl_p_base,poc_index,plan,multiplier,tlc_mined) VALUES(?,?,?,?,?,?)")
         .bind(userId,Number(preview.tlc_mining.monthly_eligible_tl_p||0),Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amount)
     ];
