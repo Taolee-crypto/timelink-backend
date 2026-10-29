@@ -9,3 +9,5 @@ Demucs htdemucs separates vocals; Basic Pitch generates a monophonic melody draf
 The runner refreshes its short-lived OIDC token for every API call. Temporary audio and lyric files are removed on exit. Never upload source audio, lyrics, credentials or model stdout as workflow artifacts. Production runs are triggered by successful deployment, manual dispatch or the existing 15-minute schedule.
 
 Validation: `node scripts/test-v5-score-identity.cjs`, `node scripts/test-v5-score-audio.cjs`, and the Python unittest suites. Unit fixtures do not establish real track quality. Record actual job, deployment and draft evidence separately.
+
+Production failure diagnostics: isolated inference emits fixed stage markers (`separation`, `melody`, `lyrics`, `complete`). The runner records only a whitelisted failure code; never prints captured model output, raw audio, lyrics, or cryptographic material. The V5 vocal contract CI triggers the isolated consumer after successful main updates without widening the existing GitHub OIDC event trust policy.
