@@ -5,6 +5,13 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+  # Runner changes must start an authenticated real queue consumer without
+  # redeploying an unchanged Cloudflare API Worker.
+  push:
+    branches: [main]
+    paths:
+      - 'services/vocal-transcription/**'
+      - '.github/workflows/v5-vocal-inference.yml'
   schedule:
     - cron: '*/15 * * * *'
 permissions:
