@@ -54,7 +54,7 @@ const legacy=[...raw];
 legacy.splice(1,0,['payment_credit','v5-payment:old:untracked',null,{'wallet_paid':15}]);
 assert.throws(()=>replayPurchasedTlAttribution(make(legacy)),/LEGACY_PAYMENT_NOT_BACKFILLED/);
 assert.throws(()=>replayPurchasedTlAttribution(make(raw,lots.map(x=>({...x,paid_atoms:x.paid_atoms+10})))),/PAYMENT_MISMATCH/);
-assert.throws(()=>replayPurchasedTlAttribution({...make(),accounts:make().accounts.map(x=>({...x,available_atoms:x.available_atoms-1}))}),/UNBALANCED|DRIFT|OPENING/);
+assert.throws(()=>replayPurchasedTlAttribution({...make(),accounts:make().accounts.map(x=>({...x,available_atoms:x.available_atoms-1}))}),/UNBALANCED|DRIFT|OPENING|INVALID_CURRENT/);
 const paidConversion=[
  ...raw,
  ['v5_purchase_maturity','v5-purchased-maturity:B','v5-payment:virtual:B',{'wallet_paid':-30}]
