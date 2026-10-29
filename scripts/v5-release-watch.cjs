@@ -49,7 +49,11 @@ async function perform(config){
   if(r.status==='rejected')return {error:'CHECK_FAILED',name:i>=4?REQUIRED_PAGES[i-4]:'core-'+i};
   return tasks[i][1](r.value);
  });
- const pageStates={};for(const row of readings.slice(4))pageStates[row.name]={success:row.success===true,status:row.status};
+ const pageStates={};
+ for(let i=0;i<REQUIRED_PAGES.length;i++){
+  const name=REQUIRED_PAGES[i],row=readings[i+4]||{};
+  pageStates[name]={success:row.success===true,status:row.status||'unavailable'};
+ }
  return classify({health:readings[0],database:readings[1],bookmark:readings[2],worker:readings[3],pages:pageStates,checked_at:new Date().toISOString()});
 }
 async function main(){
