@@ -1,7 +1,7 @@
 name: V5 vocal score inference
 on:
   workflow_run:
-    workflows: ['Deploy TimeLink API Worker']
+    workflows: ['Deploy TimeLink API Worker', 'V5 vocal transcription contract']
     types: [completed]
     branches: [main]
   workflow_dispatch:
