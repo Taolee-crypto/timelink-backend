@@ -106,7 +106,7 @@ router.post('/scores/v5/:reference/generate',async c=>{
     if(body?.rights_confirmed!==true)return c.json({ok:false,code:'CREATOR_RIGHTS_REQUIRED'},422);
     // Do not accept jobs until a private analysis service is configured.
     // A queue without a worker would strand users in a permanent "pending" state.
-    if(!(c.env as any).V5_SCORE_WORKER_URL||!(c.env as any).V5_SCORE_WORKER_TOKEN)
+    if(!(c.env as any).V5_SCORE_WORKER_TOKEN)
       return c.json({ok:false,code:'VOCAL_ANALYSIS_NOT_READY',message:'보컬 분석 서버가 아직 연결되지 않았습니다.'},503);
     await ensureV5ScoreJobs(c.env.DB);
     await c.env.DB.prepare(`INSERT INTO v5_score_jobs(file_id,owner_id,source_sha256,status)
@@ -114,6 +114,8 @@ router.post('/scores/v5/:reference/generate',async c=>{
       owner_id=excluded.owner_id,source_sha256=excluded.source_sha256,
       status=CASE WHEN v5_score_jobs.source_sha256=excluded.source_sha256 AND
         v5_score_jobs.status IN ('queued','running','completed') THEN v5_score_jobs.status ELSE 'queued' END,
+      attempts=CASE WHEN v5_score_jobs.source_sha256=excluded.source_sha256 AND
+        v5_score_jobs.status IN ('queued','running','completed') THEN v5_score_jobs.attempts ELSE 0 END,
       error_code=NULL,updated_at=CURRENT_TIMESTAMP`)
       .bind(Number(row.file_id),uid,String(row.source_sha256)).run();
     return c.json({ok:true,job_status:'queued_or_existing',file_id:Number(row.file_id),
@@ -128,6 +130,9 @@ router.post('/scores/v5/internal/claim',async c=>{
   if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
   try{
     await ensureV5ScoreJobs(c.env.DB);
+    // Recover abandoned claims after runner cancellation or a host crash.
+    await c.env.DB.prepare("UPDATE v5_score_jobs SET status='queued',error_code='RETRY_AFTER_TIMEOUT',updated_at=CURRENT_TIMESTAMP WHERE status='running' AND attempts<3 AND updated_at < datetime('now','-60 minutes')").run();
+    await c.env.DB.prepare("UPDATE v5_score_jobs SET status='failed',error_code='MAX_ATTEMPTS',updated_at=CURRENT_TIMESTAMP WHERE status='running' AND attempts>=3 AND updated_at < datetime('now','-60 minutes')").run();
     const candidate=await c.env.DB.prepare(
       "SELECT file_id,owner_id,source_sha256 FROM v5_score_jobs WHERE status='queued' ORDER BY created_at LIMIT 1"
     ).first<any>();
@@ -259,7 +264,7 @@ router.get('/scores/v5/:reference',async c=>{
         jobErrorCode=job.error_code?String(job.error_code):null;
       }
     }
-    const ready=!!(c.env as any).V5_SCORE_WORKER_URL&&!!(c.env as any).V5_SCORE_WORKER_TOKEN;
+    const ready=!!(c.env as any).V5_SCORE_WORKER_TOKEN;
     return c.json({ok:true,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
       score_status:score?'draft':'not_generated',job_status:jobStatus,job_error_code:jobErrorCode,has_score:!!score,score,
