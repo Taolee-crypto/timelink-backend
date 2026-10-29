@@ -7,7 +7,7 @@ import {
 
 const router=new Hono<{Bindings:Env}>();
 async function adminActor(c:any):Promise<number|null>{
- const token=String(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
+ const token=String(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
  if(!token)return null;
  const payload=await verifyToken(token,c.env.JWT_SECRET).catch(()=>null);
  const id=Number(payload?.sub||0);
