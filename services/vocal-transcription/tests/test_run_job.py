@@ -53,7 +53,7 @@ class RunnerContractTests(TestCase):
     def test_container_failure_reports_failed_job(self, session_cls):
         session = session_cls.return_value
         claim = MagicMock()
-        claim.json.return_value = {"job": {"file_id": 178, "container_bytes": 10}}
+        claim.json.return_value = {"job": {"file_id": 178, "source_sha256": "a" * 64}}
         session.post.return_value = claim
         download = MagicMock()
         download.content = b"bad"

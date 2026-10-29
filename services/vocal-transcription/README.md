@@ -1,20 +1,11 @@
-# V5 vocal transcription (prototype, not deployed)
+# V5 private vocal inference
 
-This private **Python GPU/CPU service** separates the vocal stem with Demucs and estimates monophonic vocal notes with Basic Pitch. It does **not** transcribe or align lyrics, derive guitar chords, fetch audio from public URLs, or publish scores. The Cloudflare Worker cannot run these heavy models directly.
+The production Actions workflow authenticates with GitHub OIDC (RS256, fixed issuer/audience, repository ID and owner ID, production environment, main ref and exact workflow path). No TL3 master secret, keyring, content key or long-lived worker token is sent to Actions. Existing Worker secrets are preserved and checked by name before and after deployment.
 
-## Run locally
+The creator-authorized queue binds each running job to the verified Actions run ID and attempt. Only that identity can fetch the verified source audio or complete/fail the job. Cloudflare selects the release's stored key ID (including legacy), verifies container and source SHA-256 and AES-GCM authentication, then returns job-scoped audio over HTTPS with private/no-store headers. No replacement keys are generated.
 
-Use Python 3.10 in an isolated virtual environment. Install system ffmpeg, then `pip install -r requirements.txt`. Execute `python transcribe.py /private/staged/track.mp3 > draft.json`.
+Demucs htdemucs separates vocals; Basic Pitch generates a monophonic melody draft. Stable-ts/Whisper small force-aligns creator-supplied lyrics to the separated vocal. Section labels and LRC timestamps are removed. Word timings and lyrics on overlapping notes are stored only as an owner-visible draft. The API rejects a changed lyric source, invalid timestamps or mismatched source audio. No TL debit or TLD publication occurs. Human musical review is still required.
 
-The result contains `part: lead_vocal`, `melody: [{s,d,m}]`, empty `chords`, and a provenance object. Accuracy requires human review. Demucs vocal stems may retain instruments; pitch extraction can still make mistakes.
+The runner refreshes its short-lived OIDC token for every API call. Temporary audio and lyric files are removed on exit. Never upload source audio, lyrics, credentials or model stdout as workflow artifacts. Production runs are triggered by successful deployment, manual dispatch or the existing 15-minute schedule.
 
-## Required production integration
-
-1. Authenticate the owner, confirm rights and resolve the sealed V5 file on the Cloudflare backend.
-2. Pass only a short-lived, authenticated job reference to an isolated inference worker; do not expose private MP3 URLs.
-3. The worker retrieves the authorized source securely, checks SHA-256, applies file-size/duration and rate limits, and runs this script.
-4. Review/edit melody, obtain and align authorized lyrics, and derive guitar chords separately.
-5. Submit `POST /scores/v5/:reference/draft` using `rights_confirmed: true`, the **verified** V5 source SHA-256, `provenance: {method: "vocal_separation", engine: "demucs-htdemucs+basic-pitch"}`, and `score_data` (excluding the top-level provenance).
-6. Confirm that no TLD was minted and no TL charged.
-
-**Not implemented:** authenticated job queue, secure audio staging, deployment, lyrics alignment, chord inference, or production tests. Do not enable the automatic transcription button until those are complete.
+Validation: `node scripts/test-v5-score-identity.cjs`, `node scripts/test-v5-score-audio.cjs`, and the Python unittest suites. Unit fixtures do not establish real track quality. Record actual job, deployment and draft evidence separately.

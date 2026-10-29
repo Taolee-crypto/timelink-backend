@@ -41,3 +41,9 @@ _login.json
 _shareid.txt
 _trackid.txt
 _upload_url.txt
+
+# Maintained vocal service source, excluding local bytecode
+!services/vocal-transcription/**/*.py
+!services/vocal-transcription/*.py
+__pycache__/
+*.pyc

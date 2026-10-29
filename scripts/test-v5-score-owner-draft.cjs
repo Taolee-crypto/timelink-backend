@@ -26,7 +26,7 @@ const c={req:{param:()=> '178',json:async()=>payload},
  payload.score_data.melody[1].s=1.5;payload.source_sha256='b'.repeat(64);
  result=await handler(c);assert.equal(result.status,422);assert.equal(result.body.code,'SCORE_SOURCE_MISMATCH');
  assert.equal(writes,1);
- assert.match(src,/const ready=!!\(c\.env as any\)\.V5_SCORE_WORKER_TOKEN;/);
+ assert.ok(src.includes("const ready=(c.env as any).V5_SCORE_AUTH_MODE==='github-oidc';"));
 assert.ok(src.includes('can_generate:canGenerate&&ready'));
  assert.match(src,/VOCAL_ANALYSIS_NOT_READY/);
  console.log('PASS validated vocal draft import, malformed notes and source mismatch');
