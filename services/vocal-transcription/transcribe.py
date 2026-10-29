@@ -79,8 +79,11 @@ if __name__ == "__main__":
         source_path = args.source.resolve(strict=True)
         if not source_path.is_file() or source_path.suffix.lower() not in {'.mp3', '.wav', '.flac'}:
             parser.error('Expected a local MP3, WAV or FLAC file')
+        hasher = hashlib.sha256()
         with source_path.open('rb') as source_file:
-            digest = hashlib.file_digest(source_file, 'sha256').hexdigest()
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b''):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
         if digest.lower() != args.source_sha256.lower():
             raise ValueError('V5 source SHA-256 mismatch')
     draft = transcribe_vocals(args.source)
