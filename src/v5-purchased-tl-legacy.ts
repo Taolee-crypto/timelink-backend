@@ -160,13 +160,28 @@ export async function importLegacyPurchasedTl(db:D1Database,input:{
   'ON p.method=? AND p.pg_id=t.reference_id AND p.user_id=t.actor_user_id '+
   'WHERE t.id=? AND t.idempotency_key=? AND t.status=\'posted\' '+
   'AND t.transaction_type=\'payment_credit\' AND p.id=? AND p.status=\'success\' '+
-  'AND p.tl_granted=? AND p.bonus_tl=? AND p.merchant_uid=?'+
+  'AND p.tl_granted=? AND p.bonus_tl=? AND p.merchant_uid=? '+
+  'AND p.amount_krw=? AND CAST(json_extract(t.metadata_json,\'$.paid_tl\') AS INTEGER)=? '+
+  'AND CAST(json_extract(t.metadata_json,\'$.bonus_tl\') AS INTEGER)=? '+
+  'AND json_extract(t.metadata_json,\'$.order_id\')=? '+
+  'AND json_extract(t.metadata_json,\'$.user_id\')=t.actor_user_id '+
+  'AND EXISTS (SELECT 1 FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id '+
+  'WHERE e.transaction_id=t.id AND a.bucket=\'wallet_paid\' AND a.owner_type=\'user\' '+
+  'AND a.owner_id=t.actor_user_id AND e.amount_atoms=?) '+
+  'AND EXISTS (SELECT 1 FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id '+
+  'WHERE e.transaction_id=t.id AND a.bucket=\'verified_payment_issuance\' '+
+  'AND a.owner_type=\'system\' AND a.owner_id=t.source AND e.amount_atoms=?) '+
+  'AND (?=0 OR EXISTS (SELECT 1 FROM v3_economy_entries e JOIN v3_economy_accounts a ON a.id=e.account_id '+
+  'WHERE e.transaction_id=t.id AND a.bucket=\'wallet_bonus\' AND a.owner_type=\'user\' '+
+  'AND a.owner_id=t.actor_user_id AND e.amount_atoms=?))'+
   ') AND (SELECT COUNT(*) FROM v3_economy_entries WHERE transaction_id=?)=?'
  ).bind(
   item.paymentKey,item.userId,item.method,item.paymentId,item.orderId,
   item.paidAtoms,item.bonusAtoms,item.paymentMode,item.recordedAtMs,
   item.method,item.transactionId,item.paymentKey,item.receiptId,
   (item.paidAtoms+item.bonusAtoms)/10000,item.bonusAtoms/10000,item.orderId,
+  item.paidAtoms/10000,item.paidAtoms/10000,item.bonusAtoms/10000,item.orderId,
+  item.paidAtoms,-(item.paidAtoms+item.bonusAtoms),item.bonusAtoms,item.bonusAtoms,
   item.transactionId,item.bonusAtoms>0?3:2
  );
  const guard=db.prepare(
