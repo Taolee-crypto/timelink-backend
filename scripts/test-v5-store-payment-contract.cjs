@@ -41,14 +41,14 @@ async function main(){
   const prepared=await call(base+'/toss/prepare',{...select,channel_id:'cafe_0123456789abcdef'});
   assert.equal(prepared.status,200);assert.equal(prepared.result.amount,r.result.amountKrw);
   const {orderId,amount}=prepared.result;
-  assert.equal((await call(base+'/toss/confirm',{orderId,amount:1,paymentKey:'fixture-paid'})).status,403);
+  assert.equal((await call(base+'/toss/confirm',{orderId,amount:1000,paymentKey:'fixture-paid'})).status,403);
   const realFetch=global.fetch;
   let calls=0,forceMismatch=false;
   try{
    global.fetch=async (url,opts)=>{
     calls++;assert.equal(url,'https://api.tosspayments.com/v1/payments/confirm');
-    assert.equal(opts.headers['Idempotency-Key'],orderId);
     const b=JSON.parse(opts.body);
+    assert.equal(opts.headers['Idempotency-Key'],b.orderId);
     return Response.json({orderId:b.orderId,paymentKey:forceMismatch?'bogus':b.paymentKey,
       status:'DONE',totalAmount:b.amount});
    };
