@@ -1,4 +1,5 @@
 import { rejectedImmutableShareFields, validateSealedV5MetadataPatch, SealedV5MetadataError } from './v5-share-metadata-guard';
+import { resolveSocialTrackAsset } from './v5-social-asset';
 import { ownsLinkedReleaseForDeletion } from './v5-share-delete-ownership';
 import musicBulkIntakeRouter from './routes/music-bulk-intake-v5';
 import storeMusicV5Router,{releaseExpiredStoreSessions} from './routes/store-music-v5';
@@ -762,13 +763,15 @@ async function ensureTrackSocialTables(db:any){
 }
 
 app.get('/api/social/stats/:id',async(c)=>{
-  let shareId=c.req.param('id');
+  const requestedId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
-    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    if(!share)return c.json({error:'곡을 찾을 수 없습니다.'},404);
-    const viewerId=await shareAuthUser(c).catch(()=>0);
-    if(Number(share.user_id)!==viewerId&&!await isPublicPlaybackShare(c.env.DB,share))return c.json({error:'비공개 곡입니다.'},403);
+    const viewerId=Number(await shareAuthUser(c).catch(()=>0) || 0);
+    const asset=await resolveSocialTrackAsset(c.env.DB,requestedId,viewerId,
+      share=>isPublicPlaybackShare(c.env.DB,share));
+    if(!asset)return c.json({error:'곡을 찾을 수 없습니다.'},404);
+    if(!asset.canView)return c.json({error:'비공개 곡입니다.'},403);
+    const shareId=asset.id;
     const likes=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM social_likes WHERE share_id=?').bind(shareId).first<any>();
     const comments=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM social_comments WHERE share_id=?').bind(shareId).first<any>();
     const userId=await shareAuthUser(c).catch(()=>0);
@@ -784,12 +787,15 @@ app.get('/api/social/stats/:id',async(c)=>{
 app.post('/api/social/like/:id',async(c)=>{
   const userId=await shareAuthUser(c).catch(()=>0);
   if(!userId)return c.json({error:'인증 필요'},401);
-  let shareId=c.req.param('id');
+  const requestedId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
-    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    if(!share)return c.json({error:'곡을 찾을 수 없습니다.'},404);
-    if(Number(share.user_id)!==userId&&!await isPublicPlaybackShare(c.env.DB,share))return c.json({error:'비공개 곡입니다.'},403);
+    const viewerId=userId;
+    const asset=await resolveSocialTrackAsset(c.env.DB,requestedId,viewerId,
+      share=>isPublicPlaybackShare(c.env.DB,share));
+    if(!asset)return c.json({error:'곡을 찾을 수 없습니다.'},404);
+    if(!asset.canView)return c.json({error:'비공개 곡입니다.'},403);
+    const shareId=asset.id;
     await c.env.DB.prepare('INSERT OR IGNORE INTO social_likes(share_id,user_id) VALUES(?,?)').bind(shareId,userId).run();
     const row=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM social_likes WHERE share_id=?').bind(shareId).first<any>();
     return c.json({ok:true,liked:true,likes:Number(row?.n||0)});
@@ -799,9 +805,14 @@ app.post('/api/social/like/:id',async(c)=>{
 app.delete('/api/social/like/:id',async(c)=>{
   const userId=await shareAuthUser(c).catch(()=>0);
   if(!userId)return c.json({error:'인증 필요'},401);
-  let shareId=c.req.param('id');
+  const requestedId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
+    const asset=await resolveSocialTrackAsset(c.env.DB,requestedId,userId,
+      share=>isPublicPlaybackShare(c.env.DB,share));
+    if(!asset)return c.json({error:'곡을 찾을 수 없습니다.'},404);
+    if(!asset.canView)return c.json({error:'비공개 곡입니다.'},403);
+    const shareId=asset.id;
     await c.env.DB.prepare('DELETE FROM social_likes WHERE share_id=? AND user_id=?').bind(shareId,userId).run();
     const row=await c.env.DB.prepare('SELECT COUNT(*) AS n FROM social_likes WHERE share_id=?').bind(shareId).first<any>();
     return c.json({ok:true,liked:false,likes:Number(row?.n||0)});
@@ -843,13 +854,15 @@ app.delete('/api/social/follow/:id',async(c)=>{
 });
 
 app.get('/api/social/comments/:id',async(c)=>{
-  let shareId=c.req.param('id');
+  const requestedId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
-    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    if(!share)return c.json({error:'곡을 찾을 수 없습니다.'},404);
-    const viewerId=await shareAuthUser(c).catch(()=>0);
-    if(Number(share.user_id)!==viewerId&&!await isPublicPlaybackShare(c.env.DB,share))return c.json({error:'비공개 곡입니다.'},403);
+    const viewerId=Number(await shareAuthUser(c).catch(()=>0) || 0);
+    const asset=await resolveSocialTrackAsset(c.env.DB,requestedId,viewerId,
+      share=>isPublicPlaybackShare(c.env.DB,share));
+    if(!asset)return c.json({error:'곡을 찾을 수 없습니다.'},404);
+    if(!asset.canView)return c.json({error:'비공개 곡입니다.'},403);
+    const shareId=asset.id;
     const rows=await c.env.DB.prepare(
       'SELECT id,user_id,username,content,created_at FROM social_comments WHERE share_id=? ORDER BY created_at DESC LIMIT 100'
     ).bind(shareId).all();
@@ -860,16 +873,19 @@ app.get('/api/social/comments/:id',async(c)=>{
 app.post('/api/social/comment/:id',async(c)=>{
   const userId=await shareAuthUser(c).catch(()=>0);
   if(!userId)return c.json({error:'인증 필요'},401);
-  let shareId=c.req.param('id');
+  const requestedId=c.req.param('id');
   const body=await c.req.json<any>().catch(()=>({}));
   const content=String(body.content||'').trim().slice(0,1000);
   if(!content)return c.json({error:'내용을 입력해 주세요.'},400);
   if(content.length<10)return c.json({error:'10자 이상 입력해 주세요.'},400);
   try{
     await ensureTrackSocialTables(c.env.DB);
-    const share=await c.env.DB.prepare('SELECT * FROM tl_shares WHERE id=?').bind(shareId).first<any>();
-    if(!share)return c.json({error:'곡을 찾을 수 없습니다.'},404);
-    if(Number(share.user_id)!==userId&&!await isPublicPlaybackShare(c.env.DB,share))return c.json({error:'비공개 곡입니다.'},403);
+    const viewerId=userId;
+    const asset=await resolveSocialTrackAsset(c.env.DB,requestedId,viewerId,
+      share=>isPublicPlaybackShare(c.env.DB,share));
+    if(!asset)return c.json({error:'곡을 찾을 수 없습니다.'},404);
+    if(!asset.canView)return c.json({error:'비공개 곡입니다.'},403);
+    const shareId=asset.id;
     const user=await c.env.DB.prepare('SELECT username FROM users WHERE id=?').bind(userId).first<any>();
     const username=user?.username||('User'+userId);
     const result=await c.env.DB.prepare(
@@ -887,9 +903,12 @@ app.post('/api/social/report/comment/:id',async(c)=>{
   if(!commentId)return c.json({error:'댓글을 확인할 수 없습니다.'},400);
   try{
     await ensureTrackSocialTables(c.env.DB);
-    const comment=await c.env.DB.prepare('SELECT c.id,c.share_id,s.* FROM social_comments c JOIN tl_shares s ON s.id=c.share_id WHERE c.id=?').bind(commentId).first<any>();
+    const comment=await c.env.DB.prepare('SELECT id,share_id FROM social_comments WHERE id=?')
+      .bind(commentId).first<any>();
     if(!comment)return c.json({error:'댓글을 찾을 수 없습니다.'},404);
-    if(Number(comment.user_id)!==userId&&!await isPublicPlaybackShare(c.env.DB,comment))return c.json({error:'비공개 곡의 댓글은 신고할 수 없습니다.'},403);
+    const asset=await resolveSocialTrackAsset(c.env.DB,String(comment.share_id),userId,
+      share=>isPublicPlaybackShare(c.env.DB,share));
+    if(!asset||!asset.canView)return c.json({error:'비공개 곡의 댓글은 신고할 수 없습니다.'},403);
     await c.env.DB.prepare('INSERT OR IGNORE INTO social_comment_reports(comment_id,reporter_id) VALUES(?,?)').bind(commentId,userId).run();
     return c.json({ok:true,reported:true});
   }catch(e:any){return c.json({error:e?.message||'신고 접수 실패'},500);}
