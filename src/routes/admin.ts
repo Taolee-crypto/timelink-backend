@@ -16,6 +16,7 @@ import { verifyToken } from '../auth';
 import {reverseReferralReward} from '../v5-referral-reward';
 import {readGroupTlcReserve} from '../v5-tlc-mining-split';
 import {readTlcIssuanceIntegrity} from '../v5-tlc-issuance-audit';
+import {ensureLedgerAccount,postLedgerTransaction} from '../economy-ledger';
 import {readProfitSafetyControls,saveProfitSafetyLimits,readProfitSafetyHistory,evaluateProfitSafety} from '../v5-profit-safety';
 
 const router = new Hono<{ Bindings: Env }>();
@@ -488,19 +489,30 @@ router.post('/tl/adjust', async (c) => {
     const atoms=amount*10000;
     if(amount<0&&(!existing||Number(existing.available_atoms)<-atoms))
       return c.json({ok:false,error:'차감할 해당 TL 잔액이 부족합니다.'},409);
-    // Single D1 batch: account creation (when needed), balance update and audit entry.
-    const accountId=existing?.id||crypto.randomUUID(),txId=crypto.randomUUID();
-    const stmts:any[]=[];
-    if(!existing){
-      stmts.push(db.prepare("INSERT INTO v3_economy_accounts(id,owner_type,owner_id,asset_code,bucket) VALUES (?,'user',?,'TL',?)").bind(accountId,String(user.id),targetBucket));
-      stmts.push(db.prepare('INSERT INTO v3_economy_balances(account_id,available_atoms) VALUES (?,0)').bind(accountId));
-    }
-    stmts.push(db.prepare("INSERT INTO v3_economy_transactions(id,idempotency_key,transaction_type,source,reference_type,reference_id,actor_user_id,description,metadata_json) VALUES (?,?,'admin_adjustment','admin','user',?,?,?,?)").bind(txId,key,String(user.id),String(adminId),reason,JSON.stringify({adjustment_fingerprint:fingerprint,amount_atoms:atoms,bucket,non_redeemable:true})));
-    stmts.push(db.prepare("INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES (?,?,'TL',?)").bind(txId,accountId,atoms));
-    stmts.push(db.prepare("UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1,updated_at=datetime('now') WHERE account_id=? AND available_atoms+?>=0").bind(atoms,accountId,atoms));
-    const results=await db.batch(stmts);
-    if(Number(results[results.length-1]?.meta?.changes||0)!==1)throw new Error('원장 잔액 변경 실패');
-    return c.json({ok:true,transaction_id:txId,bucket,amount,non_redeemable:true});
+    // All new TL adjustments are true double-entry transactions. The
+    // source/sink is explicit, while the member still receives exactly
+    // the requested amount. Existing historic receipts remain immutable.
+    const memberAccount=await ensureLedgerAccount(db,'user',String(user.id),'TL',targetBucket);
+    const systemAccount=await ensureLedgerAccount(db,'system','v5-admin-adjustments','TL','issuance');
+    // Positive issuance is prefunded solely in the same atomic D1 batch.
+    // When negative, the system account receives returned nonredeemable TL.
+    const issued=atoms>0?[db.prepare(`
+      UPDATE v3_economy_balances
+      SET available_atoms=available_atoms+?,version=version+1,updated_at=datetime('now')
+      WHERE account_id=?`).bind(atoms,systemAccount)]:[];
+    const posted=await postLedgerTransaction(db,{
+      idempotencyKey:key,transactionType:'admin_adjustment',source:'admin',
+      referenceType:'user',referenceId:String(user.id),actorUserId:String(adminId),
+      description:reason,metadata:{adjustment_fingerprint:fingerprint,amount_atoms:atoms,
+        bucket,non_redeemable:true,balanced:true},
+      issuanceStatements:issued,
+      lines:[
+        {accountId:systemAccount,assetCode:'TL',amountAtoms:-atoms},
+        {accountId:memberAccount,assetCode:'TL',amountAtoms:atoms}
+      ]
+    });
+    return c.json({ok:true,replayed:posted.replayed,transaction_id:posted.id,
+      bucket,amount,non_redeemable:true,balanced:true});
   }catch(e:any){
     const existing=await db.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>().catch(()=>null);
     if(existing)return c.json({ok:true,replayed:true,transaction_id:existing.id});
