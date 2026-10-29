@@ -2,6 +2,7 @@ import {Hono} from 'hono';
 import type {Context} from 'hono';
 import type {Env} from '../types';
 import {verifyToken} from '../auth';
+import {listLegacyPurchasedTlCandidates,importLegacyPurchasedTl} from '../v5-purchased-tl-legacy';
 import {
  previewPurchasedTlMaturity,reviewPurchasedTlMaturity,settleReviewedPurchasedTlMaturity
 } from '../v5-purchased-tl-conversion';
@@ -22,6 +23,31 @@ function errorCode(e:unknown){
  if(/^[A-Z_]+(?::[A-Z_]+)?$/.test(message))return message;
  return 'PURCHASE_MATURITY_UNAVAILABLE';
 }
+// Historical payment migration is a metadata-only administrative action.
+// Unverified original payment mode is NEVER upgraded to live here.
+router.get('/legacy-candidates',async c=>{
+ if(!await adminActor(c))return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+ try{
+  const limit=Number(c.req.query('limit')||20);
+  return c.json({ok:true,...await listLegacyPurchasedTlCandidates(c.env.DB,limit)});
+ }catch(e){return c.json({ok:false,error:errorCode(e)},409);}
+});
+router.post('/legacy-import/:paymentKey',async c=>{
+ const actor=await adminActor(c);
+ if(!actor)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+ const body=await c.req.json().catch(()=>null) as {confirmation?:string;evidence_sha256?:string;review_note?:string}|null;
+ if(body?.confirmation!=='IMPORT_UNVERIFIED_PURCHASE_LOT')
+  return c.json({ok:false,error:'EXPLICIT_LEGACY_IMPORT_CONFIRMATION_REQUIRED'},400);
+ try{
+  const result=await importLegacyPurchasedTl(c.env.DB,{
+   paymentKey:c.req.param('paymentKey'),reviewerId:actor,
+   evidenceSha256:String(body?.evidence_sha256||''),
+   note:String(body?.review_note||'')
+  });
+  return c.json({ok:true,...result});
+ }catch(e){console.warn('[V5_LEGACY_PURCHASE_IMPORT]',errorCode(e));
+  return c.json({ok:false,error:errorCode(e)},409);}
+});
 router.get('/preview/:userId/:paymentKey',async c=>{
  if(!await adminActor(c))return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
  try{
