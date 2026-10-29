@@ -70,20 +70,23 @@ payment.get('/v5/unified-time/policy',async c=>{
 payment.post('/v5/commercial-time/quote',async c=>{
  const uid=await authUserId(c);if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
  const body=await c.req.json<any>().catch(()=>null);
- const hours=Number(body?.hours),period=String(body?.period||''),area=Number(body?.area_tier??0);
- const days:Record<string,number>={hour:1,day:1,month:30,year:365};
- if(!Object.prototype.hasOwnProperty.call(days,period)||!Number.isSafeInteger(hours)||hours<1||hours>24||
-   !Number.isSafeInteger(area)||area<0||area>4)
-   return c.json({ok:false,code:'INVALID_COMMERCIAL_TIME_SELECTION'},400);
- const seconds=hours*3600*days[period];
- const areaWeights=[1,1.2,1.5,2,3],periodWeights:Record<string,number>={hour:1,day:1,month:0.8,year:0.65};
- const weight=areaWeights[area]*periodWeights[period];
- const amountKrw=Math.round(seconds*weight);
+ const estimate=validatedStoreAirtime(body);
+ if(!estimate)return c.json({ok:false,code:'INVALID_COMMERCIAL_TIME_SELECTION'},400);
+ const {seconds,amountKrw,period,area}=estimate;
+ const areaWeight=[1,1.2,1.5,2,3][area];
+ const periodWeight=({hour:1,day:1,month:0.8,year:0.65} as Record<string,number>)[period];
+ // Production card checkout and music licensing remain gated. A quote is
+ // not an invoice, not a charge and not an active broadcast entitlement.
+ const testCheckoutEnabled=String(c.env.TOSS_CLIENT_KEY||'').startsWith('test_ck_') &&
+   String(c.env.TOSS_SECRET_KEY||'').startsWith('test_sk_') && amountKrw>=1000;
  return c.json({ok:true,product:'commercial_music_time',seconds,nominalTl:seconds,
-   nominalKrw:seconds,areaWeight:areaWeights[area],periodWeight:periodWeights[period],
-   discountPercent:0,amountKrw,currency:'KRW',checkoutEnabled:false,
+   nominalKrw:seconds,areaWeight,periodWeight,
+   discountPercent:0,amountKrw,currency:'KRW',checkoutEnabled:testCheckoutEnabled,
+   testCheckoutEnabled,checkoutMode:testCheckoutEnabled?'test':'disabled',
    entitlementGranted:false,scope:'commercial_broadcast_only',
-   note:'Server quote only. Payment and commercial airtime ledger are not yet connected.'});
+   note:testCheckoutEnabled?
+     'Toss sandbox checkout available to an authorized store owner; no real charge. Airtime only after provider-confirmed test payment. Licensed commercial catalog is a separate launch gate.':
+     'Quote only. Live store checkout requires verified rights, settlement policy and production approval.'});
 });
 
 
@@ -148,9 +151,17 @@ payment.post('/v5/commercial-time/toss/confirm',async c=>{
   if(!days)return c.json({ok:false,error:'ORDER_PERIOD_INVALID'},503);
   await c.env.DB.batch([
    c.env.DB.prepare("UPDATE v5_store_airtime_orders SET status='paid',payment_key=?,paid_at=CURRENT_TIMESTAMP WHERE order_id=? AND user_id=? AND status='pending'").bind(paymentKey,orderId,Number(uid)),
-   c.env.DB.prepare("INSERT OR IGNORE INTO v5_store_airtime_grants(order_id,user_id,channel_id,granted_seconds,expires_at_ms) SELECT order_id,user_id,channel_id,seconds,? FROM v5_store_airtime_orders WHERE order_id=? AND user_id=? AND status='paid'").bind(paidAtMs+days*86400000,orderId,Number(uid))
+   c.env.DB.prepare("INSERT OR IGNORE INTO v5_store_airtime_grants(order_id,user_id,channel_id,granted_seconds,expires_at_ms) SELECT order_id,user_id,channel_id,seconds,? FROM v5_store_airtime_orders WHERE order_id=? AND user_id=? AND status='paid' AND payment_key=?").bind(paidAtMs+days*86400000,orderId,Number(uid),paymentKey)
   ]);
-  const grant=await c.env.DB.prepare("SELECT granted_seconds FROM v5_store_airtime_grants WHERE order_id=?").bind(orderId).first<any>();
+  // Two simultaneous confirmation requests may both have read 'pending'.
+  // Never acknowledge a different payment key because another request won
+  // the order transition. A stored grant alone is not sufficient proof.
+  const confirmed=await c.env.DB.prepare(
+   "SELECT status,payment_key FROM v5_store_airtime_orders WHERE order_id=? AND user_id=?"
+  ).bind(orderId,Number(uid)).first<any>();
+  if(confirmed?.status!=='paid'||confirmed?.payment_key!==paymentKey)
+   return c.json({ok:false,error:'PAYMENT_KEY_MISMATCH'},409);
+  const grant=await c.env.DB.prepare("SELECT granted_seconds FROM v5_store_airtime_grants WHERE order_id=? AND user_id=?").bind(orderId,Number(uid)).first<any>();
   if(!grant)return c.json({ok:false,error:'ENTITLEMENT_NOT_GRANTED'},503);
   return c.json({ok:true,seconds:Number(grant.granted_seconds),amount,channelId:o.channel_id,mode:'test',entitlementType:'store_airtime',tlBCredited:false});
  }catch(e){console.error('[STORE_AIRTIME_CONFIRM]',e);return c.json({ok:false,error:'STORE_CONFIRM_UNAVAILABLE'},503);}
