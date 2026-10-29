@@ -13,6 +13,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
+import {reverseReferralReward} from '../v5-referral-reward';
 
 const router = new Hono<{ Bindings: Env }>();
 
@@ -40,6 +41,27 @@ router.get('/cafe/channels',async c=>{
     console.error('[ADMIN_CAFE_CHANNELS]',error);
     return c.json({ok:false,error:'STORE_CHANNELS_UNAVAILABLE'},503);
   }
+});
+// Development-stage refund/chargeback review: the administrator supplies an
+// externally verified refund reference. Do not allow clients to reverse rewards.
+router.post('/referrals/reverse',async c=>{
+ const actor=await requireAdmin(c);
+ if(!actor)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+ const body=await c.req.json().catch(()=>null) as any;
+ if(!body||typeof body!=='object'||Array.isArray(body)||
+    Object.keys(body).some(k=>!['milestone_key','proof_reference'].includes(k))||
+    typeof body.milestone_key!=='string'||typeof body.proof_reference!=='string')
+   return c.json({ok:false,error:'INVALID_REFERRAL_REVERSAL'},400);
+ try{return c.json(await reverseReferralReward(c.env.DB,actor,body.milestone_key,body.proof_reference));}
+ catch(error:any){
+   const code=String(error.message||error);
+   if(['INVALID_REFERRAL_REVERSAL','REFERRAL_RECEIPT_NOT_FOUND','REFERRAL_REVERSAL_INVALID_STATUS'].includes(code))
+    return c.json({ok:false,error:code},409);
+   if(/negative|INSUFFICIENT/i.test(code))
+    return c.json({ok:false,error:'BONUS_BALANCE_TOO_LOW_MANUAL_REVIEW_REQUIRED'},409);
+   console.error('[ADMIN_REFERRAL_REVERSAL]',code);
+   return c.json({ok:false,error:'REFERRAL_REVERSAL_UNAVAILABLE'},503);
+ }
 });
 router.get('/audit-events',async c=>{
   const rows=await c.env.DB.prepare(`SELECT * FROM v5_admin_access_audit ORDER BY created_at DESC,id DESC LIMIT 100`).all();
