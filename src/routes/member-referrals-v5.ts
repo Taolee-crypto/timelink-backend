@@ -68,11 +68,12 @@ router.post('/claim',async c=>{
     // The newly registered user can claim immediately after verified signup.
     // Failure to settle never converts an unverified claim into a payout.
     let rewardStatus:'pending_verification'|'verified_signup'='pending_verification';
+    let creditedTlB=0;
     try{
       const reward=await settleVerifiedReferral(c.env.DB,Number(ref.user_id),id,'signup_verified');
-      if(reward.status==='posted')rewardStatus='verified_signup';
+      if(reward.status==='posted'){rewardStatus='verified_signup';creditedTlB=Number(reward.tl_b||0);}
     }catch(error){console.warn('[REFERRAL_AWAIT_VERIFICATION]',String(error));}
-    return c.json({ok:true,status:rewardStatus,reward_issued:rewardStatus==='verified_signup'});
+    return c.json({ok:true,status:rewardStatus,contribution_verified:rewardStatus==='verified_signup',reward_issued:creditedTlB>0,credited_tl_b:creditedTlB});
   }catch(e){console.error('referral claim',e);return c.json({ok:false,code:'REFERRAL_UNAVAILABLE'},503);}
 });
 /**
