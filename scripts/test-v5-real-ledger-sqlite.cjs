@@ -51,14 +51,34 @@ try {
   const stopped=await settleV5EarlyStop(db,{userId:1,shareId:'fixture',sessionId:'fixture-session-001',remainingAtoms:1500000});
   assert.equal(stopped.refundedAtoms,1500000);assert.equal(stopped.platformAtoms,0);
   assert.equal(await balance(pool),0);
+  const walletPaid=await ensureLedgerAccount(db,'user',1,'TL','wallet_paid');
   const walletBonus=await ensureLedgerAccount(db,'user',1,'TL','wallet_bonus');
-  assert.equal(await balance(walletBonus),1500000);
+  assert.equal(await balance(walletPaid),1500000,'cash-funded unused TL must remain TL_P');
+  assert.equal(await balance(walletBonus),0,'cash-funded unused TL must not turn into TL_B');
   const stoppedAgain=await settleV5EarlyStop(db,{userId:1,shareId:'fixture',sessionId:'fixture-session-001',remainingAtoms:1500000});
-  assert.equal(stoppedAgain.refundedAtoms,0);assert.equal(await balance(walletBonus),1500000);
-  console.log('PASS actual settleV5EarlyStop: unused 150 TL => TL_B 150, platform 0');
+  assert.equal(stoppedAgain.refundedAtoms,0);assert.equal(await balance(walletPaid),1500000);
+  console.log('PASS actual settleV5EarlyStop: unused paid 150 TL => paid TL_P 150, platform 0');
+
+  const mixed={paid:70000,ad:20000,bonus:10000},mixedShare='mixed';
+  const mixedPools={};
+  for(const source of ['paid','ad','bonus']){
+    const account=await ensureLedgerAccount(db,'user',3,'TL','track_pool:'+mixedShare+':'+source);
+    mixedPools[source]=account;
+    await db.prepare('UPDATE v3_economy_balances SET available_atoms=? WHERE account_id=?').bind(mixed[source],account).run();
+  }
+  const returned=await settleV5EarlyStop(db,{userId:3,shareId:mixedShare,sessionId:'mixed-session-003',remainingAtoms:100000});
+  assert.equal(returned.refundedAtoms,100000);
+  for(const source of ['paid','ad','bonus']){
+    const wallet=await ensureLedgerAccount(db,'user',3,'TL',{paid:'wallet_paid',ad:'wallet_ad',bonus:'wallet_bonus'}[source]);
+    assert.equal(await balance(wallet),mixed[source],'unused '+source+' must return to the same wallet bucket');
+    assert.equal(await balance(mixedPools[source]),0,'depleted '+source+' pool');
+  }
+  const mixedAgain=await settleV5EarlyStop(db,{userId:3,shareId:mixedShare,sessionId:'mixed-session-003',remainingAtoms:100000});
+  assert.equal(mixedAgain.refundedAtoms,0);
+  console.log('PASS V5 mixed source preservation and no double refund: TL_P/TL_A/TL_B are not exchanged on stop');
   const total=await db.prepare('SELECT SUM(available_atoms) AS total FROM v3_economy_balances').first();
-  assert.equal(Number(total.total),1800000);
-  console.log('PASS total ledger conservation: 180 TL');
+  assert.equal(Number(total.total),1900000);
+  console.log('PASS total ledger conservation: 190 TL');
  }
  test().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>sqlite.close());
 }finally{
