@@ -1,3 +1,4 @@
+import { rejectedImmutableShareFields } from './v5-share-metadata-guard';
 import { ownsLinkedReleaseForDeletion } from './v5-share-delete-ownership';
 import musicBulkIntakeRouter from './routes/music-bulk-intake-v5';
 import storeMusicV5Router,{releaseExpiredStoreSessions} from './routes/store-music-v5';
@@ -4275,21 +4276,19 @@ app.get('/api/shares/:id', async (c) => {
 // PATCH /api/shares/:id — 창작자 정보 편집 (곡명 불변)
 // ══════════════════════════════════════════════════════════
 app.patch('/api/shares/:id', async (c) => {
-  const auth = (c.req.header('Authorization') || '').replace('Bearer ', '').trim();
-  if (!auth) return c.json({ error: '인증 필요' }, 401);
-
-  let userId: number;
-  try {
-    const p = parseJWT(auth);
-    userId = Number(p.userId ?? p.id ?? p.sub ?? 0);
-    if (!userId) throw new Error('no userId');
-  } catch {
-    return c.json({ error: '토큰 오류' }, 401);
-  }
+  // shareAuthUser verifies the JWT HMAC and expiry, not merely the payload.
+  const userId=await shareAuthUser(c);
+  if(!userId)return c.json({error:'인증 필요',code:'SIGNED_AUTH_REQUIRED'},401);
 
   const shareId = c.req.param('id');
 
   const body = await c.req.json<any>().catch(() => ({}));
+  if(!body||typeof body!=='object'||Array.isArray(body))
+    return c.json({error:'잘못된 수정 요청',code:'INVALID_SHARE_PATCH'},400);
+  const protectedFields=rejectedImmutableShareFields(body);
+  if(protectedFields.length)
+    return c.json({error:'소유권·발매 유형·재생 파일·가격 등 불변 필드는 수정할 수 없습니다.',code:'IMMUTABLE_SHARE_FIELD',fields:protectedFields},400);
+
   const existing = await c.env.DB.prepare(
     'SELECT id, user_id, title FROM tl_shares WHERE id=?'
   ).bind(shareId).first<any>();
@@ -4350,8 +4349,7 @@ app.patch('/api/shares/:id', async (c) => {
     cover_url:'cover_url', creation_story:'creation_story',
     production_note:'production_note', musical_key:'musical_key',
     credits:'credits', mood_tags:'mood_tags', social_links:'social_links',
-    gallery_images:'gallery_images',
-    release_mode:'release_mode', content_kind:'content_kind', stream_url:'stream_url', file_type:'file_type', file_tl:'file_tl', storage_mode:'storage_mode', origin_hash:'origin_hash',
+    gallery_images:'gallery_images'
   };
 
   const updates: string[] = [];
