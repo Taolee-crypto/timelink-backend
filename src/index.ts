@@ -30,6 +30,7 @@ import tl3PlayerSessionRouter from './tl3-player-session';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
 import { verifyToken, makeAccessToken, hashPassword, verifyPassword } from './auth';
+import {parseRegistrationConsent,ensureV5SignupConsentAudit,signupConsentInsert} from './v5-signup-consent';
 import { CREATOR_SHARE_RATE } from './economy-policy';
 import { getTrackPoolBalances, getLedgerWallet, chargeTrackPool, settleTrackPlayback, settleV5EarlyStop, atomsToTl, tlToAtoms, TL_ATOMS_PER_TL } from './economy-ledger';
 
@@ -407,9 +408,12 @@ app.get('/api/v1/health', async (c) => {
 
 async function registerWithEmail(c:any,providedBody?:any) {
   try {
+    const body=providedBody||await c.req.json().catch(()=>null);
+    const consent=parseRegistrationConsent(body);
+    if(!consent)return c.json({error:'필수 이용약관·개인정보 처리방침 및 만 14세 이상 확인이 필요합니다.',code:'SIGNUP_REQUIRED_CONSENT'},400);
     const rewardPolicy=await readRewardPolicy(c.env.DB);
     const {rules:rewardRules}=rewardPolicy;
-    const { email, password, username, business_name: businessName, biz_reg_num: bizRegNum, is_advertiser: isAdvertiser, verify_code: verifyCode } = providedBody || await c.req.json();
+    const { email, password, username, business_name: businessName, biz_reg_num: bizRegNum, is_advertiser: isAdvertiser, verify_code: verifyCode } = body;
     if (!email || !username) return c.json({ error: '필수 항목 누락' }, 400);
     const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();
     if (exists) return c.json({ error: '이미 가입된 이메일입니다. 로그인을 이용해 주세요.' }, 409);
@@ -432,10 +436,12 @@ async function registerWithEmail(c:any,providedBody?:any) {
       await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
       const now = new Date().toISOString().replace('T',' ').substring(0,19);
       const hashedPw2 = await hashPassword(password||'');
+      await ensureV5SignupConsentAudit(c.env.DB);
       await c.env.DB.batch([c.env.DB.prepare(
         'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name, email_verified) VALUES (?,?,?,?,?,0,?,?,?,?,1)'
       ).bind(email, username, hashedPw2, isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus, isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus, now, isAdvertiser?1:0, bizRegNum||'', businessName||username),
-        c.env.DB.prepare('INSERT INTO v5_signup_entitlements(user_id,bonus_tl,policy_version) SELECT id,?,? FROM users WHERE email=?').bind(isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus,rewardPolicy.version,email)
+        c.env.DB.prepare('INSERT INTO v5_signup_entitlements(user_id,bonus_tl,policy_version) SELECT id,?,? FROM users WHERE email=?').bind(isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus,rewardPolicy.version,email),
+        signupConsentInsert(c.env.DB,email,consent)
       ]);
       const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
       await c.env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=?').bind(Number((user as any).id)).run();
