@@ -63,6 +63,28 @@ class RunnerContractTests(TestCase):
                          "https://api.timelink.digital/api/v1/scores/v5/internal/claim")
 
     @patch.dict(os.environ, {
+        "V5_SCORE_API_BASE": "https://api.timelink.digital"
+    })
+    @patch.object(runner.requests, "Session")
+    def test_failure_report_retries_unacknowledged_response(self, session_cls):
+        session = session_cls.return_value
+        claim = MagicMock()
+        claim.json.return_value = {"job": {"file_id": 179, "source_sha256": "a" * 64}}
+        rejected = MagicMock()
+        rejected.json.return_value = {"ok": False}
+        accepted = MagicMock()
+        accepted.json.return_value = {"ok": True}
+        session.post.side_effect = [claim, rejected, accepted]
+        download = MagicMock()
+        download.content = b"invalid"
+        session.get.return_value = download
+        with patch("time.sleep"):
+            self.assertEqual(runner.main(), 1)
+        self.assertEqual(session.post.call_count, 3)
+        self.assertEqual(session.post.call_args.args[0],
+                         "https://api.timelink.digital/api/v1/scores/v5/internal/fail/179")
+
+    @patch.dict(os.environ, {
         "V5_SCORE_API_BASE": "http://insecure.example",
         "V5_SCORE_WORKER_TOKEN": "t" * 32,
         "TL3_MASTER_SECRET": "m" * 32,
@@ -81,7 +103,9 @@ class RunnerContractTests(TestCase):
         session = session_cls.return_value
         claim = MagicMock()
         claim.json.return_value = {"job": {"file_id": 178, "source_sha256": "a" * 64}}
-        session.post.return_value = claim
+        success = MagicMock()
+        success.json.return_value = {"ok": True}
+        session.post.side_effect = [claim, success]
         download = MagicMock()
         download.content = b"bad"
         session.get.return_value = download
