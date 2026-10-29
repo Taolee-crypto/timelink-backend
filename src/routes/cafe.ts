@@ -659,8 +659,10 @@ router.post('/channels/:id/staff/:memberId/approve', async (c) => {
   if(Number(cafe.owner_id)!==auth.id) return c.json({ok:false,error:'대표자만 승인할 수 있습니다.'},403);
   const member=await c.env.DB.prepare("SELECT id FROM cafe_staff_members WHERE id=? AND channel_id=? AND status='pending'").bind(memberId,channelId).first<any>();
   if(!member) return c.json({ok:false,error:'승인 대기 중인 직원을 찾을 수 없습니다.'},404);
-  await c.env.DB.prepare("UPDATE cafe_staff_members SET status='active',approved_by=?,updated_at=? WHERE id=? AND channel_id=?")
+  // A concurrent permission revocation must not be overwritten by a stale approval.
+  const approved=await c.env.DB.prepare("UPDATE cafe_staff_members SET status='active',approved_by=?,updated_at=? WHERE id=? AND channel_id=? AND status='pending'")
     .bind(auth.id,Date.now(),memberId,channelId).run();
+  if(!approved.meta?.changes)return c.json({ok:false,error:'직원 상태가 변경되었습니다. 목록을 새로고침해주세요.'},409);
   return c.json({ok:true,member_id:memberId,status:'active'});
 });
 

@@ -16,6 +16,8 @@ jobs:
         include:
           - name: Member and creator rights
             script: scripts/test-creator-contributors.cjs
+          - name: Personal store membership and staff approval
+            script: scripts/test-cafe-member-staff.cjs
           - name: Member referrals and account authorization
             script: scripts/test-member-referrals-v5.cjs
           - name: TL3 time-free playback and contributions
