@@ -64,7 +64,14 @@ export async function settleVerifiedReferral(db:D1Database,referrerIdInput:numbe
  const key='referral:'+milestone+':'+referredId;
  const prior=await db.prepare('SELECT status,credited_tl_b,poc_points,ledger_transaction_id FROM v5_referral_reward_receipts WHERE milestone_key=?')
   .bind(key).first<any>();
- if(prior)return {status:String(prior.status),milestone,tl_b:Number(prior.credited_tl_b),poc_points:Number(prior.poc_points),ledger_transaction_id:prior.ledger_transaction_id||null};
+ if(prior){
+   let transactionId=prior.ledger_transaction_id||null;
+   if(transactionId===key){
+     const tx=await db.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>();
+     transactionId=tx?.id||transactionId;
+   }
+   return {status:String(prior.status),milestone,tl_b:Number(prior.credited_tl_b),poc_points:Number(prior.poc_points),ledger_transaction_id:transactionId};
+ }
  const reward=await readRewardPolicy(db);
  const isSignup=milestone==='signup_verified';
  const tl_b=Number(isSignup?reward.rules.referral_signup_tl_b:reward.rules.referral_store_tl_b);
@@ -93,6 +100,10 @@ export async function settleVerifiedReferral(db:D1Database,referrerIdInput:numbe
    issuanceStatements:[db.prepare('UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?').bind(amountAtoms,source)],
    atomicStatements:[db.prepare(sql).bind(...sourceArgs,key)]
  });
+ // Atomically written reward references are keyed by the idempotency key.
+ // Normalize the display reference to the canonical immutable transaction UUID.
+ await db.prepare('UPDATE v5_referral_reward_receipts SET ledger_transaction_id=? WHERE milestone_key=? AND ledger_transaction_id=?')
+  .bind(posted.id,key,key).run();
  return {status:'posted',milestone,tl_b,poc_points,ledger_transaction_id:posted.id};
 }
 /** Explicit administrator-adjudicated reversal. Never erase historic receipts. */
