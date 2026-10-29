@@ -474,27 +474,20 @@ eco.post('/exchange',async c=>{
    body: { seconds, tl_p_spent, tl_a_spent, tl_b_spent,
            mode, share_id, new_uploads, listen_minutes }
 ══════════════════════════════════════════════════════ */
-eco.post('/activity', async (c) => {
-  const userId = await authId(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-
-  // Only server-committed playback/payment events may earn POC. User-reported
-  // time, purchases or uploads are never trusted as financial evidence.
-  const body = await c.req.json().catch(() => ({})) as any;
-  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0)
-    return c.json({ok:false,code:'CLIENT_REPORTED_POC_DISABLED',
-      error:'활동 실적은 서버 검증 기록으로만 집계됩니다. 직접 입력한 소비·청취 시간은 인정되지 않습니다.'},403);
-
-  try {
-    await migrateDB(c.env.DB);
-    const {rules:policy}=await readRewardPolicy(c.env.DB);
-
-    // Read-only compatibility preview: never create POC events on user request.
+/**
+ * Development-stage POC calculator. Only server-held evidence participates;
+ * client-supplied amounts can never influence this calculation.
+ * Shared by preview and mining so payouts cannot use stale client estimates.
+ * Financial issuance here is internal TLC ledger only; NOT a TON mint.
+ */
+async function calculateServerPoc(db:D1Database,userId:string){
+  await migrateDB(db);
+  const {rules:policy}=await readRewardPolicy(db);
     // 월간 집계 데이터 조회 (POC 계산용)
     const now = new Date();
     const monthStart = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
 
-    const monthlyStats = await c.env.DB.prepare(`
+    const monthlyStats = await db.prepare(`
       SELECT
         SUM(CASE WHEN mode='consume' THEN tl_spent ELSE 0 END) as monthly_tl_p,
         SUM(seconds) as total_seconds
@@ -502,14 +495,14 @@ eco.post('/activity', async (c) => {
       WHERE user_id=? AND created_at >= ?
     `).bind(userId, monthStart).first() as any;
 
-    const shareStats = await c.env.DB.prepare(`
+    const shareStats = await db.prepare(`
       SELECT COUNT(*) as play_count
       FROM poc_logs
       WHERE user_id=? AND mode='listen' AND created_at >= ?
     `).bind(userId, monthStart).first() as any;
 
     // MP3와 TL3 업로드 수 분리 집계 (MP3 = 1, TL3 = 3 가중치)
-    const uploadStats = await c.env.DB.prepare(`
+    const uploadStats = await db.prepare(`
       SELECT 
         COALESCE(SUM(CASE WHEN content_kind='mp3' OR release_mode LIKE 'free_mp3%' THEN 1 ELSE 0 END), 0) as mp3_count,
         COALESCE(SUM(CASE WHEN content_kind='tl3' OR release_mode='tl3' THEN 1 ELSE 0 END), 0) as tl3_count
@@ -519,7 +512,7 @@ eco.post('/activity', async (c) => {
 
 
     // ★ 악보 통계 (신규) — 악보 공유/사용/보기
-    const scoreStats = await c.env.DB.prepare(`
+    const scoreStats = await db.prepare(`
       SELECT
         COALESCE(SUM(CASE WHEN mode='upload_score' THEN 1 ELSE 0 END), 0) as shares,
         COALESCE(SUM(CASE WHEN mode='score_use' THEN 1 ELSE 0 END), 0) as uses,
@@ -567,7 +560,7 @@ eco.post('/activity', async (c) => {
     // A legacy preview is not verification; never persist a payout/cashout POC index.
 
     // ── TLC 채굴 가능량 계산 ──
-    const user = await c.env.DB.prepare(
+    const user = await db.prepare(
       'SELECT plan, tl_p_lifetime, tl_p_exchanged FROM users WHERE id=?'
     ).bind(userId).first() as any;
 
@@ -581,9 +574,9 @@ eco.post('/activity', async (c) => {
     // 월 하드캡: TL_P 월소비의 30%
     const monthHardCap = monthlyTlP * policy.mining_month_cap;
 
-    return c.json({
+    return {
       ok: true,
-      preview_only:true,verified_issuance:false,policy_source:'legacy_read_only',
+      preview_only:true,policy_source:'server_activity_summary',
       poc_index: Number(pocIndex.toFixed(3)),
       poc_components: {
         content: Number(contentScore.toFixed(3)),
@@ -593,15 +586,23 @@ eco.post('/activity', async (c) => {
         score:   Number(scoreScore.toFixed(3)),
       },
       tlc_mining: {
-        daily_max: 0, // No TLC can be issued from legacy or self-reported evidence.
+        daily_max: Number(Math.min(dailyTLC,monthHardCap/30).toFixed(9)),
         monthly_hard_cap: Number(monthHardCap.toFixed(0)),
-        theoretical_daily_max: Number(dailyTLC.toFixed(2)),
+        theoretical_daily_max: Number(dailyTLC.toFixed(9)),
         plan_multiplier: mineMultiplier,
       }
-    });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
+    };
+}
+
+eco.post('/activity', async (c) => {
+  const userId=await authId(c);
+  if(!userId)return c.json({ok:false,error:'인증 필요'},401);
+  const body=await c.req.json().catch(()=>({})) as any;
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==0)
+    return c.json({ok:false,code:'CLIENT_REPORTED_POC_DISABLED',
+      error:'소비·청취·업로드 증빙은 서버 활동 기록에서만 계산합니다.'},403);
+  try{return c.json(await calculateServerPoc(c.env.DB,userId));}
+  catch(error:any){return c.json({ok:false,error:String(error.message||error)},503);}
 });
 
 /* ══════════════════════════════════════════════════════
@@ -632,16 +633,75 @@ eco.get('/mining-history', async (c) => {
    TLC 채굴 확정 (하루 1회, 하드캡 적용)
 ══════════════════════════════════════════════════════ */
 eco.post('/mine-tlc', async (c) => {
-  const userId = await authId(c);
-  if (!userId) return c.json({ok:false,code:'AUTH_REQUIRED',error:'인증 필요'},401);
-  // Historical users.tlc_balance + tlc_mining_v2 writes were non-atomic and
-  // never posted to the canonical V3 TLC issuance ledger. No client-supplied
-  // amount can create TLC without a verified POC snapshot, authoritative TL_P
-  // consumption, a unique daily claim, and balanced ledger entries in one batch.
-  return c.json({
-    ok:false,code:'V3_TLC_VERIFIED_ISSUANCE_REQUIRED',
-    error:'채굴 지급은 검증된 기여도 원장과 중복 지급 방지 연동 후 가능합니다. 확인되지 않은 TLC를 발행하지 않습니다.'
-  },409);
+  const userId=await authId(c);
+  if(!userId)return c.json({ok:false,error:'인증 필요',code:'AUTH_REQUIRED'},401);
+  // Never trust the caller's requested amount: the server independently
+  // calculates a day's TLC from verified-on-server POC activity and policies.
+  const body=await c.req.json().catch(()=>({})) as any;
+  if(!body||typeof body!=='object'||Array.isArray(body)||
+    Object.keys(body).some(key=>key!=='tlc_amount'))
+    return c.json({ok:false,code:'INVALID_MINING_REQUEST'},400);
+  if(body.tlc_amount!==undefined&&(!Number.isFinite(body.tlc_amount)||body.tlc_amount<0))
+    return c.json({ok:false,code:'INVALID_MINING_REQUEST'},400);
+  try{
+    const db=c.env.DB;
+    const date=new Date().toISOString().slice(0,10);
+    const prior=await db.prepare("SELECT id,tlc_mined FROM tlc_mining_v2 WHERE user_id=? AND DATE(created_at)=? LIMIT 1")
+      .bind(userId,date).first<any>();
+    if(prior)return c.json({ok:false,code:'ALREADY_MINED_TODAY',error:'오늘 TLC 채굴은 이미 완료되었습니다.',already_mined:Number(prior.tlc_mined||0)},409);
+    const v3Prior=await db.prepare('SELECT id,minted_atoms FROM v3_tlc_mining_records WHERE user_id=? AND period_date=? LIMIT 1')
+      .bind(userId,date).first<any>();
+    if(v3Prior)return c.json({ok:false,code:'ALREADY_MINED_TODAY',error:'오늘 TLC 채굴은 이미 완료되었습니다.',already_mined:Number(v3Prior.minted_atoms)/1e9},409);
+    const preview=await calculateServerPoc(db,userId);
+    const daily=Number(preview.tlc_mining.daily_max||0);
+    const amountAtoms=Math.round(daily*1e9);
+    if(!Number.isSafeInteger(amountAtoms)||amountAtoms<10000000)
+      return c.json({ok:false,code:'NO_TLC_MINEABLE',error:'오늘 채굴 가능한 TLC가 없습니다.',poc_index:preview.poc_index},400);
+    const amount=amountAtoms/1e9;
+    const plan=await db.prepare('SELECT plan FROM users WHERE id=?').bind(userId).first<any>();
+    const planCode=plan?.plan==='B'?'B':'A';
+    const userAccount=await ensureLedgerAccount(db,'user',userId,'TLC','wallet');
+    const systemAccount=await ensureLedgerAccount(db,'system','v5-dev-mining','TLC','issuance');
+    const snapshotId=crypto.randomUUID(),miningId=crypto.randomUUID();
+    const receiptKey='v5-tlc-day:'+userId+':'+date;
+    const snapshot={
+      activity:preview.poc_components,policy:'manual',month:date.slice(0,7),
+      testStage:'prelaunch',score:preview.poc_index
+    };
+    const statements=[
+      db.prepare('INSERT INTO v3_poc_snapshots(id,user_id,period_start,period_end,poc_index,components_json,formula_version,source_event_count) VALUES(?,?,?,?,?,?,?,?)')
+        .bind(snapshotId,userId,date.slice(0,7)+'-01',date,Math.max(0.1,Math.min(5,Number(preview.poc_index))),JSON.stringify(snapshot),'server-activity-v1',0),
+      db.prepare("INSERT INTO v3_tlc_mining_records(id,user_id,idempotency_key,period_date,poc_snapshot_id,eligible_tl_spend_atoms,poc_index,plan_code,multiplier,requested_atoms,minted_atoms,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'posted')")
+        .bind(miningId,userId,receiptKey,date,snapshotId,0,Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amountAtoms,amountAtoms),
+      db.prepare('UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)+? WHERE id=?')
+        .bind(amount,userId),
+      db.prepare("INSERT INTO tlc_mining_v2(user_id,tl_p_base,poc_index,plan,multiplier,tlc_mined) VALUES(?,?,?,?,?,?)")
+        .bind(userId,Number(preview.tlc_mining.monthly_hard_cap||0)/0.3,Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amount)
+    ];
+    const posted=await postLedgerTransaction(db,{
+      idempotencyKey:receiptKey,transactionType:'tlc_development_mining',source:'server_poc_v1',
+      referenceType:'mining_day',referenceId:date,actorUserId:userId,
+      description:'개발 단계 TLC 내부 원장 채굴 (블록체인 발행 아님)',
+      metadata:{date,poc_index:preview.poc_index,development_only:true,amount_tlc:amount},
+      issuanceStatements:[db.prepare('UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?')
+        .bind(amountAtoms,systemAccount)],
+      lines:[{accountId:systemAccount,assetCode:'TLC',amountAtoms:-amountAtoms},
+        {accountId:userAccount,assetCode:'TLC',amountAtoms:amountAtoms}],
+      atomicStatements:statements
+    });
+    if(posted.replayed)return c.json({ok:false,code:'ALREADY_MINED_TODAY',error:'오늘 TLC 채굴은 이미 완료되었습니다.'},409);
+    const updated=await db.prepare('SELECT tlc_balance FROM users WHERE id=?').bind(userId).first<any>();
+    return c.json({ok:true,mined:amount,tlc_total:Number(updated?.tlc_balance||0),
+      today_total:amount,daily_max:daily,poc_index:preview.poc_index,
+      plan_multiplier:Number(preview.tlc_mining.plan_multiplier||1),
+      development_only:true,ledger_receipt:posted.id,blockchain_minted:false});
+  }catch(error:any){
+    const message=String(error.message||error);
+    if(/UNIQUE constraint failed|Idempotency key|v3_tlc_mining_records/.test(message))
+      return c.json({ok:false,code:'ALREADY_MINED_TODAY',error:'동일 날짜의 채굴 기록이 존재합니다. 중복 지급하지 않았습니다.'},409);
+    console.error('[V5_MINING_POST]',message);
+    return c.json({ok:false,code:'TLC_MINING_POST_FAILED',error:'채굴 원장 저장에 실패했습니다. 잔액과 기록을 확인해주세요.'},503);
+  }
 });
 
 /* ══════════════════════════════════════════════════════
