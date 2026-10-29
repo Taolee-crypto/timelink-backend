@@ -44,6 +44,17 @@ class VocalContract(unittest.TestCase):
             self.assertGreaterEqual(result["melody"][1]["s"], result["melody"][0]["s"] + result["melody"][0]["d"] - 0.001)
             json.dumps(result)
 
+    def test_timed_lyrics_alignment(self):
+        draft = {"melody": [{"s": 0.2, "d": 0.4, "m": 60}, {"s": 1.2, "d": 0.4, "m": 62}], "chords": []}
+        aligned = module.align_timed_lyrics(draft, "[00:00.10]RED\\n[00:01.10]AND YELLOW")
+        self.assertEqual([n["lyric"] for n in aligned["melody"]], ["RED", "AND YELLOW"])
+        self.assertNotIn("lyric", draft["melody"][0])
+        self.assertEqual(aligned["lyrics_status"], "timed_draft_review_required")
+        with self.assertRaisesRegex(ValueError, "LRC"):
+            module.align_timed_lyrics(draft, "untimed lyrics")
+        with self.assertRaisesRegex(ValueError, "matching vocal"):
+            module.align_timed_lyrics(draft, "[99:00.00]out of range")
+
     def test_missing_source(self):
         with self.assertRaises(FileNotFoundError):
             module.transcribe_vocals(Path("/no/such/file.mp3"))
