@@ -1,0 +1,35 @@
+name: V5 Purchased TL Refund Maturity Provenance
+on:
+  pull_request:
+    paths:
+      - 'src/v5-payment-ledger.ts'
+      - 'src/v5-purchased-tl-lifecycle.ts'
+      - 'src/economy-ledger.ts'
+      - 'scripts/test-v5-purchased-tl-lifecycle.cjs'
+      - 'docs/v5-purchased-tl-lifecycle-policy.md'
+      - '.github/workflows/v5-paid-tl-lifecycle.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/v5-payment-ledger.ts'
+      - 'src/v5-purchased-tl-lifecycle.ts'
+      - 'src/economy-ledger.ts'
+      - 'scripts/test-v5-purchased-tl-lifecycle.cjs'
+      - '.github/workflows/v5-paid-tl-lifecycle.yml'
+permissions:
+  contents: read
+jobs:
+  purchased-tl-provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Verify paid TL purchase provenance and legal conversion gate
+        run: node scripts/test-v5-purchased-tl-lifecycle.cjs
+      - name: Check types and all payment code
+        run: npx --no-install tsc --noEmit
