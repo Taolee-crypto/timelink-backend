@@ -3969,13 +3969,22 @@ app.get('/api/shares/my', async (c) => {
   try {
     const [shares,files]=await Promise.all([
       c.env.DB.prepare(
-        "SELECT id,title,artist,album,duration,file_tl,category,file_type,category_type,description,cover_url,content_kind,release_mode,storage_mode,origin_hash,release_check,pulse,created_at FROM tl_shares WHERE CAST(user_id AS INTEGER)=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        `SELECT id,title,artist,album,duration,file_tl,category,file_type,category_type,description,cover_url,
+           content_kind,release_mode,pulse,created_at,
+           COALESCE(
+             (SELECT r.file_id FROM tl3_v5_releases r WHERE r.share_id=CAST(tl_shares.id AS TEXT) AND r.status='sealed' ORDER BY r.updated_at DESC LIMIT 1),
+             (SELECT r.file_id FROM tl3_spine_v4_releases r WHERE r.share_id=CAST(tl_shares.id AS TEXT) AND r.status='sealed' LIMIT 1),
+             (SELECT r.file_id FROM tl3_releases r WHERE r.share_id=CAST(tl_shares.id AS TEXT) AND r.status='released' LIMIT 1)
+           ) AS file_id
+           FROM tl_shares WHERE CAST(user_id AS INTEGER)=? ORDER BY created_at DESC LIMIT ? OFFSET ?`
       ).bind(userId,limit,offset).all(),
       c.env.DB.prepare(
         "SELECT id,title,artist,genre,file_type,file_size_bytes,duration_seconds,auth_status,shared,play_count,created_at,updated_at FROM tl_files WHERE user_id=? AND COALESCE(auth_status,'')<>'deleted' ORDER BY created_at DESC LIMIT ? OFFSET ?"
       ).bind(userId,limit,offset).all()
     ]);
-    return c.json({shares:shares.results||[],files:files.results||[],limit,offset});
+    c.header('Cache-Control','private, no-store');
+    return c.json({shares:shares.results||[],files:files.results||[],limit,offset,
+      owner_scoped:true,includes_private_unpublished_files:true});
   } catch(e:any) {
     return c.json({error:e?.message||'개인 파일 목록 조회 실패'},500);
   }
