@@ -94,8 +94,6 @@ def refine_pitch_events(events, midi_frames, frame_seconds, duration):
     for i in range(1, len(notes)):
         if notes[i]['s'] - notes[i-1]['s']-notes[i-1]['d'] < 0.1 and abs(notes[i]['m']-notes[i-1]['m']) >= 12:
             notes[i]['pitch_review'] = True
-            if not winners:  # no-op; guarded to keep count stable
-                pass
     report['total_notes'] = len(notes)
     report['pitch_review_notes'] = sum(bool(n.get('pitch_review')) for n in notes)
     return notes, report
