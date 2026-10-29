@@ -72,7 +72,20 @@ def align_lyrics(vocals, lyrics, notes, duration):
     result = model.align(str(vocals),text,language=language,original_split=True,verbose=None)
     if result is None: raise ValueError('Lyrics alignment failed')
     print('V5_SCORE_STAGE:lyrics_attach', file=sys.stderr, flush=True)
-    words = attach_words(notes,result.to_dict()['segments'],duration)
+    try:
+        # Never expose creator text, voice content, or the model's raw traceback.
+        words = attach_words(notes,result.to_dict()['segments'],duration)
+    except (ValueError, KeyError, TypeError, IndexError) as error:
+        allowed = {
+            'INVALID_VOCAL_NOTES', 'INVALID_WORD_TIMESTAMP',
+            'WORD_OUTSIDE_AUDIO', 'WORD_TIMING_OUT_OF_ORDER',
+            'WORD_HAS_NO_VOCAL_ANCHOR', 'WORD_HAS_NO_VALID_DURATION',
+            'NO_ALIGNED_WORDS',
+        }
+        reason = str(error) if isinstance(error, ValueError) else ''
+        reason = reason if reason in allowed else 'INVALID_ALIGNMENT_STRUCTURE'
+        print('V5_SCORE_REASON:' + reason, file=sys.stderr, flush=True)
+        raise
     print('V5_SCORE_STAGE:lyrics_verify', file=sys.stderr, flush=True)
     if re.sub(r'\s','', ''.join(w['text'] for w in words)) != re.sub(r'\s','',text):
         raise ValueError('Alignment did not preserve supplied lyrics')
