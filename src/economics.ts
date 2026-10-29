@@ -490,7 +490,8 @@ async function calculateServerPoc(db:D1Database,userId:string){
     const monthlyStats = await db.prepare(`
       SELECT
         SUM(CASE WHEN mode='consume' THEN tl_spent ELSE 0 END) as monthly_tl_p,
-        SUM(seconds) as total_seconds
+        SUM(seconds) as total_seconds,
+        COUNT(*) as source_event_count
       FROM poc_logs
       WHERE user_id=? AND created_at >= ?
     `).bind(userId, monthStart).first() as any;
@@ -522,9 +523,9 @@ async function calculateServerPoc(db:D1Database,userId:string){
     `).bind(userId, monthStart).first().catch(() => ({ shares: 0, uses: 0, views: 0 })) as any;
     // ── POC 신 알고리즘 ──
     // 요소별 정규화 (각 최대값 기준)
-    const monthlyTlP   = Number(monthlyStats?.monthly_tl_p || 0);
+    const monthlyTlP   = Math.max(0,Number(monthlyStats?.monthly_tl_p || 0));
     const monthlyPlays = Number(shareStats?.play_count || 0);
-    const monthlyHours = Number(monthlyStats?.total_seconds || 0) / 3600;
+    const monthlyHours = Math.max(0,Number(monthlyStats?.total_seconds || 0)) / 3600;
     // MP3 = 1점, TL3 = 3점 (가중치)
     const mp3Count = Number(uploadStats?.mp3_count || 0);
     const tl3Count = Number(uploadStats?.tl3_count || 0);
@@ -577,6 +578,7 @@ async function calculateServerPoc(db:D1Database,userId:string){
     return {
       ok: true,
       preview_only:true,policy_source:'server_activity_summary',
+      source_event_count:Number(monthlyStats?.source_event_count || 0),
       poc_index: Number(pocIndex.toFixed(3)),
       poc_components: {
         content: Number(contentScore.toFixed(3)),
@@ -587,7 +589,8 @@ async function calculateServerPoc(db:D1Database,userId:string){
       },
       tlc_mining: {
         daily_max: Number(Math.min(dailyTLC,monthHardCap/30).toFixed(9)),
-        monthly_hard_cap: Number(monthHardCap.toFixed(0)),
+        monthly_hard_cap: Number(monthHardCap.toFixed(4)),
+        monthly_eligible_tl_p: Number(monthlyTlP.toFixed(4)),
         theoretical_daily_max: Number(dailyTLC.toFixed(9)),
         plan_multiplier: mineMultiplier,
       }
@@ -670,13 +673,13 @@ eco.post('/mine-tlc', async (c) => {
     };
     const statements=[
       db.prepare('INSERT INTO v3_poc_snapshots(id,user_id,period_start,period_end,poc_index,components_json,formula_version,source_event_count) VALUES(?,?,?,?,?,?,?,?)')
-        .bind(snapshotId,userId,date.slice(0,7)+'-01',date,Math.max(0.1,Math.min(5,Number(preview.poc_index))),JSON.stringify(snapshot),'server-activity-v1',0),
+        .bind(snapshotId,userId,date.slice(0,7)+'-01',date,Math.max(0.1,Math.min(5,Number(preview.poc_index))),JSON.stringify(snapshot),'server-activity-v1',Number(preview.source_event_count||0)),
       db.prepare("INSERT INTO v3_tlc_mining_records(id,user_id,idempotency_key,period_date,poc_snapshot_id,eligible_tl_spend_atoms,poc_index,plan_code,multiplier,requested_atoms,minted_atoms,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'posted')")
-        .bind(miningId,userId,receiptKey,date,snapshotId,0,Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amountAtoms,amountAtoms),
+         .bind(miningId,userId,receiptKey,date,snapshotId,Math.round(Number(preview.tlc_mining.monthly_eligible_tl_p||0)*10000),Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amountAtoms,amountAtoms),
       db.prepare('UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)+? WHERE id=?')
         .bind(amount,userId),
       db.prepare("INSERT INTO tlc_mining_v2(user_id,tl_p_base,poc_index,plan,multiplier,tlc_mined) VALUES(?,?,?,?,?,?)")
-        .bind(userId,Number(preview.tlc_mining.monthly_hard_cap||0)/0.3,Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amount)
+        .bind(userId,Number(preview.tlc_mining.monthly_eligible_tl_p||0),Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amount)
     ];
     const posted=await postLedgerTransaction(db,{
       idempotencyKey:receiptKey,transactionType:'tlc_development_mining',source:'server_poc_v1',
