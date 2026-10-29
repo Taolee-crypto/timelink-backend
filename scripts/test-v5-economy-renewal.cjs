@@ -5,10 +5,12 @@ buildSync({stdin:{contents:`export * from './src/v5-contribution-policy';export 
 const api=require(path.join(temp,'api.cjs')),sqlite=new DatabaseSync(':memory:');
 sqlite.exec(fs.readFileSync('migrations/0003_v3_economy_ledger.sql','utf8'));
 sqlite.exec(`UPDATE v3_economy_assets SET decimals=4 WHERE asset_code='TL';
-CREATE TABLE users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER DEFAULT 1,account_forfeited INTEGER DEFAULT 0,tl_p_lifetime INTEGER DEFAULT 0);
+CREATE TABLE users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER DEFAULT 1,account_forfeited INTEGER DEFAULT 0,tl_p_lifetime INTEGER DEFAULT 0,tlc_balance REAL NOT NULL DEFAULT 0,poc_index REAL DEFAULT 1.0);
 INSERT INTO users(id,role) VALUES(1,'admin'),(2,'user'),(3,'user');
 CREATE TABLE tl_payments(user_id TEXT,method TEXT,pg_id TEXT,merchant_uid TEXT,amount_krw INTEGER,tl_granted INTEGER,bonus_tl INTEGER,status TEXT);
-CREATE TABLE play_events(file_id INTEGER,player_user_id INTEGER,tl_deducted REAL,revenue_credited REAL,file_tl_after REAL,play_duration_seconds REAL,car_mode INTEGER);`);
+CREATE TABLE play_events(file_id INTEGER,player_user_id INTEGER,tl_deducted REAL,revenue_credited REAL,file_tl_after REAL,play_duration_seconds REAL,car_mode INTEGER);
+CREATE TABLE poc_logs(id INTEGER PRIMARY KEY,user_id INTEGER,mode TEXT,seconds INTEGER,tl_spent REAL,poc_gained REAL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE tl_shares(id INTEGER PRIMARY KEY,user_id INTEGER,content_kind TEXT,release_mode TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);`);
 const db={prepare(sql){let args=[];const st={sql,bind(...v){args=v;return st},async first(){return sqlite.prepare(sql).get(...args)||null},async all(){return {results:sqlite.prepare(sql).all(...args)}},async run(){const r=sqlite.prepare(sql).run(...args);return {results:[],meta:{changes:Number(r.changes)}}}};return st},async batch(stmts){sqlite.exec('BEGIN IMMEDIATE');try{const rs=[];for(const st of stmts)rs.push(/^\s*(SELECT|WITH|PRAGMA)/i.test(st.sql)?await st.all():await st.run());sqlite.exec('COMMIT');return rs}catch(e){sqlite.exec('ROLLBACK');throw e}}};
 const now=Date.now();
 const ev=(activity,quantity,key=activity,extra={})=>({eventKey:key,userId:'2',activity,quantity,occurredAtMs:now-1000,evidenceRef:'fixture:'+key,economicKey:key,counterpartyId:['content_listen','score_share','score_use','share_listen'].includes(activity)||activity.startsWith('referral_')?'3':null,verified:true,revoked:false,...extra});
@@ -78,14 +80,42 @@ async function main(){
    method:'POST',headers:{'Content-Type':'application/json'},body:'{}'
  },env);
  assert.equal(withoutLogin.status,401);
+ // Valid server-owned activities are the only permissible POC source.
+ sqlite.prepare("INSERT INTO poc_logs(user_id,mode,seconds,tl_spent) VALUES(2,'consume',0,5000)").run();
+ sqlite.prepare("INSERT INTO poc_logs(user_id,mode,seconds,tl_spent) VALUES(2,'listen',3600,0)").run();
+ const preview=await api.eco.request('/activity',{method:'POST',headers:{Authorization:'Bearer '+userToken,'Content-Type':'application/json'},body:'{}'},env);
+ assert.equal(preview.status,200);let previewBody=await preview.json();
+ assert.ok(previewBody.poc_index>.1);assert.ok(previewBody.tlc_mining.daily_max>0);
  const mint=await api.eco.request('/mine-tlc',{
    method:'POST',headers:{Authorization:'Bearer '+userToken,'Content-Type':'application/json'},
    body:JSON.stringify({tlc_amount:999999999})
  },env);
- assert.equal(mint.status,409);
- assert.equal((await mint.json()).code,'V3_TLC_VERIFIED_ISSUANCE_REQUIRED');
- assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='tlc_mining_v2'").get().n,0,'Mint denial must have no DDL or DML side effects');
- console.log('PASS TLC proof gate: forged client POC blocked; unverified legacy TLC mint cannot change balances or write issuance');
+ assert.equal(mint.status,200,await mint.clone().text());
+ const receipt=await mint.json();
+ assert.ok(receipt.ok);assert.ok(receipt.mined>0);
+ assert.ok(receipt.mined<=previewBody.tlc_mining.daily_max+1e-9);
+ assert.equal(receipt.development_only,true);
+ assert.equal(receipt.blockchain_minted,false);
+ const ledgerMined=sqlite.prepare("SELECT COUNT(*) n FROM v3_economy_transactions WHERE transaction_type='tlc_development_mining'").get().n;
+ assert.equal(ledgerMined,1);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM v3_tlc_mining_records').get().n,1);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM tlc_mining_v2').get().n,1);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM v3_poc_snapshots').get().n,1);
+ const entries=sqlite.prepare("SELECT SUM(amount_atoms) n FROM v3_economy_entries WHERE transaction_id=?").get(receipt.ledger_receipt);
+ assert.equal(entries.n,0);
+ const minedBalance=sqlite.prepare('SELECT tlc_balance FROM users WHERE id=2').get().tlc_balance;
+ assert.equal(minedBalance,receipt.mined);
+ const repeatMint=await api.eco.request('/mine-tlc',{
+   method:'POST',headers:{Authorization:'Bearer '+userToken,'Content-Type':'application/json'},
+   body:'{}'
+ },env);
+ assert.equal(repeatMint.status,409);
+ assert.equal((await repeatMint.json()).code,'ALREADY_MINED_TODAY');
+ assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM v3_tlc_mining_records').get().n,1);
+ assert.equal(sqlite.prepare('SELECT tlc_balance FROM users WHERE id=2').get().tlc_balance,minedBalance);
+ const history=await api.eco.request('/mining-history',{headers:{Authorization:'Bearer '+userToken}},env);
+ assert.equal(history.status,200);assert.equal((await history.json()).history.length,1);
+ console.log('PASS TLC mining: server POC only, atomic V3 ledger + legacy display, same-day dedup, amount cap, history');
  response=await api.eco.request('/daily-free-allowance',{},env);assert.equal(response.status,401);
  response=await api.eco.request('/daily-free-allowance?user_id=3',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,200);body=await response.json();assert.equal(body.active,false);assert.equal(body.subscriptionCheckoutEnabled,false);
  response=await api.eco.request('/daily-free-products',{},env);body=await response.json();assert.equal(body.products.length,24);assert.equal(body.purchasable,false);
