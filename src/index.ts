@@ -406,6 +406,17 @@ app.get('/api/v1/health', async (c) => {
   }
 });
 
+function secureEmailVerificationCode():string {
+  const bytes=new Uint32Array(1);
+  const range=900000,limit=Math.floor(0x100000000/range)*range;
+  do{crypto.getRandomValues(bytes);}while(bytes[0]>=limit);
+  return String(100000+(bytes[0]%range));
+}
+function emailCodeCooldown(createdAt:unknown):boolean {
+  if(typeof createdAt!=='string')return false;
+  const parsed=Date.parse(createdAt.includes('T')?createdAt:createdAt.replace(' ','T')+'Z');
+  return Number.isFinite(parsed)&&Date.now()-parsed<60_000&&Date.now()>=parsed;
+}
 async function registerWithEmail(c:any,providedBody?:any) {
   try {
     const body=providedBody||await c.req.json().catch(()=>null);
@@ -422,6 +433,7 @@ async function registerWithEmail(c:any,providedBody?:any) {
 
     // 인증 코드 검증
     if (verifyCode) {
+      if(!/^\d{6}$/.test(String(verifyCode)))return c.json({error:'6자리 이메일 인증 코드가 필요합니다.'},400);
       if(typeof password!=='string'||password.length<8)return c.json({error:'비밀번호는 8자 이상이어야 합니다.'},400);
       await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -433,7 +445,8 @@ async function registerWithEmail(c:any,providedBody?:any) {
       ).bind(email, verifyCode).first() as any;
       if (!row) return c.json({ error: '인증 코드가 올바르지 않습니다' }, 400);
       if (new Date(row.expires_at) < new Date()) return c.json({ error: '인증 코드가 만료되었습니다' }, 400);
-      await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
+      // Keep the code available for retry if user creation or ledger grant fails.
+      // Remove it atomically only once a verified user and consent are stored.
       const now = new Date().toISOString().replace('T',' ').substring(0,19);
       const hashedPw2 = await hashPassword(password||'');
       await ensureV5SignupConsentAudit(c.env.DB);
@@ -441,7 +454,8 @@ async function registerWithEmail(c:any,providedBody?:any) {
         'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name, email_verified) VALUES (?,?,?,?,?,0,?,?,?,?,1)'
       ).bind(email, username, hashedPw2, isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus, isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus, now, isAdvertiser?1:0, bizRegNum||'', businessName||username),
         c.env.DB.prepare('INSERT INTO v5_signup_entitlements(user_id,bonus_tl,policy_version) SELECT id,?,? FROM users WHERE email=?').bind(isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus,rewardPolicy.version,email),
-        signupConsentInsert(c.env.DB,email,consent)
+        signupConsentInsert(c.env.DB,email,consent),
+        c.env.DB.prepare('DELETE FROM email_verifications WHERE email=? AND code=?').bind(email,verifyCode)
       ]);
       const user = await c.env.DB.prepare(USER_SELECT + ' WHERE email=?').bind(email).first();
       await c.env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=?').bind(Number((user as any).id)).run();
@@ -455,13 +469,15 @@ async function registerWithEmail(c:any,providedBody?:any) {
     }
 
     // 인증 코드 발송
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = secureEmailVerificationCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT NOT NULL, code TEXT NOT NULL,
       expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
     )`).run().catch(()=>{});
+    const lastCode=await c.env.DB.prepare('SELECT created_at FROM email_verifications WHERE email=? ORDER BY id DESC LIMIT 1').bind(email).first<{created_at:string}>();
+    if(emailCodeCooldown(lastCode?.created_at))return c.json({error:'인증 코드 재전송은 1분 후 가능합니다.',code:'VERIFY_CODE_RATE_LIMIT'},429);
     await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
     await c.env.DB.prepare(
       'INSERT INTO email_verifications (email, code, expires_at) VALUES (?,?,?)'
@@ -4576,13 +4592,15 @@ app.post('/api/auth/send-code', async (c) => {
   try {
     const { email, username } = await c.req.json() as any;
     if (!email) return c.json({ error: 'email 필요' }, 400);
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = secureEmailVerificationCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS email_verifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT NOT NULL, code TEXT NOT NULL,
       expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
     )`).run().catch(()=>{});
+    const lastCode=await c.env.DB.prepare('SELECT created_at FROM email_verifications WHERE email=? ORDER BY id DESC LIMIT 1').bind(email).first<{created_at:string}>();
+    if(emailCodeCooldown(lastCode?.created_at))return c.json({error:'인증 코드 재전송은 1분 후 가능합니다.',code:'VERIFY_CODE_RATE_LIMIT'},429);
     await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
     await c.env.DB.prepare(
       'INSERT INTO email_verifications (email, code, expires_at) VALUES (?,?,?)'
@@ -4606,8 +4624,10 @@ app.post('/api/auth/resend', async (c) => {
   try {
     const { email, username } = await c.req.json() as any;
     if (!email) return c.json({ error: 'email 필요' }, 400);
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = secureEmailVerificationCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const lastCode=await c.env.DB.prepare('SELECT created_at FROM email_verifications WHERE email=? ORDER BY id DESC LIMIT 1').bind(email).first<{created_at:string}>();
+    if(emailCodeCooldown(lastCode?.created_at))return c.json({error:'인증 코드 재전송은 1분 후 가능합니다.',code:'VERIFY_CODE_RATE_LIMIT'},429);
     await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
     await c.env.DB.prepare(
       'INSERT INTO email_verifications (email, code, expires_at) VALUES (?,?,?)'
@@ -4645,8 +4665,12 @@ app.post('/api/auth/login', async (c) => {
     ).bind(email.trim()).first<any>();
     if (!user) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
     const storedPw = String(user.password_hash || '');
-    const valid = storedPw.includes(':') ? await verifyPassword(password, storedPw) : (password === storedPw);
+    // All active production members use salted hashes. Plaintext fallback
+    // must not silently authenticate a compromised legacy password field.
+    const valid = storedPw.includes(':') && await verifyPassword(password, storedPw);
     if (!valid) return c.json({ error: '이메일 또는 비밀번호가 틀렸습니다' }, 401);
+    if(Number(user.is_active||0)!==1)return c.json({error:'현재 사용할 수 없는 계정입니다.',code:'ACCOUNT_DISABLED'},403);
+    if(Number(user.email_verified||0)!==1)return c.json({error:'이메일 인증을 완료해 주세요.',code:'EMAIL_VERIFICATION_REQUIRED'},403);
     const token = await makeAccessToken(Number(user.id), c.env.JWT_SECRET);
     return c.json({ ok: true, access_token: token, token, token_type: 'bearer', user_id: Number(user.id),
       user: { id:Number(user.id), email:user.email, username:user.username, tl:Number(user.tl_balance||0), tl_p:Number(user.tl_p||0), tl_a:Number(user.tl_a||0), tl_b:Number(user.tl_b||0), tlc:Number(user.tlc_balance||0), is_advertiser:Number(user.is_advertiser||0), biz_reg_num:user.biz_reg_num||'', business_name:user.business_name||'', email_verified:Number(user.email_verified||0) } });
