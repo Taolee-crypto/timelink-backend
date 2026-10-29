@@ -56,8 +56,18 @@ def attach_words(notes, segments, duration):
     for word in words:
         overlaps = [(min(n['s']+n['d'],word['s']+word['d'])-max(n['s'],word['s']),i) for i,n in enumerate(notes)]
         overlap,index = max(overlaps)
-        if overlap > 0:
-            notes[index]['lyric'] = (notes[index].get('lyric','')+' '+word['text']).strip()
+        if overlap <= 0:
+            # Display the supplied word on a nearby REAL vocal note, without
+            # changing its verified timestamp. The notation placement is
+            # approximate and explicitly marked for human review.
+            distances = [(max(n['s']-(word['s']+word['d']),
+                              word['s']-(n['s']+n['d']), 0), i) for i,n in enumerate(notes)]
+            gap,index = min(distances)
+            if gap > 0.25:
+                word['note_display_unattached'] = True
+                continue
+            word['note_display_approx'] = True
+        notes[index]['lyric'] = (notes[index].get('lyric','')+' '+word['text']).strip()
     return words
 
 
@@ -96,6 +106,9 @@ def align_lyrics(vocals, lyrics, notes, duration):
                 final_reason = 'LYRICS_SOURCE_MISMATCH'
                 continue
             # Commit annotations only after complete time/text validation.
+            # Approximate *display placement* is never a fabricated timestamp.
+            display_snapped = sum(bool(word.get('note_display_approx')) for word in words)
+            display_unattached = sum(bool(word.get('note_display_unattached')) for word in words)
             for original, candidate in zip(notes, candidate_notes):
                 if 'lyric' in candidate:
                     original['lyric'] = candidate['lyric']
@@ -103,7 +116,9 @@ def align_lyrics(vocals, lyrics, notes, duration):
                 'lyrics_status': 'aligned_draft', 'lyrics_words': words,
                 'lyrics_alignment': {'engine':'stable-ts-whisper-small',
                                      'language':language,'source':'creator_supplied',
-                                     'review_required':True}
+                                     'review_required':True,
+                                     'note_display_snap_count':display_snapped,
+                                     'note_display_unattached_count':display_unattached}
             }
         except (ValueError, KeyError, TypeError, IndexError) as error:
             allowed = {
