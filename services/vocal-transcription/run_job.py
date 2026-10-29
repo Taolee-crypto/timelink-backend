@@ -12,6 +12,17 @@ import requests
 import re
 
 
+def safe_alignment_reason(error):
+    if not isinstance(error, subprocess.CalledProcessError):
+        return 'none'
+    candidates = re.findall(
+        r'^V5_SCORE_REASON:(INVALID_VOCAL_NOTES|INVALID_WORD_TIMESTAMP|WORD_OUTSIDE_AUDIO|'
+        r'WORD_TIMING_OUT_OF_ORDER|WORD_HAS_NO_VOCAL_ANCHOR|WORD_HAS_NO_VALID_DURATION|'
+        r'NO_ALIGNED_WORDS|INVALID_ALIGNMENT_STRUCTURE)$',
+        error.stderr or '', flags=re.MULTILINE)
+    return candidates[-1] if candidates else 'none'
+
+
 def classify_analysis_failure(error):
     # Only fixed stage markers are logged, never raw model stderr or creator content.
     if not isinstance(error, subprocess.CalledProcessError):
@@ -82,7 +93,8 @@ def main() -> int:
         return 0
     except Exception as error:
         code, stage = classify_analysis_failure(error)
-        print('V5 vocal job failed:', type(error).__name__, 'stage=' + stage, file=sys.stderr)
+        print('V5 vocal job failed:', type(error).__name__, 'stage=' + stage,
+              'reason=' + safe_alignment_reason(error), file=sys.stderr)
         try:
             session.post(root + '/fail/' + str(file_id), json={'code':code}, timeout=30, allow_redirects=False)
         except requests.RequestException: pass
