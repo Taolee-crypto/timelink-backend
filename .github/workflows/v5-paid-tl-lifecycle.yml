@@ -8,11 +8,13 @@ on:
       - 'scripts/test-v5-purchased-tl-lifecycle.cjs'
       - 'src/v5-purchased-tl-attribution.ts'
       - 'src/v5-purchased-tl-conversion.ts'
+      - 'src/v5-purchased-tl-legacy.ts'
       - 'src/routes/admin-v5-purchased-tl.ts'
       - 'src/index.ts'
       - 'src/types.ts'
       - 'scripts/test-v5-purchased-tl-attribution.cjs'
       - 'scripts/test-v5-purchased-tl-reviewed-conversion.cjs'
+      - 'scripts/test-v5-purchased-tl-legacy-backfill.cjs'
       - 'docs/v5-purchased-tl-lifecycle-policy.md'
       - '.github/workflows/v5-paid-tl-lifecycle.yml'
   push:
@@ -24,11 +26,13 @@ on:
       - 'scripts/test-v5-purchased-tl-lifecycle.cjs'
       - 'src/v5-purchased-tl-attribution.ts'
       - 'src/v5-purchased-tl-conversion.ts'
+      - 'src/v5-purchased-tl-legacy.ts'
       - 'src/routes/admin-v5-purchased-tl.ts'
       - 'src/index.ts'
       - 'src/types.ts'
       - 'scripts/test-v5-purchased-tl-attribution.cjs'
       - 'scripts/test-v5-purchased-tl-reviewed-conversion.cjs'
+      - 'scripts/test-v5-purchased-tl-legacy-backfill.cjs'
       - '.github/workflows/v5-paid-tl-lifecycle.yml'
 permissions:
   contents: read
@@ -49,5 +53,7 @@ jobs:
         run: node scripts/test-v5-purchased-tl-attribution.cjs
       - name: Verify reviewed TL_P conversion, guarded ledger, admin auth and default-off switch
         run: node scripts/test-v5-purchased-tl-reviewed-conversion.cjs
+      - name: Verify historical payment receipts and metadata-only TL_P backfill
+        run: node scripts/test-v5-purchased-tl-legacy-backfill.cjs
       - name: Check types and all payment code
         run: npx --no-install tsc --noEmit
