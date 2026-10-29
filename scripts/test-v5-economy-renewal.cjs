@@ -5,7 +5,7 @@ buildSync({stdin:{contents:`export * from './src/v5-contribution-policy';export 
 const api=require(path.join(temp,'api.cjs')),sqlite=new DatabaseSync(':memory:');
 sqlite.exec(fs.readFileSync('migrations/0003_v3_economy_ledger.sql','utf8'));
 sqlite.exec(`UPDATE v3_economy_assets SET decimals=4 WHERE asset_code='TL';
-CREATE TABLE users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER DEFAULT 1,account_forfeited INTEGER DEFAULT 0,tl_p_lifetime INTEGER DEFAULT 0,tlc_balance REAL NOT NULL DEFAULT 0);
+CREATE TABLE users(id INTEGER PRIMARY KEY,role TEXT,is_active INTEGER DEFAULT 1,account_forfeited INTEGER DEFAULT 0,tl_p_lifetime INTEGER DEFAULT 0,tlc_balance REAL NOT NULL DEFAULT 0,poc_index REAL DEFAULT 1.0);
 INSERT INTO users(id,role) VALUES(1,'admin'),(2,'user'),(3,'user');
 CREATE TABLE tl_payments(user_id TEXT,method TEXT,pg_id TEXT,merchant_uid TEXT,amount_krw INTEGER,tl_granted INTEGER,bonus_tl INTEGER,status TEXT);
 CREATE TABLE play_events(file_id INTEGER,player_user_id INTEGER,tl_deducted REAL,revenue_credited REAL,file_tl_after REAL,play_duration_seconds REAL,car_mode INTEGER);
