@@ -103,8 +103,8 @@ async function main(){
  assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM v3_poc_snapshots').get().n,1);
  const entries=sqlite.prepare("SELECT SUM(amount_atoms) n FROM v3_economy_entries WHERE transaction_id=?").get(receipt.ledger_receipt);
  assert.equal(entries.n,0);
- const balance=sqlite.prepare('SELECT tlc_balance FROM users WHERE id=2').get().tlc_balance;
- assert.equal(balance,receipt.mined);
+ const minedBalance=sqlite.prepare('SELECT tlc_balance FROM users WHERE id=2').get().tlc_balance;
+ assert.equal(minedBalance,receipt.mined);
  const repeatMint=await api.eco.request('/mine-tlc',{
    method:'POST',headers:{Authorization:'Bearer '+userToken,'Content-Type':'application/json'},
    body:'{}'
@@ -112,7 +112,7 @@ async function main(){
  assert.equal(repeatMint.status,409);
  assert.equal((await repeatMint.json()).code,'ALREADY_MINED_TODAY');
  assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM v3_tlc_mining_records').get().n,1);
- assert.equal(sqlite.prepare('SELECT tlc_balance FROM users WHERE id=2').get().tlc_balance,balance);
+ assert.equal(sqlite.prepare('SELECT tlc_balance FROM users WHERE id=2').get().tlc_balance,minedBalance);
  const history=await api.eco.request('/mining-history',{headers:{Authorization:'Bearer '+userToken}},env);
  assert.equal(history.status,200);assert.equal((await history.json()).history.length,1);
  console.log('PASS TLC mining: server POC only, atomic V3 ledger + legacy display, same-day dedup, amount cap, history');
