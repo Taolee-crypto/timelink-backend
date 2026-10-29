@@ -8,23 +8,58 @@ def clean_lyrics(text):
     return '\n'.join(line.strip() for line in re.sub(r'\[[^\]\n]*\]', '', text).splitlines() if line.strip())
 
 def attach_words(notes, segments, duration):
+    # Stable-ts can return small overlaps and zero-width word timings for
+    # singing. Normalize only near genuine vocal notes; never create lyrics,
+    # alter the original text, or accept distant/unanchored timestamps.
+    if not notes or not math.isfinite(duration) or duration <= 0:
+        raise ValueError('INVALID_VOCAL_NOTES')
     words = []
     previous = 0.0
     for segment in segments:
-        for word in segment.get('words', []):
-            text = str(word['word']).strip()
-            start, end = float(word['start']), float(word['end'])
-            if not text or not all(map(math.isfinite, (start,end))) or start < previous - 0.03 or not 0 <= start < end <= duration + 0.1:
-                raise ValueError('Invalid lyric alignment')
+        for item in segment.get('words') or []:
+            text = str(item.get('word') or '').strip()
+            if not text:
+                continue
+            try:
+                raw_start, raw_end = float(item['start']), float(item['end'])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError('INVALID_WORD_TIMESTAMP') from None
+            if (not all(map(math.isfinite, (raw_start, raw_end)))
+                or raw_start < -0.05 or raw_start > duration + 0.05
+                or raw_end < raw_start - 0.05 or raw_end > duration + 0.1):
+                raise ValueError('WORD_OUTSIDE_AUDIO')
+            if raw_start < previous - 0.35:
+                raise ValueError('WORD_TIMING_OUT_OF_ORDER')
+            start = max(0.0, previous, raw_start)
+            end = min(duration, raw_end)
+            if end - start < 0.025:
+                # Bind a collapsed/near-overlapping word to a nearby REAL
+                # detected vocal note; reject if no reliable note exists.
+                candidates = []
+                for note in notes:
+                    note_start = float(note['s'])
+                    note_end = note_start + float(note['d'])
+                    distance = max(0.0, note_start - raw_start, raw_start - note_end)
+                    if distance <= 0.20 and note_end >= previous + 0.04:
+                        candidates.append((distance, note_start, note_end))
+                if not candidates:
+                    raise ValueError('WORD_HAS_NO_VOCAL_ANCHOR')
+                _, note_start, note_end = min(candidates)
+                start = max(previous, note_start, min(start, note_end - 0.04))
+                end = min(duration, note_end, max(start + 0.04, end))
+                if end - start < 0.025:
+                    raise ValueError('WORD_HAS_NO_VALID_DURATION')
             words.append({'s':round(start,3), 'd':round(end-start,3), 'text':text})
             previous = end
-    if not words: raise ValueError('No aligned lyrics')
+    if not words:
+        raise ValueError('NO_ALIGNED_WORDS')
     for word in words:
         overlaps = [(min(n['s']+n['d'],word['s']+word['d'])-max(n['s'],word['s']),i) for i,n in enumerate(notes)]
         overlap,index = max(overlaps)
         if overlap > 0:
             notes[index]['lyric'] = (notes[index].get('lyric','')+' '+word['text']).strip()
     return words
+
 
 def align_lyrics(vocals, lyrics, notes, duration):
     text = clean_lyrics(lyrics)
