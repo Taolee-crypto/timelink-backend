@@ -1,0 +1,39 @@
+name: V5 five-domain release contract
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Member and creator rights
+            script: scripts/test-creator-contributors.cjs
+          - name: Member referrals and account authorization
+            script: scripts/test-member-referrals-v5.cjs
+          - name: TL3 time-free playback and contributions
+            script: scripts/test-time-free.cjs
+          - name: Music orders and idempotent settlement
+            script: scripts/test-v5-music-orders.cjs
+          - name: Store broadcast source and license safeguards
+            script: scripts/test-store-music-intake.cjs
+          - name: Real SQLite economic ledger regression
+            script: scripts/test-v5-real-ledger-sqlite.cjs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Test critical V5 contract
+        run: node ${{ matrix.script }}
+      - name: Scope of validation
+        run: echo 'Isolated code and SQLite/API contract tests only. Live customer purchase, actual store licenses, payout and national rollout require independent operational verification.'
