@@ -213,6 +213,58 @@ async function main(){
  assert.equal(sql.prepare("SELECT COUNT(*) n FROM v3_economy_transactions WHERE transaction_type='v5_purchase_maturity'").get().n,2);
  console.log('PASS legally approved TL_P maturity scheduler: never before deadline, manual review evidence retained, audited one-time conversion, both enable flags unset');
 
+ // Forty permanently blocked historical candidates must not prevent a
+ // subsequent reviewed LIVE purchase from being converted.
+ const blockedInsert=sql.prepare(
+  "INSERT INTO v5_purchased_tl_lots "+
+  "(payment_key,user_id,method,payment_id,order_id,paid_atoms,bonus_atoms,"+
+  "payment_mode,recorded_at_ms,refund_deadline_ms,remaining_purchased_atoms,"+
+  "consumer_rights_cleared,legal_review_approved,refund_dispute_pending,conversion_status) "+
+  "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+ );
+ for(let k=0;k<40;k++){
+  const label=String(k).padStart(3,'0');
+  blockedInsert.run('v5-payment:blocked:'+label,'29','blocked','old-'+label,
+   'blocked-order-'+label,10000,0,'live',recordedAt-100000,
+   dueAt-1000,10000,1,1,0,'reviewed');
+ }
+ const trailingKey='v5-payment:manual:live003',trailingDue=dueAt+5000;
+ await api.postLedgerTransaction(db,{
+  idempotencyKey:trailingKey,transactionType:'payment_credit',source:'pg:manual',
+  referenceType:'payment',referenceId:'live003',actorUserId:'11',
+  lines:[{accountId:source,assetCode:'TL',amountAtoms:-80000},
+         {accountId:paid,assetCode:'TL',amountAtoms:80000}],
+  atomicStatements:[api.purchasedTlLotStatement(db,{
+   paymentKey:trailingKey,userId:'11',method:'manual',paymentId:'live003',
+   orderId:'fixture-live-order-003',paidAtoms:80000,bonusAtoms:0,
+   paymentMode:'live',recordedAtMs:recordedAt+30000
+  })]
+ });
+ await api.reviewPurchasedTlMaturity(db,{
+  userId:'11',paymentKey:trailingKey,reviewerId:99,refundDeadlineMs:trailingDue,
+  country:'KR',legalBasis:'법정 청약철회 기간과 모든 적용되는 잔액 환급권 종료 검증 완료',
+  evidenceSha256:'c'.repeat(64),reviewNote:'후순위 실제 결제의 법적 만기를 수동으로 확인한 회귀시험'
+ });
+ const paidBeforePage=await balance(11,'wallet_paid');
+ let paged=await api.runReviewedPurchasedTlMaturityCycle(db,trailingDue+1000,10);
+ assert.equal(paged.scanned,40,'scan must be bounded');
+ assert.equal(paged.skipped,40,'blocked cases must remain untouched');
+ assert.equal(paged.converted,0);
+ assert.equal(paged.capped,true);
+ assert.equal(await balance(11,'wallet_paid'),paidBeforePage);
+ paged=await api.runReviewedPurchasedTlMaturityCycle(db,trailingDue+2000,10);
+ assert.equal(paged.scanned,1,'next cycle must move past blocked initial page');
+ assert.equal(paged.converted,1,'later reviewed purchase must not starve');
+ assert.equal(paged.convertedAtoms,80000);
+ assert.equal(await balance(11,'wallet_paid'),paidBeforePage-80000);
+ assert.equal(sql.prepare("SELECT converted_atoms FROM v5_purchased_tl_lots WHERE payment_key=?").get(trailingKey).converted_atoms,80000);
+ paged=await api.runReviewedPurchasedTlMaturityCycle(db,trailingDue+3000,10);
+ assert.equal(paged.wrapped,true,'cursor should wrap after the final reviewed purchase');
+ assert.equal(paged.converted,0,'repeat scan must never re-convert an old purchase');
+ assert.equal(sql.prepare("SELECT COUNT(*) n FROM v3_economy_transactions WHERE transaction_type='v5_purchase_maturity'").get().n,3);
+ console.log('PASS maturity scan fairness: 40 blocked candidates cannot starve later verified lots, next-page cursor and wrap are durable');
+
+
 
 }
 main().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{sql.close();fs.rmSync(temp,{recursive:true,force:true})});

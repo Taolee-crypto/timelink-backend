@@ -211,32 +211,68 @@ export async function runReviewedPurchasedTlMaturityCycle(db:D1Database,nowMs=Da
     !Number.isSafeInteger(maxConversions)||maxConversions<1||maxConversions>10)
   throw Error('INVALID_MATURITY_CYCLE_CONFIGURATION');
  await ensurePurchasedTlReviewSchema(db);
- const eligibleRows=await db.prepare(
-  'SELECT payment_key,user_id FROM v5_purchased_tl_lots '+
+ await db.prepare(
+  "CREATE TABLE IF NOT EXISTS v5_purchased_tl_maturity_scan_cursor ("+
+  "singleton INTEGER PRIMARY KEY CHECK(singleton=1),"+
+  "refund_deadline_ms INTEGER NOT NULL DEFAULT 0,payment_key TEXT NOT NULL DEFAULT '',"+
+  "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+ ).run();
+ await db.prepare(
+  "INSERT OR IGNORE INTO v5_purchased_tl_maturity_scan_cursor "+
+  "(singleton,refund_deadline_ms,payment_key) VALUES(1,0,'')"
+ ).run();
+ const cursor=await db.prepare(
+  "SELECT refund_deadline_ms,payment_key FROM v5_purchased_tl_maturity_scan_cursor WHERE singleton=1"
+ ).first<{refund_deadline_ms:number;payment_key:string}>();
+ if(!cursor)throw Error('MATURITY_SCAN_CURSOR_UNAVAILABLE');
+ const scan=async(deadline:number,key:string)=>await db.prepare(
+  'SELECT payment_key,user_id,refund_deadline_ms FROM v5_purchased_tl_lots '+
   "WHERE payment_mode='live' AND legal_review_approved=1 AND consumer_rights_cleared=1 "+
   "AND refund_dispute_pending=0 AND conversion_status='reviewed' AND converted_atoms=0 "+
   'AND refund_deadline_ms IS NOT NULL AND refund_deadline_ms<=? '+
-  'AND remaining_purchased_atoms>0 ORDER BY refund_deadline_ms,payment_key LIMIT 40'
- ).bind(nowMs).all<{payment_key:string;user_id:string}>();
- const candidates=eligibleRows.results||[];
- let converted=0,convertedAtoms=0,skipped=0;
+  'AND (refund_deadline_ms>? OR (refund_deadline_ms=? AND payment_key>?)) '+
+  'ORDER BY refund_deadline_ms,payment_key LIMIT 40'
+ ).bind(nowMs,deadline,deadline,key).all<{
+  payment_key:string;user_id:string;refund_deadline_ms:number;
+ }>();
+ let candidates=(await scan(Number(cursor.refund_deadline_ms),String(cursor.payment_key))).results||[];
+ let wrapped=false;
+ if(!candidates.length&&Number(cursor.refund_deadline_ms)>0){
+  // Complete one traversal, then return to overdue items for re-review.
+  // A permanently blocked early candidate must never starve later purchases.
+  wrapped=true;
+  candidates=(await scan(0,'')).results||[];
+ }
+ let converted=0,convertedAtoms=0,skipped=0,scanned=0;
+ let lastProcessed:{refund_deadline_ms:number;payment_key:string}|null=null;
  for(const row of candidates){
   if(converted>=maxConversions)break;
+  scanned++;
+  lastProcessed={refund_deadline_ms:row.refund_deadline_ms,payment_key:row.payment_key};
   try{
    const preview=await previewPurchasedTlMaturity(db,row.user_id,row.payment_key,nowMs);
    if(!preview.eligible||preview.remainingPurchasedAtoms<=0){skipped++;continue;}
    const result=await settleReviewedPurchasedTlMaturity(db,{
     userId:row.user_id,paymentKey:row.payment_key,expectedRemainingAtoms:preview.remainingPurchasedAtoms,
-    nowMs,adminId:0 // Auto scheduler is authorized by the stored human legal review, not a browser admin session.
+    nowMs,adminId:0
    });
    if(result.converted){converted++;convertedAtoms+=result.convertedAtoms;}
   }catch(e){
-   // Never retry as an unverified refund/ledger write. Human review may
-   // re-approve a changed purchase balance before a future cycle.
    skipped++;
    console.warn('[TLP_MATURITY_AUTO_SKIPPED]',e instanceof Error?e.message:'MATURITY_UNAVAILABLE');
   }
  }
- return {scanned:candidates.length,converted,convertedAtoms,skipped,
-  capped:candidates.length===40,sourcePolicy:'PURCHASED_FIRST_FIFO',mode:'preapproved_only'};
+ if(lastProcessed){
+  await db.prepare(
+   "UPDATE v5_purchased_tl_maturity_scan_cursor "+
+   "SET refund_deadline_ms=?,payment_key=?,updated_at=CURRENT_TIMESTAMP WHERE singleton=1"
+  ).bind(lastProcessed.refund_deadline_ms,lastProcessed.payment_key).run();
+ }else if(wrapped){
+  await db.prepare(
+   "UPDATE v5_purchased_tl_maturity_scan_cursor "+
+   "SET refund_deadline_ms=0,payment_key='',updated_at=CURRENT_TIMESTAMP WHERE singleton=1"
+  ).run();
+ }
+ return {scanned,converted,convertedAtoms,skipped,wrapped,
+  capped:scanned===40,sourcePolicy:'PURCHASED_FIRST_FIFO',mode:'preapproved_only'};
 }
