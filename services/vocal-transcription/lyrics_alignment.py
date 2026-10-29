@@ -63,31 +63,59 @@ def attach_words(notes, segments, duration):
 
 def align_lyrics(vocals, lyrics, notes, duration):
     text = clean_lyrics(lyrics)
-    if not text: return {'lyrics_status':'not_provided','lyrics_words':[]}
+    if not text:
+        return {'lyrics_status':'not_provided','lyrics_words':[]}
     import stable_whisper
     language = 'ko' if re.search('[가-힣]',text) else 'en'
     print('V5_SCORE_STAGE:lyrics_model', file=sys.stderr, flush=True)
     model = stable_whisper.load_model('small', device='cpu')
-    print('V5_SCORE_STAGE:lyrics_align', file=sys.stderr, flush=True)
-    result = model.align(str(vocals),text,language=language,original_split=True,verbose=None)
-    if result is None: raise ValueError('Lyrics alignment failed')
+    # Long, sung lyrics can produce word timestamps at non-vocal positions.
+    # Retry legitimate forced-alignment configurations on the SAME vocal stem.
+    # Reject all candidates that do not preserve the creator's exact lyrics,
+    # or that fail authentic note-anchored timing validation.
+    strategies = (
+        {'original_split': True},
+        {'original_split': True, 'fast_mode': True, 'nonspeech_skip': None, 'token_step': 200},
+        {'original_split': False, 'fast_mode': True, 'nonspeech_skip': None, 'token_step': 200},
+    )
+    expected = re.sub(r'\s', '', text)
+    final_reason = 'INVALID_ALIGNMENT_STRUCTURE'
+    for options in strategies:
+        try:
+            print('V5_SCORE_STAGE:lyrics_align', file=sys.stderr, flush=True)
+            result = model.align(str(vocals), text, language=language, verbose=None, **options)
+            if result is None:
+                final_reason = 'NO_ALIGNED_WORDS'
+                continue
+            # A failed candidate must never contaminate the note melody.
+            candidate_notes = [dict(note) for note in notes]
+            print('V5_SCORE_STAGE:lyrics_attach', file=sys.stderr, flush=True)
+            words = attach_words(candidate_notes, result.to_dict()['segments'], duration)
+            print('V5_SCORE_STAGE:lyrics_verify', file=sys.stderr, flush=True)
+            if re.sub(r'\s', '', ''.join(word['text'] for word in words)) != expected:
+                final_reason = 'LYRICS_SOURCE_MISMATCH'
+                continue
+            # Commit annotations only after complete time/text validation.
+            for original, candidate in zip(notes, candidate_notes):
+                if 'lyric' in candidate:
+                    original['lyric'] = candidate['lyric']
+            return {
+                'lyrics_status': 'aligned_draft', 'lyrics_words': words,
+                'lyrics_alignment': {'engine':'stable-ts-whisper-small',
+                                     'language':language,'source':'creator_supplied',
+                                     'review_required':True}
+            }
+        except (ValueError, KeyError, TypeError, IndexError) as error:
+            allowed = {
+                'INVALID_VOCAL_NOTES', 'INVALID_WORD_TIMESTAMP',
+                'WORD_OUTSIDE_AUDIO', 'WORD_TIMING_OUT_OF_ORDER',
+                'WORD_HAS_NO_VOCAL_ANCHOR', 'WORD_HAS_NO_VALID_DURATION',
+                'NO_ALIGNED_WORDS'
+            }
+            reason = str(error) if isinstance(error, ValueError) else ''
+            final_reason = reason if reason in allowed else 'INVALID_ALIGNMENT_STRUCTURE'
+    # If every genuine alignment attempt failed, preserve the failure.
+    # No fabricated timestamps, shortened lyrics, or unreviewed score.
     print('V5_SCORE_STAGE:lyrics_attach', file=sys.stderr, flush=True)
-    try:
-        # Never expose creator text, voice content, or the model's raw traceback.
-        words = attach_words(notes,result.to_dict()['segments'],duration)
-    except (ValueError, KeyError, TypeError, IndexError) as error:
-        allowed = {
-            'INVALID_VOCAL_NOTES', 'INVALID_WORD_TIMESTAMP',
-            'WORD_OUTSIDE_AUDIO', 'WORD_TIMING_OUT_OF_ORDER',
-            'WORD_HAS_NO_VOCAL_ANCHOR', 'WORD_HAS_NO_VALID_DURATION',
-            'NO_ALIGNED_WORDS',
-        }
-        reason = str(error) if isinstance(error, ValueError) else ''
-        reason = reason if reason in allowed else 'INVALID_ALIGNMENT_STRUCTURE'
-        print('V5_SCORE_REASON:' + reason, file=sys.stderr, flush=True)
-        raise
-    print('V5_SCORE_STAGE:lyrics_verify', file=sys.stderr, flush=True)
-    if re.sub(r'\s','', ''.join(w['text'] for w in words)) != re.sub(r'\s','',text):
-        raise ValueError('Alignment did not preserve supplied lyrics')
-    return {'lyrics_status':'aligned_draft','lyrics_words':words,
-            'lyrics_alignment':{'engine':'stable-ts-whisper-small','language':language,'source':'creator_supplied','review_required':True}}
+    print('V5_SCORE_REASON:' + final_reason, file=sys.stderr, flush=True)
+    raise ValueError('Forced lyrics did not satisfy vocal-note alignment')
