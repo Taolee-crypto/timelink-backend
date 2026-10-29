@@ -63,53 +63,12 @@ def transcribe_vocals(source: Path) -> dict:
         }
 
 
-def align_timed_lyrics(draft: dict, lyrics_text: str) -> dict:
-    """Align creator-provided LRC line timestamps to vocal note onsets.
-
-    A line is assigned to the first note starting at or after its timestamp.
-    Untimed lines are rejected: guessing timing would misrepresent the singer.
-    """
-    import re
-    pattern = re.compile(r"^\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]\s*(.+?)\s*$")
-    lines = []
-    for raw in lyrics_text.splitlines():
-        if not raw.strip():
-            continue
-        match = pattern.fullmatch(raw.strip())
-        if not match:
-            raise ValueError("Lyrics must use LRC [mm:ss.xx] timestamps")
-        minutes, seconds, fractions, words = match.groups()
-        if int(seconds) >= 60:
-            raise ValueError("Invalid LRC seconds")
-        timestamp = int(minutes) * 60 + int(seconds)
-        if fractions:
-            timestamp += int(fractions) / (10 ** len(fractions))
-        lines.append((timestamp, words))
-    if not lines:
-        raise ValueError("No timed lyrics")
-    melody = draft.get("melody", [])
-    if not melody:
-        raise ValueError("No melody to align")
-    updated = {**draft, "melody": [dict(note) for note in melody]}
-    last_index = -1
-    for timestamp, words in sorted(lines):
-        match_index = next((i for i, note in enumerate(updated["melody"])
-                            if i > last_index and note["s"] >= timestamp - 0.12), None)
-        if match_index is None:
-            raise ValueError("Timed lyric has no matching vocal note")
-        updated["melody"][match_index]["lyric"] = words
-        last_index = match_index
-    updated["lyrics_status"] = "timed_draft_review_required"
-    return updated
-
-
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path, help="Locally staged audio; never a URL")
     parser.add_argument('--source-sha256', help='Expected 64-character V5 source SHA-256')
     parser.add_argument('--rights-confirmed', action='store_true', help='Authorized operator confirmation')
-    parser.add_argument('--lyrics-lrc', type=Path, help='Creator-supplied timed lyrics; no automatic lyric guessing')
     args = parser.parse_args()
     if args.source_sha256:
         import hashlib
@@ -128,8 +87,6 @@ if __name__ == "__main__":
         if digest.lower() != args.source_sha256.lower():
             raise ValueError('V5 source SHA-256 mismatch')
     draft = transcribe_vocals(args.source)
-    if args.lyrics_lrc:
-        draft = align_timed_lyrics(draft, args.lyrics_lrc.read_text(encoding='utf-8'))
     if args.source_sha256:
         provenance = draft.pop('provenance')
         draft.pop('lyrics_status', None)
