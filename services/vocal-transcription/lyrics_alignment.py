@@ -3,6 +3,10 @@ import math
 import re
 import sys
 
+class LyricsAlignmentUncertain(ValueError):
+    """Supplied lyrics remain valid, but word-to-note timing is unverified."""
+
+
 def clean_lyrics(text):
     # Section labels and LRC timestamps are metadata, not sung words.
     return '\n'.join(line.strip() for line in re.sub(r'\[[^\]\n]*\]', '', text).splitlines() if line.strip())
@@ -133,4 +137,4 @@ def align_lyrics(vocals, lyrics, notes, duration):
     # No fabricated timestamps, shortened lyrics, or unreviewed score.
     print('V5_SCORE_STAGE:lyrics_attach', file=sys.stderr, flush=True)
     print('V5_SCORE_REASON:' + final_reason, file=sys.stderr, flush=True)
-    raise ValueError('Forced lyrics did not satisfy vocal-note alignment')
+    raise LyricsAlignmentUncertain('Forced lyrics did not satisfy vocal-note alignment')
