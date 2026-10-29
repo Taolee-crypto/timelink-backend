@@ -69,7 +69,7 @@ sqlite.exec("CREATE TABLE v5_purchased_tl_lots(payment_key TEXT,user_id TEXT,pai
 sqlite.exec("CREATE TABLE v3_economy_accounts(id TEXT,owner_type TEXT,owner_id TEXT,asset_code TEXT,bucket TEXT)");
 sqlite.exec("CREATE TABLE v3_economy_balances(account_id TEXT,available_atoms INTEGER,held_atoms INTEGER,version INTEGER)");
 sqlite.exec("CREATE TABLE v3_economy_entries(id INTEGER,transaction_id TEXT,account_id TEXT,asset_code TEXT,amount_atoms INTEGER)");
-sqlite.exec("CREATE TABLE v3_economy_transactions(id TEXT,transaction_type TEXT,idempotency_key TEXT,reference_id TEXT,status TEXT)");
+sqlite.exec("CREATE TABLE v3_economy_transactions(id TEXT PRIMARY KEY,transaction_type TEXT,idempotency_key TEXT,reference_id TEXT,status TEXT)");
 const fixture=make();
 for(const [i,l] of fixture.lots.entries())sqlite.prepare('INSERT INTO v5_purchased_tl_lots VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(l.payment_key,l.user_id,l.paid_atoms,l.converted_atoms,l.payment_mode,null,null,0,0,0,i+1);
 for(const account of fixture.accounts){
