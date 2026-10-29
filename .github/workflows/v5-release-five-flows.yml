@@ -24,6 +24,8 @@ jobs:
             script: scripts/test-v5-music-orders.cjs
           - name: Store broadcast source and license safeguards
             script: scripts/test-store-music-intake.cjs
+          - name: Store sandbox order and airtime receipt integrity
+            script: scripts/test-v5-store-payment-contract.cjs
           - name: Real SQLite economic ledger regression
             script: scripts/test-v5-real-ledger-sqlite.cjs
     steps:
