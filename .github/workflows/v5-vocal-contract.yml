@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - run: python -m pip install 'cryptography>=42,<47'
+          python-version: '3.11'
+      - run: python -m pip install 'cryptography>=42,<47' 'requests>=2.31,<3'
+      - run: python -m compileall -q services/vocal-transcription
       - run: python -m unittest discover -s services/vocal-transcription -p 'test_*.py' -v
+      - run: python -m unittest discover -s services/vocal-transcription/tests -p 'test_*.py' -v
