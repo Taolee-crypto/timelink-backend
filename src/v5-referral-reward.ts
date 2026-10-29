@@ -55,9 +55,9 @@ export async function settleVerifiedReferral(db:D1Database,referrerIdInput:numbe
   const paid=await db.prepare(`SELECT o.order_id FROM v5_store_airtime_orders o
     JOIN cafe_channels c ON c.channel_id=o.channel_id AND c.owner_id=o.user_id
     JOIN v5_store_airtime_grants g ON g.order_id=o.order_id AND g.user_id=o.user_id
-    WHERE o.user_id=? AND o.status='paid' AND o.payment_key IS NOT NULL
+    WHERE o.user_id=? AND o.paid_at>=? AND o.status='paid' AND o.payment_key IS NOT NULL
       AND o.amount_krw>0 AND c.status='active'
-    ORDER BY o.paid_at,o.order_id LIMIT 1`).bind(referredId).first<any>().catch(()=>null);
+    ORDER BY o.paid_at,o.order_id LIMIT 1`).bind(referredId,claim.created_at).first<any>().catch(()=>null);
   if(!paid)throw Error('VERIFIED_STORE_PAYMENT_REQUIRED');
   sourceReference='sandbox_store_payment:'+String(paid.order_id);
  }
@@ -95,6 +95,41 @@ export async function settleVerifiedReferral(db:D1Database,referrerIdInput:numbe
  });
  return {status:'posted',milestone,tl_b,poc_points,ledger_transaction_id:posted.id};
 }
+/** Explicit administrator-adjudicated reversal. Never erase historic receipts. */
+export async function reverseReferralReward(db:D1Database,actorId:number,milestoneKey:string,proofRef:string){
+ positiveInt(actorId);
+ if(!/^referral:(signup_verified|store_first_paid):[1-9][0-9]*$/.test(milestoneKey)||
+   typeof proofRef!=='string'||proofRef.length<8||proofRef.length>200)
+   throw Error('INVALID_REFERRAL_REVERSAL');
+ await ensureReferralRewardSchema(db);
+ const item=await db.prepare('SELECT milestone_key,referrer_user_id,credited_tl_b,status FROM v5_referral_reward_receipts WHERE milestone_key=?')
+   .bind(milestoneKey).first<any>();
+ if(!item)throw Error('REFERRAL_RECEIPT_NOT_FOUND');
+ if(item.status==='reversed')return {ok:true,already_reversed:true};
+ if(item.status!=='posted')throw Error('REFERRAL_REVERSAL_INVALID_STATUS');
+ const amount=Number(item.credited_tl_b);
+ const sql="UPDATE v5_referral_reward_receipts SET status='reversed',reversed_at=CURRENT_TIMESTAMP WHERE milestone_key=? AND status='posted'";
+ if(amount===0){
+  const r=await db.prepare(sql).bind(milestoneKey).run();
+  return {ok:true,already_reversed:!r.meta?.changes,tl_b_reversed:0,poc_reversed:true};
+ }
+ await assertTLAtomScale(db);
+ const userAccount=await ensureLedgerAccount(db,'user',Number(item.referrer_user_id),'TL','wallet_bonus');
+ const systemAccount=await ensureLedgerAccount(db,'system','v5-referrals','TL','reversals');
+ const atoms=tlToAtoms(amount);
+ const posted=await postLedgerTransaction(db,{
+  idempotencyKey:'referral:reversal:'+milestoneKey,
+  transactionType:'referral_bonus_reversal',source:'admin_verified_refund',
+  referenceType:'referral_reward',referenceId:milestoneKey,actorUserId:String(actorId),
+  description:'관리자 환불 증빙 확인에 따른 추천 TL_B 역분개',
+  metadata:{proof_reference:proofRef,original_reward:milestoneKey,non_redeemable:true},
+  lines:[{accountId:userAccount,assetCode:'TL',amountAtoms:-atoms},
+    {accountId:systemAccount,assetCode:'TL',amountAtoms:atoms}],
+  atomicStatements:[db.prepare(sql).bind(milestoneKey)]
+ });
+ return {ok:true,already_reversed:posted.replayed,tl_b_reversed:amount,poc_reversed:true,transaction_id:posted.id};
+}
+
 /** The active PoC estimator reads only immutable, server-created receipt facts. */
 export async function readReferralPocBonus(db:D1Database,userId:string,monthStart:string):Promise<number>{
  await ensureReferralRewardSchema(db);
