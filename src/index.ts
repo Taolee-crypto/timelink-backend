@@ -1,3 +1,4 @@
+import { ownsLinkedReleaseForDeletion } from './v5-share-delete-ownership';
 import musicBulkIntakeRouter from './routes/music-bulk-intake-v5';
 import storeMusicV5Router,{releaseExpiredStoreSessions} from './routes/store-music-v5';
 import {timeFreePreflight,timeFreeSessionExists,meterTimeFreePlayback,closeTimeFreeSession} from './v5-time-free';
@@ -4437,6 +4438,13 @@ app.delete('/api/shares/:id', async (c) => {
       if (file && Number(file.user_id) !== userId) return c.json({ error: '삭제 권한이 없습니다.' }, 403);
     }
 
+    // A historical TL3 release may have no user_id field. A known share ID
+    // must never authorize destructive operations on another user's file.
+    // Require the owning tl_files record for every release and do it before
+    // deletion of segments, tokens, sessions or release tables.
+    if (!ownsLinkedReleaseForDeletion(userId, release, file)) {
+      return c.json({ error: 'TL3 발매 파일 소유권을 확인할 수 없습니다.', code:'SHARE_DELETE_OWNER_REQUIRED' }, 403);
+    }
     const fileId = Number(file?.id || release?.file_id || 0);
     if (fileId > 0) {
       // Keep the tl_files row for historical foreign keys; remove playback metadata and hide the asset.
