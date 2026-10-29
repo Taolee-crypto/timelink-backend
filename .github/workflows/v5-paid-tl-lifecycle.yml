@@ -7,7 +7,12 @@ on:
       - 'src/economy-ledger.ts'
       - 'scripts/test-v5-purchased-tl-lifecycle.cjs'
       - 'src/v5-purchased-tl-attribution.ts'
+      - 'src/v5-purchased-tl-conversion.ts'
+      - 'src/routes/admin-v5-purchased-tl.ts'
+      - 'src/index.ts'
+      - 'src/types.ts'
       - 'scripts/test-v5-purchased-tl-attribution.cjs'
+      - 'scripts/test-v5-purchased-tl-reviewed-conversion.cjs'
       - 'docs/v5-purchased-tl-lifecycle-policy.md'
       - '.github/workflows/v5-paid-tl-lifecycle.yml'
   push:
@@ -18,7 +23,12 @@ on:
       - 'src/economy-ledger.ts'
       - 'scripts/test-v5-purchased-tl-lifecycle.cjs'
       - 'src/v5-purchased-tl-attribution.ts'
+      - 'src/v5-purchased-tl-conversion.ts'
+      - 'src/routes/admin-v5-purchased-tl.ts'
+      - 'src/index.ts'
+      - 'src/types.ts'
       - 'scripts/test-v5-purchased-tl-attribution.cjs'
+      - 'scripts/test-v5-purchased-tl-reviewed-conversion.cjs'
       - '.github/workflows/v5-paid-tl-lifecycle.yml'
 permissions:
   contents: read
@@ -37,5 +47,7 @@ jobs:
         run: node scripts/test-v5-purchased-tl-lifecycle.cjs
       - name: Reconcile purchased TL_P provenance without touching live balances
         run: node scripts/test-v5-purchased-tl-attribution.cjs
+      - name: Verify reviewed TL_P conversion, guarded ledger, admin auth and default-off switch
+        run: node scripts/test-v5-purchased-tl-reviewed-conversion.cjs
       - name: Check types and all payment code
         run: npx --no-install tsc --noEmit

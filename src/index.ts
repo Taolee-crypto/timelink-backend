@@ -21,6 +21,7 @@ import tl3V5Router from './routes/tl3-v5';
 import centralBroadcastV5Router from './routes/central-broadcast-v5';
 import tiloV5ApprovalsRouter from './routes/tilo-v5-approvals';
 import v5MusicGateAdminRouter from './routes/v5-music-gate-admin';
+import purchasedTlMaturityRouter from './routes/admin-v5-purchased-tl';
 import { musicGateHealth, runMusicGateAnalysis, requestMusicGateRetry } from './v5-music-gate-worker';
 import { creatorMusicGateDetails } from './v5-music-gate-public-details';
 import tl3PlayerSessionRouter from './tl3-player-session';
@@ -475,6 +476,7 @@ app.route('/api/v5/central-broadcast', centralBroadcastV5Router);
 // Admin review only; no TL payouts are triggered by these routes.
 app.route('/api/admin/tilo-v5', tiloV5ApprovalsRouter);
 app.route('/api/admin/v5/music-gate', v5MusicGateAdminRouter);
+app.route('/api/admin/v5/purchased-tl', purchasedTlMaturityRouter);
 app.get('/api/v1/music-gate/health', async c => {
   const health=await musicGateHealth(c.env);
   return c.json(health,health.ready?200:503);
