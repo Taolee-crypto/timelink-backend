@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {buildSync}=require('esbuild'),{DatabaseSync}=require('node:sqlite');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'v5-economy-renewal-'));
-buildSync({stdin:{contents:`export * from './src/v5-contribution-policy';export * from './src/v5-contribution-store';export * from './src/v5-payment-ledger';export * from './src/economy-ledger';export {default as admin} from './src/routes/admin';export {default as eco} from './src/economics';export {makeAccessToken} from './src/auth';`,loader:'ts',resolveDir:process.cwd()},bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'api.cjs'),logLevel:'silent'});
+buildSync({stdin:{contents:`export * from './src/v5-contribution-policy';export * from './src/v5-contribution-store';export * from './src/v5-payment-ledger';export * from './src/economy-ledger';export * from './src/v5-tlc-mining-split';export {default as admin} from './src/routes/admin';export {default as eco} from './src/economics';export {makeAccessToken} from './src/auth';`,loader:'ts',resolveDir:process.cwd()},bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'api.cjs'),logLevel:'silent'});
 const api=require(path.join(temp,'api.cjs')),sqlite=new DatabaseSync(':memory:');
 sqlite.exec(fs.readFileSync('migrations/0003_v3_economy_ledger.sql','utf8'));
 sqlite.exec(`UPDATE v3_economy_assets SET decimals=4 WHERE asset_code='TL';
@@ -86,6 +86,8 @@ async function main(){
  const preview=await api.eco.request('/activity',{method:'POST',headers:{Authorization:'Bearer '+userToken,'Content-Type':'application/json'},body:'{}'},env);
  assert.equal(preview.status,200);let previewBody=await preview.json();
  assert.ok(previewBody.poc_index>.1);assert.ok(previewBody.tlc_mining.daily_max>0);
+ assert.equal(previewBody.tlc_mining.split_policy,'tilo-group-5050-v1');
+ assert.equal(Number((previewBody.tlc_mining.member_daily_max+previewBody.tlc_mining.group_daily_max).toFixed(9)),previewBody.tlc_mining.daily_max);
  const mint=await api.eco.request('/mine-tlc',{
    method:'POST',headers:{Authorization:'Bearer '+userToken,'Content-Type':'application/json'},
    body:JSON.stringify({tlc_amount:999999999})
@@ -93,6 +95,29 @@ async function main(){
  assert.equal(mint.status,200,await mint.clone().text());
  const receipt=await mint.json();
  assert.ok(receipt.ok);assert.ok(receipt.mined>0);
+ assert.equal(receipt.split_policy,'tilo-group-5050-v1');
+ assert.equal(receipt.company_reserve_locked,true);
+ assert.equal(receipt.member_mined,receipt.mined);
+ assert.equal(Number((receipt.member_mined+receipt.group_mined).toFixed(9)),receipt.gross_mined);
+ assert.equal(receipt.gross_mined,Math.round(previewBody.tlc_mining.daily_max*1e9)/1e9);
+ assert.equal(receipt.group_mined>=receipt.member_mined,true);
+ const groupReserve=await api.readGroupTlcReserve(db);
+ assert.equal(groupReserve.locked_tlc,receipt.group_mined);
+ assert.equal(groupReserve.available_tlc,0);
+ assert.equal(groupReserve.transfer_allowed,false);
+ assert.equal(groupReserve.gold_conversion_enabled,false);
+ const companyRow=sqlite.prepare(`SELECT a.id,b.available_atoms,b.held_atoms FROM v3_economy_accounts a
+ JOIN v3_economy_balances b ON b.account_id=a.id
+ WHERE a.owner_type='platform' AND a.owner_id='tilo-group' AND a.bucket='permanent_value_reserve_locked' AND a.asset_code='TLC'`).get();
+ assert.ok(companyRow);assert.equal(companyRow.available_atoms,0);
+ assert.equal(companyRow.held_atoms,Math.round(receipt.group_mined*1e9));
+ const walletRow=sqlite.prepare(`SELECT b.available_atoms FROM v3_economy_accounts a JOIN v3_economy_balances b ON b.account_id=a.id
+ WHERE a.owner_type='user' AND a.owner_id='2' AND a.bucket='wallet' AND a.asset_code='TLC'`).get();
+ assert.equal(walletRow.available_atoms,Math.round(receipt.member_mined*1e9));
+ const grossRecord=sqlite.prepare('SELECT minted_atoms,requested_atoms FROM v3_tlc_mining_records WHERE user_id=2').get();
+ assert.equal(grossRecord.minted_atoms,Math.round(receipt.gross_mined*1e9));
+ assert.equal(grossRecord.requested_atoms,grossRecord.minted_atoms);
+ assert.equal(sqlite.prepare('SELECT SUM(amount_atoms) n FROM v3_economy_entries WHERE transaction_id=?').get(receipt.ledger_receipt).n,0);
  assert.ok(receipt.mined<=previewBody.tlc_mining.daily_max+1e-9);
  assert.equal(receipt.development_only,true);
  assert.equal(receipt.blockchain_minted,false);
@@ -113,9 +138,27 @@ async function main(){
  assert.equal((await repeatMint.json()).code,'ALREADY_MINED_TODAY');
  assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM v3_tlc_mining_records').get().n,1);
  assert.equal(sqlite.prepare('SELECT tlc_balance FROM users WHERE id=2').get().tlc_balance,minedBalance);
+ assert.equal(sqlite.prepare("SELECT held_atoms FROM v3_economy_balances WHERE account_id=?").get(companyRow.id).held_atoms,companyRow.held_atoms);
+ assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM v3_economy_transactions WHERE idempotency_key LIKE 'v5-tlc-day:%'").get().n,1);
  const history=await api.eco.request('/mining-history',{headers:{Authorization:'Bearer '+userToken}},env);
- assert.equal(history.status,200);assert.equal((await history.json()).history.length,1);
- console.log('PASS TLC mining: server POC only, atomic V3 ledger + legacy display, same-day dedup, amount cap, history');
+ assert.equal(history.status,200);
+ const mh=(await history.json()).history;
+ assert.equal(mh.length,1);assert.equal(mh[0].split_policy,'tilo-group-5050-v1');
+ assert.equal(mh[0].tlc_mined,receipt.member_mined);
+ assert.equal(mh[0].group_mined,receipt.group_mined);
+ const companyResponse=await api.admin.request('/tlc-group-reserve',{headers:{Authorization:'Bearer '+adminToken}},env);
+ assert.equal(companyResponse.status,200);const companyDetails=await companyResponse.json();
+ assert.equal(companyDetails.locked_tlc,receipt.group_mined);
+ assert.equal(companyDetails.mining_events,1);
+ assert.equal(companyDetails.fixed_max_supply,null);
+ assert.equal(companyDetails.issuance_model,'verified_activity_no_fixed_max_supply');
+ assert.equal(companyDetails.cumulative_v3_mined_tlc,receipt.gross_mined);
+ assert.equal(companyDetails.cumulative_v3_record_count,1);
+ assert.equal((await api.admin.request('/tlc-group-reserve',{headers:{Authorization:'Bearer '+userToken}},env)).status,403);
+ assert.throws(()=>api.splitMinedTlcAtoms(0),/INVALID_GROSS/);
+ assert.deepEqual(api.splitMinedTlcAtoms(5).memberAtoms,2);
+ assert.equal(api.splitMinedTlcAtoms(5).groupAtoms,3);
+ console.log('PASS TLC mining: gross 50:50 member/group, company reserve held and unavailable, no excess issuance, immutable daily receipt, same-day dedup, legacy/member history');
  response=await api.eco.request('/daily-free-allowance',{},env);assert.equal(response.status,401);
  response=await api.eco.request('/daily-free-allowance?user_id=3',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,200);body=await response.json();assert.equal(body.active,false);assert.equal(body.subscriptionCheckoutEnabled,false);
  response=await api.eco.request('/daily-free-products',{},env);body=await response.json();assert.equal(body.products.length,24);assert.equal(body.purchasable,false);

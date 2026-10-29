@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import { requestListenerCashout } from './v5-cashout';
 import { readRewardPolicy } from './v5-reward-policy';
 import {readReferralPocBonus} from './v5-referral-reward';
+import {assertTlcAssetScale,splitMinedTlcAtoms,TLC_RESERVE_OWNER,TLC_RESERVE_BUCKET,TLC_SPLIT_POLICY} from './v5-tlc-mining-split';
 import { completeAdReward, startAdReward } from './v5-ad-reward';
 import { verifyToken } from './auth';
 import type { Env } from './types';
@@ -579,7 +580,11 @@ async function calculateServerPoc(db:D1Database,userId:string){
     const today=new Date().toISOString().slice(0,10);
     const priorToday=await db.prepare("SELECT id FROM tlc_mining_v2 WHERE user_id=? AND DATE(created_at)=? LIMIT 1")
       .bind(userId,today).first<any>();
-    const availableToday=priorToday?0:Math.min(dailyTLC,monthHardCap/30);
+    const postedToday=await db.prepare('SELECT id FROM v3_tlc_mining_records WHERE user_id=? AND period_date=? LIMIT 1')
+      .bind(userId,today).first<any>();
+    const availableToday=priorToday||postedToday?0:Math.min(dailyTLC,monthHardCap/30);
+    const grossAtoms=Math.round(Math.max(0,availableToday)*1000000000);
+    const splitPreview=grossAtoms>=2?splitMinedTlcAtoms(grossAtoms):null;
 
     return {
       ok: true,
@@ -595,7 +600,11 @@ async function calculateServerPoc(db:D1Database,userId:string){
         referral:Number(verifiedReferralPoc.toFixed(3)),
       },
       tlc_mining: {
-        daily_max: Number(availableToday.toFixed(9)),
+        daily_max: Number(availableToday.toFixed(9)), // gross production ceiling
+        member_daily_max:splitPreview?.memberTlc||0,
+        group_daily_max:splitPreview?.groupTlc||0,
+        split_policy:TLC_SPLIT_POLICY,
+        company_reserve_locked:true,
         monthly_hard_cap: Number(monthHardCap.toFixed(4)),
         monthly_eligible_tl_p: Number(monthlyTlP.toFixed(4)),
         theoretical_daily_max: Number(dailyTLC.toFixed(9)),
@@ -626,12 +635,22 @@ eco.get('/mining-history', async (c) => {
     await migrateDB(c.env.DB);
     const {rules:policy}=await readRewardPolicy(c.env.DB);
     const result = await c.env.DB.prepare(`
-      SELECT tl_p_base, poc_index, plan, multiplier, tlc_mined, created_at
-      FROM tlc_mining_v2
-      WHERE user_id=?
-      ORDER BY created_at DESC
+      SELECT m.tl_p_base,m.poc_index,m.plan,m.multiplier,m.tlc_mined,m.created_at,
+        CASE WHEN t.source='server_poc_v1' AND json_valid(t.metadata_json)
+             AND json_extract(t.metadata_json,'$.split_policy')=?
+          THEN json_extract(t.metadata_json,'$.gross_mined_tlc') ELSE m.tlc_mined END gross_mined,
+        CASE WHEN t.source='server_poc_v1' AND json_valid(t.metadata_json)
+             AND json_extract(t.metadata_json,'$.split_policy')=?
+          THEN json_extract(t.metadata_json,'$.group_mined_tlc') ELSE 0 END group_mined,
+        CASE WHEN t.source='server_poc_v1' AND json_valid(t.metadata_json)
+             AND json_extract(t.metadata_json,'$.split_policy')=?
+          THEN ? ELSE 'legacy_member_only' END split_policy
+      FROM tlc_mining_v2 m
+      LEFT JOIN v3_economy_transactions t ON t.idempotency_key='v5-tlc-day:'||m.user_id||':'||DATE(m.created_at)
+      WHERE m.user_id=?
+      ORDER BY m.created_at DESC
       LIMIT 20
-    `).bind(userId).all();
+    `).bind(TLC_SPLIT_POLICY,TLC_SPLIT_POLICY,TLC_SPLIT_POLICY,TLC_SPLIT_POLICY,userId).all();
     return c.json({ ok: true, history: result.results || [] });
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
@@ -667,16 +686,19 @@ eco.post('/mine-tlc', async (c) => {
     const amountAtoms=Math.round(daily*1e9);
     if(!Number.isSafeInteger(amountAtoms)||amountAtoms<10000000)
       return c.json({ok:false,code:'NO_TLC_MINEABLE',error:'오늘 채굴 가능한 TLC가 없습니다.',poc_index:preview.poc_index},400);
-    const amount=amountAtoms/1e9;
+    await assertTlcAssetScale(db);
+    const split=splitMinedTlcAtoms(amountAtoms);
+    const memberAmount=split.memberTlc;
     const plan=await db.prepare('SELECT plan FROM users WHERE id=?').bind(userId).first<any>();
     const planCode=plan?.plan==='B'?'B':'A';
     const userAccount=await ensureLedgerAccount(db,'user',userId,'TLC','wallet');
+    const groupAccount=await ensureLedgerAccount(db,'platform',TLC_RESERVE_OWNER,'TLC',TLC_RESERVE_BUCKET);
     const systemAccount=await ensureLedgerAccount(db,'system','v5-dev-mining','TLC','issuance');
     const snapshotId=crypto.randomUUID(),miningId=crypto.randomUUID();
     const receiptKey='v5-tlc-day:'+userId+':'+date;
     const snapshot={
       activity:preview.poc_components,policy:'manual',month:date.slice(0,7),
-      testStage:'prelaunch',score:preview.poc_index
+      testStage:'prelaunch',score:preview.poc_index,tlc_split_policy:TLC_SPLIT_POLICY
     };
     const statements=[
       db.prepare('INSERT INTO v3_poc_snapshots(id,user_id,period_start,period_end,poc_index,components_json,formula_version,source_event_count) VALUES(?,?,?,?,?,?,?,?)')
@@ -684,25 +706,38 @@ eco.post('/mine-tlc', async (c) => {
       db.prepare("INSERT INTO v3_tlc_mining_records(id,user_id,idempotency_key,period_date,poc_snapshot_id,eligible_tl_spend_atoms,poc_index,plan_code,multiplier,requested_atoms,minted_atoms,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'posted')")
          .bind(miningId,userId,receiptKey,date,snapshotId,Math.round(Number(preview.tlc_mining.monthly_eligible_tl_p||0)*10000),Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amountAtoms,amountAtoms),
       db.prepare('UPDATE users SET tlc_balance=COALESCE(tlc_balance,0)+?,poc_index=? WHERE id=?')
-        .bind(amount,Number(preview.poc_index),userId),
+        .bind(memberAmount,Number(preview.poc_index),userId),
       db.prepare("INSERT INTO tlc_mining_v2(user_id,tl_p_base,poc_index,plan,multiplier,tlc_mined) VALUES(?,?,?,?,?,?)")
-        .bind(userId,Number(preview.tlc_mining.monthly_eligible_tl_p||0),Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),amount)
+        .bind(userId,Number(preview.tlc_mining.monthly_eligible_tl_p||0),Number(preview.poc_index),planCode,Number(preview.tlc_mining.plan_multiplier||1),memberAmount)
     ];
     const posted=await postLedgerTransaction(db,{
       idempotencyKey:receiptKey,transactionType:'tlc_development_mining',source:'server_poc_v1',
       referenceType:'mining_day',referenceId:date,actorUserId:userId,
-      description:'개발 단계 TLC 내부 원장 채굴 (블록체인 발행 아님)',
-      metadata:{date,poc_index:preview.poc_index,development_only:true,amount_tlc:amount},
+      description:'개발 단계 TLC 총 채굴량의 50% 회원·50% 틸로그룹 장기잠금준비금 (블록체인 발행 아님)',
+      metadata:{date,poc_index:preview.poc_index,development_only:true,
+        split_policy:TLC_SPLIT_POLICY,gross_mined_tlc:split.grossTlc,
+        member_mined_tlc:split.memberTlc,group_mined_tlc:split.groupTlc,
+        group_reserve_owner:TLC_RESERVE_OWNER,group_reserve_locked:true,external_chain_minted:false},
       issuanceStatements:[db.prepare('UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?')
         .bind(amountAtoms,systemAccount)],
       lines:[{accountId:systemAccount,assetCode:'TLC',amountAtoms:-amountAtoms},
-        {accountId:userAccount,assetCode:'TLC',amountAtoms:amountAtoms}],
-      atomicStatements:statements
+        {accountId:userAccount,assetCode:'TLC',amountAtoms:split.memberAtoms},
+        {accountId:groupAccount,assetCode:'TLC',amountAtoms:split.groupAtoms}],
+      // Convert the group credit to held atoms in the SAME transaction;
+      // ordinary spend operations can only debit available atoms.
+      atomicStatements:[...statements,
+        db.prepare(`UPDATE v3_economy_balances
+          SET available_atoms=available_atoms-?,held_atoms=held_atoms+?,
+              version=version+1,updated_at=datetime('now')
+          WHERE account_id=? AND available_atoms>=?`)
+        .bind(split.groupAtoms,split.groupAtoms,groupAccount,split.groupAtoms)]
     });
     if(posted.replayed)return c.json({ok:false,code:'ALREADY_MINED_TODAY',error:'오늘 TLC 채굴은 이미 완료되었습니다.'},409);
     const updated=await db.prepare('SELECT tlc_balance FROM users WHERE id=?').bind(userId).first<any>();
-    return c.json({ok:true,mined:amount,tlc_total:Number(updated?.tlc_balance||0),
-      today_total:amount,daily_max:daily,poc_index:preview.poc_index,
+    return c.json({ok:true,mined:split.memberTlc,tlc_total:Number(updated?.tlc_balance||0),
+      today_total:split.memberTlc,daily_max:daily,gross_mined:split.grossTlc,
+      member_mined:split.memberTlc,group_mined:split.groupTlc,
+      split_policy:TLC_SPLIT_POLICY,company_reserve_locked:true,poc_index:preview.poc_index,
       plan_multiplier:Number(preview.tlc_mining.plan_multiplier||1),
       development_only:true,ledger_receipt:posted.id,blockchain_minted:false});
   }catch(error:any){
