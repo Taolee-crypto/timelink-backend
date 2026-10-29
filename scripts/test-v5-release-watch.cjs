@@ -55,6 +55,25 @@ for(const name of REQUIRED_PAGES){const a=good();a.pages[name].status='failure';
   assert.ok(!JSON.stringify(checked).includes('supersecret-do-not-print'));
   assert.ok(issued.every(x=>x.method==='GET'&&x.redirect==='error'));
   assert.equal(issued.length,6);
+  // A rejected Pages request retains its project identity and must fail
+  // rather than silently writing a bogus "undefined" page state.
+  global.fetch=async(url,opts)=>{
+    if(url.includes('/pages/projects/timelink-admin/'))throw Error('simulated-pages-unreachable');
+    const isApi=url.includes('/api/v1/health'),isDb=url.endsWith('/d1/database/'+DATABASE_ID);
+    const isPitr=url.endsWith('/time_travel/bookmark'),isWorker=url.includes('/workers/scripts/');
+    let result;
+    if(isApi)result={status:'ok',database:'ok'};
+    else if(isDb)result={success:true,result:{uuid:DATABASE_ID}};
+    else if(isPitr)result={success:true,result:{bookmark:'secret-not-for-logs'}};
+    else if(isWorker)result={success:true,result:{deployments:[{id:'fixture'}]}};
+    else result={success:true,result:[{latest_stage:{status:'success'}}]};
+    return {status:200,ok:true,json:async()=>result};
+  };
+  const failed=await perform({accountId:'fixture-account',token:'test-credential'});
+  assert.equal(failed.ok,false);
+  assert.ok(failed.failures.includes('PAGES_DEPLOYMENT_UNAVAILABLE_TIMELINK_ADMIN'));
+  assert.equal(failed.checks.pages['timelink-admin'],'unavailable');
+  assert.ok(!JSON.stringify(failed).includes('secret-not-for-logs'));
  }finally{global.fetch=oldFetch;}
  console.log('PASS ops: API, D1 identity, PITR bookmark, 2 Pages and Worker deployment, local SQLite snapshot restore, GET-only, no recovery secret leak');
 })().catch(e=>{console.error(e);process.exitCode=1});
