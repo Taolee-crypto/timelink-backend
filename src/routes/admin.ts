@@ -14,6 +14,7 @@ import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 import {reverseReferralReward} from '../v5-referral-reward';
+import {readProfitSafetyControls,saveProfitSafetyLimits,readProfitSafetyHistory,evaluateProfitSafety} from '../v5-profit-safety';
 
 const router = new Hono<{ Bindings: Env }>();
 
@@ -102,6 +103,56 @@ router.get('/music-subscription-settlements/:orderId',async c=>{
  c.header('Cache-Control','no-store');
  try{const result=await reviewMusicSettlement(c.env.DB,c.req.param('orderId'));return result?c.json(result):c.json({error:'MUSIC_RECEIPT_NOT_FOUND'},404);}
  catch(error){if(String(error).includes('INVALID_MUSIC_REVIEW_ORDER'))return c.json({error:'INVALID_MUSIC_REVIEW_ORDER'},400);throw error;}
+});
+
+/**
+ * Administrator-controlled safety limits and non-mutating forecast.
+ * No automatic optimizer or unattended policy rewrite is permitted.
+ */
+router.get('/profit-safety',async c=>{
+ c.header('Cache-Control','no-store');
+ const controls=await readProfitSafetyControls(c.env.DB);
+ let verification:any={bank_settlement_verified:false,refund_totals_verified:false,
+  rights_payouts_verified:false,cloud_cost_verified:false};
+ try{
+  const finance=await readAdminFinance(c.env.DB);
+  verification={...verification,...finance.verification};
+ }catch(error){
+  // Never turn missing accounting schema / incomplete finance into a green status.
+  verification.finance_unavailable=true;
+ }
+ const reward=await readRewardPolicy(c.env.DB);
+ return c.json({ok:true,...controls,verification,reward_policy_version:reward.version,
+  automation_preconditions_met:false,
+  note:'재무 실측과 운영 증빙이 검증되기 전까지 자동 최적화는 비활성화됩니다. 관리자가 규칙을 직접 조정합니다.'});
+});
+router.get('/profit-safety/history',async c=>{
+ c.header('Cache-Control','no-store');
+ return c.json({ok:true,history:await readProfitSafetyHistory(c.env.DB)});
+});
+router.post('/profit-safety/simulate',async c=>{
+ c.header('Cache-Control','no-store');
+ try{
+  const input=await c.req.json<any>();
+  const controls=await readProfitSafetyControls(c.env.DB);
+  if(input?.expected_version!==controls.version)return c.json({ok:false,code:'PROFIT_SAFETY_VERSION_CONFLICT'},409);
+  return c.json(evaluateProfitSafety(input.scenario,controls.limits));
+ }catch(error:any){return c.json({ok:false,code:String(error.message||'INVALID_PROFIT_SCENARIO')},400);}
+});
+router.post('/profit-safety/limits',async c=>{
+ const actor=await requireAdmin(c);
+ if(!actor)return c.json({ok:false,code:'ADMIN_REQUIRED'},403);
+ try{
+  const input=await c.req.json<any>();
+  if(!input||typeof input!=='object'||Array.isArray(input)||input.mode!=='manual'||
+    Object.keys(input).some(k=>!['mode','expected_version','limits'].includes(k)))
+    return c.json({ok:false,code:'MANUAL_ONLY'},400);
+  const result=await saveProfitSafetyLimits(c.env.DB,actor,input.expected_version,input.limits);
+  return c.json(result);
+ }catch(error:any){
+  const code=String(error.message||error);
+  return c.json({ok:false,code},code==='PROFIT_SAFETY_VERSION_CONFLICT'?409:400);
+ }
 });
 
 router.get('/reward-policy',async c=>c.json({ok:true,...await readRewardPolicy(c.env.DB),definitions:REWARD_RULES,mode:'manual'}));
