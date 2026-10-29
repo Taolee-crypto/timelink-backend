@@ -24,6 +24,7 @@ jobs:
       - run: node scripts/test-v5-music-orders.cjs
       - run: node scripts/test-v5-economy-renewal.cjs
       - run: node scripts/test-v5-tlc-gold-stages.cjs
+      - run: node scripts/test-v5-my-shares-dashboard.cjs
       - run: node scripts/test-v5-real-ledger-sqlite.cjs
       - run: node scripts/test-self-play-income.cjs
       - run: node scripts/test-creator-payout-report.cjs
