@@ -36,7 +36,8 @@ class VocalContract(unittest.TestCase):
                 stem.parent.mkdir(parents=True)
                 stem.touch()
                 return subprocess.CompletedProcess(command, 0)
-            with patch.object(module.subprocess, "run", side_effect=fake_run):
+            with patch.object(module.subprocess, "run", side_effect=fake_run), \
+                 patch.object(module, "estimate_vocal_midi_contour", return_value=([60.0]*100, 0.01)):
                 result = module.transcribe_vocals(source)
             self.assertEqual(result["part"], "lead_vocal")
             self.assertEqual(result["chords"], [])
