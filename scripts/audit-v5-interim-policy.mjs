@@ -18,7 +18,7 @@ check('settlement transaction idempotency',()=>{
  assert.match(ledger,/prior\.transaction_type!==transactionType/);
  assert.match(ledger,/idempotencyKey!=="daily-free-overage:"\+input\.walletUsageKey/);
 });
-check('stop refunds 100 percent as TL_B',()=>{assert.match(ledger,/const refund=amount,platform=0/);assert.match(ledger,/accountId:await ensureLedgerAccount\(db,'user',userId,'TL','wallet_bonus'\),assetCode:'TL',amountAtoms:refund/);assert.match(ledger,/idempotencyKey:'v5-early-stop:'\+sessionId/)});
+check('stop refunds unused TL to its original TL_P/TL_A/TL_B bucket',()=>{assert.match(ledger,/const refund=amount,platform=0/);assert.match(ledger,/const wallet=await ensureLedgerAccount\(db,'user',userId,'TL',\{ad:'wallet_ad',bonus:'wallet_bonus',paid:'wallet_paid'\}\[source\]\)/);assert.match(ledger,/lines.push\(\{accountId:wallet,assetCode:'TL',amountAtoms:atoms\}\)/);assert.match(ledger,/idempotencyKey:'v5-early-stop:'\+sessionId/)});
 check('test D1 is separate',()=>{const id=x=>x.match(/database_id\s*=\s*"([^"]+)"/)?.[1];assert(id(prod)&&id(test)&&id(prod)!==id(test));assert.match(test,/ENVIRONMENT\s*=\s*"test"/)});
 check('local SQL fixture is repeatable',()=>{assert.match(sql,/INSERT OR IGNORE INTO v5_test_transactions/);assert.match(sql,/INSERT INTO v5_test_once\(applied\) SELECT changes\(\)/);assert.match(sql,/\(SELECT applied FROM v5_test_once\)=1/);assert.match(sql,/CREATE TABLE IF NOT EXISTS v5_test_once/)});
 check('model matches actual early-stop refund policy',()=>{assert.match(fixtures,/stopRefund=unplayed/);assert.match(fixtures,/stopPlatform=0n/)});
