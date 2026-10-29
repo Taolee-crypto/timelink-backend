@@ -15,6 +15,7 @@ import type { Env } from '../types';
 import { verifyToken } from '../auth';
 import {reverseReferralReward} from '../v5-referral-reward';
 import {readGroupTlcReserve} from '../v5-tlc-mining-split';
+import {readTlcIssuanceIntegrity} from '../v5-tlc-issuance-audit';
 import {readProfitSafetyControls,saveProfitSafetyLimits,readProfitSafetyHistory,evaluateProfitSafety} from '../v5-profit-safety';
 
 const router = new Hono<{ Bindings: Env }>();
@@ -156,6 +157,15 @@ router.post('/profit-safety/limits',async c=>{
  }
 });
 
+/** Every user, including an administrator/founder, must receive exactly the same
+ *  50:50 mining split. This reports anomalies; it cannot mint or modify TLC.
+ */
+router.get('/tlc-issuance-audit',async c=>{
+ c.header('Cache-Control','private, no-store');
+ try{
+   return c.json(await readTlcIssuanceIntegrity(c.env.DB));
+ }catch(error){console.error('[TLC_ISSUANCE_INTEGRITY]',String(error));return c.json({ok:false,code:'TLC_ISSUANCE_AUDIT_UNAVAILABLE'},503);}
+});
 /** Company TLC is a long-term held reserve, not operating cash or TON balance. */
 router.get('/tlc-group-reserve',async c=>{
  c.header('Cache-Control','private, no-store');
