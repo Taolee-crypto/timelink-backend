@@ -81,6 +81,45 @@ async function lookupV5Score(db:D1Database,raw:string){
   }
   return row;
 }
+// Idempotent, owner-authorized queue. No raw MP3, keys, TL debit or TLD issuance.
+async function ensureV5ScoreJobs(db:D1Database){
+  await db.prepare(`CREATE TABLE IF NOT EXISTS v5_score_jobs(
+    file_id INTEGER PRIMARY KEY,owner_id INTEGER NOT NULL,source_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',attempts INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+}
+router.post('/scores/v5/:reference/generate',async c=>{
+  const uid=await v5ScoreUser(c);
+  if(!uid)return c.json({ok:false,code:'AUTH_REQUIRED'},401);
+  try{
+    const row=await lookupV5Score(c.env.DB,c.req.param('reference'));
+    if(!row)return c.json({ok:false,code:'V5_TRACK_NOT_FOUND'},404);
+    if(Number(row.user_id)!==uid)return c.json({ok:false,code:'CREATOR_REQUIRED'},403);
+    const rights=await c.env.DB.prepare(
+      "SELECT rights_role,rights_declared FROM tl_creator_metadata WHERE file_id=? AND user_id=?"
+    ).bind(Number(row.file_id),uid).first<any>().catch(()=>null);
+    if(Number(rights?.rights_declared)!==1||!['owner','authorized_agent','licensee'].includes(String(rights?.rights_role||'')))
+      return c.json({ok:false,code:'CREATOR_RIGHTS_REQUIRED'},403);
+    const body=await c.req.json<any>().catch(()=>null);
+    if(body?.rights_confirmed!==true)return c.json({ok:false,code:'CREATOR_RIGHTS_REQUIRED'},422);
+    // Do not accept jobs until a private analysis service is configured.
+    // A queue without a worker would strand users in a permanent "pending" state.
+    if(!c.env.V5_SCORE_WORKER_URL||!c.env.V5_SCORE_WORKER_TOKEN)
+      return c.json({ok:false,code:'VOCAL_ANALYSIS_NOT_READY',message:'보컬 분석 서버가 아직 연결되지 않았습니다.'},503);
+    await ensureV5ScoreJobs(c.env.DB);
+    await c.env.DB.prepare(`INSERT INTO v5_score_jobs(file_id,owner_id,source_sha256,status)
+      VALUES(?,?,?,'queued') ON CONFLICT(file_id) DO UPDATE SET
+      owner_id=excluded.owner_id,source_sha256=excluded.source_sha256,
+      status=CASE WHEN v5_score_jobs.source_sha256=excluded.source_sha256 AND
+        v5_score_jobs.status IN ('queued','running','completed') THEN v5_score_jobs.status ELSE 'queued' END,
+      error_code=NULL,updated_at=CURRENT_TIMESTAMP`)
+      .bind(Number(row.file_id),uid,String(row.source_sha256)).run();
+    return c.json({ok:true,job_status:'queued_or_existing',file_id:Number(row.file_id),
+      tld_issued:false,tl_charged:0},202,{'Cache-Control':'private, no-store'});
+  }catch(e){console.error('[V5_SCORE_JOB_INTAKE]',e);return c.json({ok:false,code:'V5_SCORE_JOB_INTAKE_FAILED'},503);}
+});
 // Existing TRACK ID always resolves to its actual sealed V5 file, not V3.
 router.get('/scores/v5/:reference',async c=>{
   try{
@@ -107,7 +146,7 @@ router.get('/scores/v5/:reference',async c=>{
     return c.json({ok:true,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
       score_status:score?'draft':'not_generated',has_score:!!score,score,
-      can_generate:false,source_sha256:null,tld_issued:false,analysis_ready:false,tl_charged:0,
+      can_generate:canGenerate&&!!c.env.V5_SCORE_WORKER_URL&&!!c.env.V5_SCORE_WORKER_TOKEN,source_sha256:owner?String(row.source_sha256):null,tld_issued:false,analysis_ready:!!c.env.V5_SCORE_WORKER_URL&&!!c.env.V5_SCORE_WORKER_TOKEN,tl_charged:0,
       analysis_code:"VOCAL_ANALYSIS_NOT_READY",
       analysis_message:"보컬 분리 채보 서비스 연결을 준비 중입니다. 현재 자동 채보를 시작할 수 없습니다.",
       message:score?'자동 채보 초안입니다. 검수 전이며 정식 TLD는 발행되지 않았습니다.':'이 곡의 V5 TLD 악보는 아직 생성·발행되지 않았습니다.'
