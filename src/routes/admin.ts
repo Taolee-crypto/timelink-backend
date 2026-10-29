@@ -169,7 +169,15 @@ router.get('/tlc-group-reserve',async c=>{
      WHERE transaction_type='tlc_development_mining'
        AND source='server_poc_v1' AND json_valid(metadata_json)
        AND json_extract(metadata_json,'$.split_policy')='tilo-group-5050-v1'`).first<any>();
+   const lifetime=await c.env.DB.prepare(`SELECT
+     COUNT(*) AS v3_records,COALESCE(SUM(CAST(minted_atoms AS REAL)),0)/1000000000.0 AS v3_gross_mined_tlc
+     FROM v3_tlc_mining_records WHERE status='posted'`).first<any>();
    return c.json({ok:true,...reserve,
+     issuance_model:'verified_activity_no_fixed_max_supply',
+     fixed_max_supply:null,
+     cumulative_v3_mined_tlc:Number(lifetime?.v3_gross_mined_tlc||0),
+     cumulative_v3_record_count:Number(lifetime?.v3_records||0),
+     cumulative_supply_scope:'v3_mining_records_only_excludes_legacy_or_nonmining_sources',
      mining_events:Number(summary?.transaction_count||0),
      minted_to_group_tlc:Number(summary?.total_group_mined_tlc||0),
      historical_rebalanced:false,redemption_enabled:false});
