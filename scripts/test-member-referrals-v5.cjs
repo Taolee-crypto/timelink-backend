@@ -5,7 +5,7 @@ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'v5-referral-rewards-'));
 let sql;
 async function run(){
  try{
-  buildSync({stdin:{contents:"export {default as router} from './src/routes/member-referrals-v5';export {makeAccessToken} from './src/auth';export {readReferralPocBonus} from './src/v5-referral-reward';export {readRewardPolicy} from './src/v5-reward-policy';",resolveDir:process.cwd(),loader:'ts'},
+  buildSync({stdin:{contents:"export {default as router} from './src/routes/member-referrals-v5';export {makeAccessToken} from './src/auth';export {readReferralPocBonus,reverseReferralReward} from './src/v5-referral-reward';export {readRewardPolicy} from './src/v5-reward-policy';",resolveDir:process.cwd(),loader:'ts'},
    outfile:path.join(dir,'api.cjs'),format:'cjs',platform:'node',bundle:true,logLevel:'silent'});
   const api=require(path.join(dir,'api.cjs'));
   sql=new DatabaseSync(':memory:');
@@ -96,6 +96,14 @@ async function run(){
   const tid=payout.json.ledger_transaction_id;
   assert.equal(sql.prepare('SELECT SUM(amount_atoms) n FROM v3_economy_entries WHERE transaction_id=?').get(tid).n,0);
   assert.equal(sql.prepare('SELECT COUNT(*) n FROM v3_economy_transactions WHERE idempotency_key=?').get('referral:signup_verified:3').n,1);
+  // Manual refund reversal is atomic: reverse TL_B while excluding POC.
+  const reversed=await api.reverseReferralReward(DB,1,'referral:signup_verified:3','verified-refund-3');
+  assert.equal(reversed.ok,true);assert.equal(reversed.tl_b_reversed,500);
+  assert.equal(sql.prepare('SELECT available_atoms n FROM v3_economy_balances WHERE account_id=(SELECT id FROM v3_economy_accounts WHERE owner_type=\'user\' AND owner_id=\'1\' AND bucket=\'wallet_bonus\')').get().n,0);
+  assert.equal(sql.prepare('SELECT status FROM v5_referral_reward_receipts WHERE milestone_key=\'referral:signup_verified:3\'').get().status,'reversed');
+  assert.equal(await api.readReferralPocBonus(DB,'1','2020-01-01'),0.7);
+  assert.equal((await api.reverseReferralReward(DB,1,'referral:signup_verified:3','verified-refund-3')).already_reversed,true);
+  assert.equal(sql.prepare("SELECT COUNT(*) n FROM v3_economy_transactions WHERE transaction_type='referral_bonus_reversal'").get().n,1);
   // Re-submission with tampered amount field is invalid.
   assert.equal((await req(1,'/settle','POST',{referred_user_id:3,milestone:'signup_verified',tl_b:1000000})).status,400);
   // Original member must not be able to launder an old account through a new claim.
