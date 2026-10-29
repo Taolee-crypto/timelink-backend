@@ -9,8 +9,23 @@ sql.exec("UPDATE v3_economy_assets SET decimals=4 WHERE asset_code='TL';CREATE T
 const db={prepare(q){let a=[];const st={bind(...v){a=v;return st},async first(){return sql.prepare(q).get(...a)||null},async all(){return {results:sql.prepare(q).all(...a)}},async run(){const r=sql.prepare(q).run(...a);return {meta:{changes:Number(r.changes)}}}};return st},async batch(stmts){sql.exec('BEGIN IMMEDIATE');try{const results=[];for(const st of stmts)results.push(await st.run());sql.exec('COMMIT');return results}catch(e){sql.exec('ROLLBACK');throw e}},async exec(q){sql.exec(q)}};
 (async()=>{try{const p=await api.readRewardPolicy(db);p.rules.signup_bonus=1234;sql.prepare('UPDATE v5_reward_policy SET rules_json=?,updated_by=1,version=1 WHERE id=1').run(JSON.stringify(p.rules));
 const routes=['/api/auth/register','/api/v1/auth/register','/api/auth/verify'];let n=0;
-for(const route of routes){const email='fixture'+(++n)+'@example.test';sql.prepare("INSERT INTO email_verifications(email,code,expires_at) VALUES(?,'123456',?)").run(email,new Date(Date.now()+600000).toISOString());const body={email,username:'fixture'+n,password:'fixture-password',verify_code:'123456',code:'123456'};
-const response=await api.worker.fetch(new Request('https://fixture.test'+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),{DB:db,JWT_SECRET:'fixture-key'},{});const d=await response.json();assert.equal(response.status,200,JSON.stringify(d));assert.equal(d.user.tl_b,1234);assert.equal(d.user.tl_p,0);assert.equal((await api.readV5Wallet(db,d.user_id)).tl_b,1234);}
+const consent={consent_terms:true,consent_privacy:true,age_14_confirmed:true,marketing:false};
+for(const route of ['/api/auth/signup',...routes]){
+ const invalid={email:'invalidconsent@example.test',username:'invalidconsent',password:'fixture-password',verify_code:'123456',code:'123456'};
+ for(const input of [invalid,{...invalid,consent_terms:true,consent_privacy:true,age_14_confirmed:false},{...invalid,...consent,consent_privacy:'true'}]){
+  const response=await api.worker.fetch(new Request('https://fixture.test'+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)}),{DB:db,JWT_SECRET:'fixture-key'},{});const result=await response.json();
+  assert.equal(response.status,400,route+': missing/forged required consent must fail');assert.equal(result.code,'SIGNUP_REQUIRED_CONSENT');
+ }
+}
+assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,0,'invalid registrations must not mint a member or TL');
+for(const route of routes){const email='fixture'+(++n)+'@example.test';sql.prepare("INSERT INTO email_verifications(email,code,expires_at) VALUES(?,'123456',?)").run(email,new Date(Date.now()+600000).toISOString());const body={email,username:'fixture'+n,password:'fixture-password',verify_code:'123456',code:'123456',...consent,marketing:n===2};
+const response=await api.worker.fetch(new Request('https://fixture.test'+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),{DB:db,JWT_SECRET:'fixture-key'},{});const d=await response.json();assert.equal(response.status,200,JSON.stringify(d));assert.equal(d.user.tl_b,1234);assert.equal(d.user.tl_p,0);assert.equal((await api.readV5Wallet(db,d.user_id)).tl_b,1234);
+const audited=sql.prepare('SELECT * FROM v5_signup_consents WHERE user_id=?').get(d.user_id);
+assert.ok(audited,'verified signup must record consent inside the same registration batch');
+assert.equal(audited.terms_accepted,1);assert.equal(audited.privacy_accepted,1);
+assert.equal(audited.age_14_confirmed,1);assert.equal(audited.marketing_accepted,n===2?1:0);
+assert.equal(audited.consent_context,'v5-public-registration-20261030');
+}
 assert.equal(sql.prepare('SELECT COUNT(*) n FROM v3_economy_transactions WHERE transaction_type=\'signup_bonus\'').get().n,3);
-console.log('PASS actual registration handlers: email verification, identical policy and V5 TL_B across all three API aliases');
+console.log('PASS actual registration handlers: all aliases reject unchecked/forged consent, verified users record mandatory and optional consent atomically with V5 TL_B');
 }finally{sql.close();fs.rmSync(temp,{recursive:true,force:true})}})().catch(e=>{console.error(e);process.exitCode=1});
