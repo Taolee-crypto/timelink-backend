@@ -150,6 +150,10 @@ async function main(){
  assert.equal(companyResponse.status,200);const companyDetails=await companyResponse.json();
  assert.equal(companyDetails.locked_tlc,receipt.group_mined);
  assert.equal(companyDetails.mining_events,1);
+ assert.equal(companyDetails.fixed_max_supply,null);
+ assert.equal(companyDetails.issuance_model,'verified_activity_no_fixed_max_supply');
+ assert.equal(companyDetails.cumulative_v3_mined_tlc,receipt.gross_mined);
+ assert.equal(companyDetails.cumulative_v3_record_count,1);
  assert.equal((await api.admin.request('/tlc-group-reserve',{headers:{Authorization:'Bearer '+userToken}},env)).status,403);
  assert.throws(()=>api.splitMinedTlcAtoms(0),/INVALID_GROSS/);
  assert.deepEqual(api.splitMinedTlcAtoms(5).memberAtoms,2);
