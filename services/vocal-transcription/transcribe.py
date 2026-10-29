@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import contextlib
 import sys
-from lyrics_alignment import align_lyrics
+from lyrics_alignment import align_lyrics, LyricsAlignmentUncertain
 from pitch_postprocess import refine_pitch_events
 import math
 import subprocess
@@ -78,8 +78,23 @@ def transcribe_vocals(source: Path, lyrics: str = '') -> dict:
         if not notes:
             raise ValueError("No reliable vocal melody notes after independent F0 verification")
         print('V5_SCORE_STAGE:lyrics', file=sys.stderr, flush=True)
-        with contextlib.redirect_stdout(sys.stderr):
-            aligned = align_lyrics(vocals, lyrics, notes, duration)
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                aligned = align_lyrics(vocals, lyrics, notes, duration)
+        except LyricsAlignmentUncertain:
+            # Preserve the independently observed melody instead of failing
+            # the whole track because one sung word has no reliable timestamp.
+            # No fabricated word positions, source changes or fake note lyrics.
+            print('V5_SCORE_STAGE:lyrics_pending_review', file=sys.stderr, flush=True)
+            aligned = {
+                'lyrics_status': 'alignment_pending', 'lyrics_words': [],
+                'lyrics_alignment': {
+                    'engine': 'stable-ts-whisper-small',
+                    'source': 'creator_supplied',
+                    'review_required': True,
+                    'pending_reason': 'VOICE_WORD_ALIGNMENT_UNCERTAIN'
+                }
+            }
         print('V5_SCORE_STAGE:complete', file=sys.stderr, flush=True)
         return {
             **aligned, "part": "lead_vocal", "melody": notes, "chords": [],
