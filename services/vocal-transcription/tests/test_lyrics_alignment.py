@@ -30,3 +30,17 @@ class AlignmentTests(TestCase):
         self.assertGreaterEqual(words[0]['d'],0.025)
         with self.assertRaises(ValueError):
             attach_words(notes,[{'words':[{'word':'not-sung','start':1.9,'end':1.9}]}],2.0)
+
+    def test_nearby_word_is_displayed_without_modifying_its_timestamp(self):
+        notes=[{'s':1.0,'d':0.5,'m':64},{'s':2.0,'d':0.5,'m':65}]
+        words=attach_words(notes,[{'words':[{'word':'hello','start':1.72,'end':1.80}]}],3.0)
+        self.assertEqual(notes[1]['lyric'],'hello')
+        self.assertEqual(words[0]['s'],1.72)
+        self.assertEqual(words[0]['d'],0.08)
+        self.assertEqual(words[0]['note_display_approx'],True)
+    def test_distant_word_not_falsely_attached_to_any_vocal_note(self):
+        notes=[{'s':1.0,'d':0.5,'m':64}]
+        words=attach_words(notes,[{'words':[{'word':'hushed','start':2.0,'end':2.2}]}],3.0)
+        self.assertNotIn('lyric',notes[0])
+        self.assertEqual(words[0]['note_display_unattached'],True)
+        self.assertEqual(words[0]['text'],'hushed')
