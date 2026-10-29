@@ -249,12 +249,23 @@ router.get('/scores/v5/:reference',async c=>{
         }catch(_){score=null;}
       }
     }
+    let jobStatus='not_requested',jobErrorCode=null;
+    if(owner){
+      await ensureV5ScoreJobs(c.env.DB);
+      const job=await c.env.DB.prepare("SELECT status,error_code,source_sha256 FROM v5_score_jobs WHERE file_id=? AND owner_id=?")
+        .bind(Number(row.file_id),uid).first<any>();
+      if(job&&String(job.source_sha256)===String(row.source_sha256)){
+        jobStatus=String(job.status||'not_requested');
+        jobErrorCode=job.error_code?String(job.error_code):null;
+      }
+    }
+    const ready=!!(c.env as any).V5_SCORE_WORKER_URL&&!!(c.env as any).V5_SCORE_WORKER_TOKEN;
     return c.json({ok:true,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
-      score_status:score?'draft':'not_generated',has_score:!!score,score,
-      can_generate:canGenerate&&!!(c.env as any).V5_SCORE_WORKER_URL&&!!(c.env as any).V5_SCORE_WORKER_TOKEN,source_sha256:owner?String(row.source_sha256):null,tld_issued:false,analysis_ready:!!(c.env as any).V5_SCORE_WORKER_URL&&!!(c.env as any).V5_SCORE_WORKER_TOKEN,tl_charged:0,
-      analysis_code:"VOCAL_ANALYSIS_NOT_READY",
-      analysis_message:"보컬 분리 채보 서비스 연결을 준비 중입니다. 현재 자동 채보를 시작할 수 없습니다.",
+      score_status:score?'draft':'not_generated',job_status:jobStatus,job_error_code:jobErrorCode,has_score:!!score,score,
+      can_generate:canGenerate&&ready,source_sha256:owner?String(row.source_sha256):null,tld_issued:false,analysis_ready:ready,tl_charged:0,
+      analysis_code:ready?null:"VOCAL_ANALYSIS_NOT_READY",
+      analysis_message:ready?"보컬 분석 작업을 접수할 수 있습니다.":"보컬 분리 채보 서비스 연결을 준비 중입니다. 현재 자동 채보를 시작할 수 없습니다.",
       message:score?'자동 채보 초안입니다. 검수 전이며 정식 TLD는 발행되지 않았습니다.':'이 곡의 V5 TLD 악보는 아직 생성·발행되지 않았습니다.'
     },200,{'Cache-Control':'private, no-store'});
   }catch(e){console.error('[V5_SCORE_STATUS]',e);return c.json({ok:false,code:'V5_SCORE_STATUS_UNAVAILABLE',message:'V5 악보 상태를 확인하지 못했습니다.'},503);}
