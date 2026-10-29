@@ -65,7 +65,14 @@ router.post('/claim',async c=>{
     if(Number(ref.user_id)===id)return c.json({ok:false,code:'SELF_REFERRAL'},409);
     const inserted=await c.env.DB.prepare("INSERT OR IGNORE INTO v5_member_referral_claims(referred_user_id,referrer_user_id,code) VALUES (?,?,?)").bind(id,ref.user_id,code).run();
     if(!inserted.meta?.changes)return c.json({ok:false,code:'ALREADY_CLAIMED'},409);
-    return c.json({ok:true,status:'pending_verification',reward_issued:false});
+    // The newly registered user can claim immediately after verified signup.
+    // Failure to settle never converts an unverified claim into a payout.
+    let rewardStatus:'pending_verification'|'verified_signup'='pending_verification';
+    try{
+      const reward=await settleVerifiedReferral(c.env.DB,Number(ref.user_id),id,'signup_verified');
+      if(reward.status==='posted')rewardStatus='verified_signup';
+    }catch(error){console.warn('[REFERRAL_AWAIT_VERIFICATION]',String(error));}
+    return c.json({ok:true,status:rewardStatus,reward_issued:rewardStatus==='verified_signup'});
   }catch(e){console.error('referral claim',e);return c.json({ok:false,code:'REFERRAL_UNAVAILABLE'},503);}
 });
 /**
