@@ -571,15 +571,17 @@ router.post('/sql', async (c) => {
     return c.json({ ok: false, error: '여러 개의 SQL 문은 실행할 수 없습니다.' }, 400);
   }
 
-  const isSelect = /^\s*(SELECT|WITH)\b/i.test(sql);
-
+  // A generic admin SQL console must never bypass V3 ledger invariants,
+  // payout approvals, or immutable audit history. All writes use dedicated APIs.
+  const normalized=stripped.replace(/\s+/g,' ').trim();
+  const isSelect=/^SELECT\b/i.test(normalized)
+    || (/^WITH\b/i.test(normalized)&&/\bSELECT\b/i.test(normalized)
+        && !/\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|MERGE|UPSERT)\b/i.test(normalized));
+  if(!isSelect)return c.json({ok:false,code:'ADMIN_SQL_READ_ONLY',
+    error:'관리자 SQL은 조회만 가능합니다. 변경은 전용 관리자 승인 API를 사용하세요.'},403);
   try {
-    if (isSelect) {
-      const result = await c.env.DB.prepare(sql).all();
-      return c.json({ ok: true, results: result.results || [], rows: result.results || [] });
-    }
-    const result = await c.env.DB.prepare(sql).run();
-    return c.json({ ok: true, changes: Number(result.meta?.changes || 0), meta: result.meta || null });
+    const result=await c.env.DB.prepare(sql).all();
+    return c.json({ok:true,results:result.results||[],rows:result.results||[],read_only:true});
   } catch (e: any) {
     return c.json({ ok: false, error: e?.message || 'SQL 실행 실패' }, 500);
   }
