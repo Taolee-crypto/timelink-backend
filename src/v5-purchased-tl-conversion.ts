@@ -198,3 +198,44 @@ export async function settleReviewedPurchasedTlMaturity(db:D1Database,input:{
   paymentKey:input.paymentKey,convertedAtoms:posted.replayed?0:atoms,
   remainingPurchasedAtoms:0,transactionId:posted.id};
 }
+
+/**
+ * Opt-in scheduled executor. Every due purchase lot must already have a
+ * human administrator's documented legal review. Never auto-approve a
+ * deadline, assign a refund policy, or convert unidentified legacy cash.
+ * Work is bounded; unavailable/held/actively playing lots are skipped.
+ */
+export async function runReviewedPurchasedTlMaturityCycle(db:D1Database,nowMs=Date.now(),maxConversions=10){
+ if(!Number.isSafeInteger(nowMs)||nowMs<=0||
+    !Number.isSafeInteger(maxConversions)||maxConversions<1||maxConversions>10)
+  throw Error('INVALID_MATURITY_CYCLE_CONFIGURATION');
+ await ensurePurchasedTlReviewSchema(db);
+ const eligibleRows=await db.prepare(
+  'SELECT payment_key,user_id FROM v5_purchased_tl_lots '+
+  "WHERE payment_mode='live' AND legal_review_approved=1 AND consumer_rights_cleared=1 "+
+  "AND refund_dispute_pending=0 AND conversion_status='reviewed' AND converted_atoms=0 "+
+  'AND refund_deadline_ms IS NOT NULL AND refund_deadline_ms<=? '+
+  'AND remaining_purchased_atoms>0 ORDER BY refund_deadline_ms,payment_key LIMIT 40'
+ ).bind(nowMs).all<{payment_key:string;user_id:string}>();
+ const candidates=eligibleRows.results||[];
+ let converted=0,convertedAtoms=0,skipped=0;
+ for(const row of candidates){
+  if(converted>=maxConversions)break;
+  try{
+   const preview=await previewPurchasedTlMaturity(db,row.user_id,row.payment_key,nowMs);
+   if(!preview.eligible||preview.remainingPurchasedAtoms<=0){skipped++;continue;}
+   const result=await settleReviewedPurchasedTlMaturity(db,{
+    userId:row.user_id,paymentKey:row.payment_key,expectedRemainingAtoms:preview.remainingPurchasedAtoms,
+    nowMs,adminId:0 // Auto scheduler is authorized by the stored human legal review, not a browser admin session.
+   });
+   if(result.converted){converted++;convertedAtoms+=result.convertedAtoms;}
+  }catch(e){
+   // Never retry as an unverified refund/ledger write. Human review may
+   // re-approve a changed purchase balance before a future cycle.
+   skipped++;
+   console.warn('[TLP_MATURITY_AUTO_SKIPPED]',e instanceof Error?e.message:'MATURITY_UNAVAILABLE');
+  }
+ }
+ return {scanned:candidates.length,converted,convertedAtoms,skipped,
+  capped:candidates.length===40,sourcePolicy:'PURCHASED_FIRST_FIFO',mode:'preapproved_only'};
+}
