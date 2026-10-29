@@ -59,6 +59,9 @@ async function main(){
    assert.equal(sqlite.prepare('SELECT granted_seconds AS n FROM v5_store_airtime_grants').get().n,3600);
    confirmed=await call(base+'/toss/confirm',{orderId,amount,paymentKey:'fixture-paid'});
    assert.equal(confirmed.status,200);assert.equal(confirmed.result.alreadyCompleted,true);
+   assert.equal(confirmed.result.entitlementType,'store_airtime');
+   assert.equal(confirmed.result.tlBCredited,false);
+   assert.equal(confirmed.result.amount,amount);
    assert.equal(calls,1,'replay must not charge Toss again');
    assert.equal((await call(base+'/toss/confirm',{orderId,amount,paymentKey:'other-key'})).status,403);
    const second=await call(base+'/toss/prepare',{...select,channel_id:'cafe_0123456789abcdef'});
@@ -67,6 +70,25 @@ async function main(){
    assert.equal(failed.status,400);
    assert.equal(sqlite.prepare("SELECT count(*) AS n FROM v5_store_airtime_grants WHERE order_id=?").get(second.result.orderId).n,0);
    assert.equal(sqlite.prepare("SELECT status FROM v5_store_airtime_orders WHERE order_id=?").get(second.result.orderId).status,'pending');
+   const beforeReplay=calls;
+   for(const [column,value] of [['user_id',2],['channel_id','other-store'],['granted_seconds',7200]]){
+    const original=sqlite.prepare('SELECT '+column+' AS value FROM v5_store_airtime_grants WHERE order_id=?').get(orderId).value;
+    sqlite.prepare('UPDATE v5_store_airtime_grants SET '+column+'=? WHERE order_id=?').run(value,orderId);
+    const mismatch=await call(base+'/toss/confirm',{orderId,amount,paymentKey:'fixture-paid'});
+    assert.equal(mismatch.status,503,'mismatched grant '+column+' must not claim success');
+    sqlite.prepare('UPDATE v5_store_airtime_grants SET '+column+'=? WHERE order_id=?').run(original,orderId);
+   }
+   sqlite.prepare('UPDATE v5_store_airtime_grants SET used_seconds=3600,expires_at_ms=1 WHERE order_id=?').run(orderId);
+   const consumed=await call(base+'/toss/confirm',{orderId,amount,paymentKey:'fixture-paid'});
+   assert.equal(consumed.status,200,'historical paid receipt remains valid after consumption/expiry');
+   assert.equal(consumed.result.seconds,3600);
+   assert.deepEqual({...sqlite.prepare('SELECT used_seconds,expires_at_ms FROM v5_store_airtime_grants WHERE order_id=?').get(orderId)},{used_seconds:3600,expires_at_ms:1});
+   sqlite.prepare('DELETE FROM v5_store_airtime_grants WHERE order_id=?').run(orderId);
+   const missing=await call(base+'/toss/confirm',{orderId,amount,paymentKey:'fixture-paid'});
+   assert.equal(missing.status,503,'paid receipt without airtime must not claim success');
+   assert.equal(missing.result.error,'ENTITLEMENT_NOT_GRANTED');
+   assert.equal(calls,beforeReplay,'broken local receipt must not charge the provider again');
+   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM v5_store_airtime_grants WHERE order_id=?').get(orderId).n,0,'replay must not silently recreate consumed or missing grants');
   }finally{global.fetch=realFetch}
   sqlite.exec('UPDATE users SET is_active=0 WHERE id=1');
   assert.equal((await call(base+'/quote',select)).status,401);

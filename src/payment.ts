@@ -138,8 +138,11 @@ payment.post('/v5/commercial-time/toss/confirm',async c=>{
   if(!o||Number(o.amount_krw)!==amount)return c.json({ok:false,error:'ORDER_AMOUNT_MISMATCH'},403);
   if(o.status==='paid'){
    if(o.payment_key!==paymentKey)return c.json({ok:false,error:'PAYMENT_KEY_MISMATCH'},403);
-   const grant=await c.env.DB.prepare("SELECT granted_seconds FROM v5_store_airtime_grants WHERE order_id=?").bind(orderId).first<any>();
-   return c.json({ok:true,alreadyCompleted:true,seconds:Number(grant?.granted_seconds||0),channelId:o.channel_id,mode:'test'});
+   // A paid receipt alone does not prove that the matching airtime was granted.
+   // Never repair a missing grant here: replay must not reset consumed airtime.
+   const grant=await c.env.DB.prepare("SELECT granted_seconds FROM v5_store_airtime_grants WHERE order_id=? AND user_id=? AND channel_id=? AND granted_seconds=?").bind(orderId,Number(uid),o.channel_id,Number(o.seconds)).first<any>();
+   if(!grant)return c.json({ok:false,error:'ENTITLEMENT_NOT_GRANTED'},503);
+   return c.json({ok:true,alreadyCompleted:true,seconds:Number(grant.granted_seconds),amount,channelId:o.channel_id,mode:'test',entitlementType:'store_airtime',tlBCredited:false});
   }
   if(o.status!=='pending')return c.json({ok:false,error:'ORDER_NOT_PENDING'},409);
   const secret=String(c.env.TOSS_SECRET_KEY||'');
