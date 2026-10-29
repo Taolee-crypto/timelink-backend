@@ -95,9 +95,25 @@ def main() -> int:
         code, stage = classify_analysis_failure(error)
         print('V5 vocal job failed:', type(error).__name__, 'stage=' + stage,
               'reason=' + safe_alignment_reason(error), file=sys.stderr)
-        try:
-            session.post(root + '/fail/' + str(file_id), json={'code':code}, timeout=30, allow_redirects=False)
-        except requests.RequestException: pass
+        # An HTTP 200 is not sufficient: /fail may return {ok:false} when
+        # the lease no longer matches. Retry transient failures using a FRESH
+        # GitHub OIDC identity on each session request, never a static token.
+        confirmed = False
+        for retry in range(3):
+            try:
+                reply = session.post(root + '/fail/' + str(file_id), json={'code':code},
+                                     timeout=30, allow_redirects=False)
+                reply.raise_for_status()
+                if reply.json().get('ok') is True:
+                    confirmed = True
+                    break
+            except (requests.RequestException, ValueError):
+                pass
+            if retry < 2:
+                import time
+                time.sleep((retry + 1) * 2)
+        if not confirmed:
+            print('V5_SCORE_FAILURE_REPORT_UNACKNOWLEDGED', file=sys.stderr)
         return 1
 
 if __name__ == '__main__':
