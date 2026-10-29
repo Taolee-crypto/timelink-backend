@@ -16,12 +16,16 @@ def classify_analysis_failure(error):
     # Only fixed stage markers are logged, never raw model stderr or creator content.
     if not isinstance(error, subprocess.CalledProcessError):
         return 'VOCAL_ANALYSIS_FAILED', 'unknown'
-    stages = re.findall(r'^V5_SCORE_STAGE:(separation|melody|lyrics|complete)$',
+    stages = re.findall(r'^V5_SCORE_STAGE:(separation|melody|lyrics|lyrics_model|lyrics_align|lyrics_attach|lyrics_verify|complete)$',
                         error.stderr or '', flags=re.MULTILINE)
     stage = stages[-1] if stages else 'unknown'
     code = {'separation': 'VOCAL_SEPARATION_FAILED',
             'melody': 'VOCAL_MELODY_FAILED',
-            'lyrics': 'VOCAL_LYRICS_FAILED'}.get(stage, 'VOCAL_ANALYSIS_FAILED')
+            'lyrics': 'VOCAL_LYRICS_FAILED',
+            'lyrics_model': 'VOCAL_LYRICS_MODEL_FAILED',
+            'lyrics_align': 'VOCAL_LYRICS_ALIGN_FAILED',
+            'lyrics_attach': 'VOCAL_LYRICS_TIMING_FAILED',
+            'lyrics_verify': 'VOCAL_LYRICS_MISMATCH'}.get(stage, 'VOCAL_ANALYSIS_FAILED')
     return code, stage
 
 API_BASE = 'https://api.timelink.digital'
