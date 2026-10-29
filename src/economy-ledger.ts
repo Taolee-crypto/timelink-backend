@@ -411,17 +411,22 @@ export async function settleV5EarlyStop(db:D1Database,input:{
     allocations[source]=Math.min(left,balances[source]);left-=allocations[source];
   }
   const lines:{accountId:string;assetCode:'TL';amountAtoms:number}[]=[];
+  // Refunding unused track time is a reversal of an internal transfer, not
+  // consumption. Preserve the source bucket so purchased TL_P cannot become
+  // non-redeemable TL_B (and promotional TL_A remains TL_A).
   for(const source of ['ad','bonus','paid'] as const){
-    if(!allocations[source])continue;
-    const account=await ensureLedgerAccount(db,'user',userId,'TL','track_pool:'+shareId+':'+source);
-    lines.push({accountId:account,assetCode:'TL',amountAtoms:-allocations[source]});
+    const atoms=allocations[source];
+    if(!atoms)continue;
+    const trackPool=await ensureLedgerAccount(db,'user',userId,'TL','track_pool:'+shareId+':'+source);
+    const wallet=await ensureLedgerAccount(db,'user',userId,'TL',{ad:'wallet_ad',bonus:'wallet_bonus',paid:'wallet_paid'}[source]);
+    lines.push({accountId:trackPool,assetCode:'TL',amountAtoms:-atoms});
+    lines.push({accountId:wallet,assetCode:'TL',amountAtoms:atoms});
   }
-  lines.push({accountId:await ensureLedgerAccount(db,'user',userId,'TL','wallet_bonus'),assetCode:'TL',amountAtoms:refund});
   const posted=await postLedgerTransaction(db,{
     idempotencyKey:'v5-early-stop:'+sessionId,
     transactionType:'v5_early_stop',source:'v5_player_stop',
     referenceType:'track',referenceId:shareId,actorUserId:String(userId),
-    description:'V5 중도 종료: 미재생 TL 전액 TL_B로 반환',
+    description:'V5 중도 종료: 미재생 TL 출처별 원지갑 반환',
     metadata:{session_id:sessionId,amount_atoms:amount,refund_atoms:refund,platform_atoms:platform,allocation:allocations},
     lines,atomicStatements:input.atomicStatements
   });
