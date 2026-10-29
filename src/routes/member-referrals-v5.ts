@@ -29,11 +29,12 @@ router.get('/me',async c=>{
     await tables(c.env.DB);
     const own=await c.env.DB.prepare('SELECT code FROM v5_member_referral_codes WHERE user_id=?').bind(id).first<any>();
     const rows=await c.env.DB.prepare('SELECT status, COUNT(*) AS total FROM v5_member_referral_claims WHERE referrer_user_id=? GROUP BY status').bind(id).all<any>();
+    const claims=await c.env.DB.prepare('SELECT referred_user_id,status,created_at FROM v5_member_referral_claims WHERE referrer_user_id=? ORDER BY created_at DESC LIMIT 100').bind(id).all<any>();
     await ensureReferralRewardSchema(c.env.DB);
     const payments=await c.env.DB.prepare("SELECT milestone,referred_user_id,source_reference,credited_tl_b,poc_points,status,created_at FROM v5_referral_reward_receipts WHERE referrer_user_id=? ORDER BY created_at DESC LIMIT 100").bind(id).all<any>();
     const policy=await readRewardPolicy(c.env.DB);
     return c.json({ok:true,code:own?.code||null,summary:rows.results||[],
-      rewards:payments.results||[],rewards_enabled:true,
+      rewards:payments.results||[],claims:claims.results||[],rewards_enabled:true,
       reward_policy_version:policy.version,
       available_reward_types:['signup_verified','store_first_paid'],
       note:'TL_B 지급량과 POC 가중치는 관리자가 수동 조정합니다. 지급량 0은 기여 인정만 의미합니다.'});
