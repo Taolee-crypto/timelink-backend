@@ -30,6 +30,7 @@ def transcribe_vocals(source: Path, lyrics: str = '') -> dict:
             "python", "-m", "demucs", "--two-stems", "vocals",
             "--name", "htdemucs", "--out", str(output), str(source),
         ]
+        print('V5_SCORE_STAGE:separation', file=sys.stderr, flush=True)
         subprocess.run(command, check=True, timeout=1200, capture_output=True)
         vocals = output / "htdemucs" / source.stem / "vocals.wav"
         if not vocals.is_file():
@@ -40,6 +41,7 @@ def transcribe_vocals(source: Path, lyrics: str = '') -> dict:
             raise ValueError("Empty or invalid vocal stem")
 
         duration = len(audio) / sample_rate
+        print('V5_SCORE_STAGE:melody', file=sys.stderr, flush=True)
         with contextlib.redirect_stdout(sys.stderr):
             _, _, events = predict(str(vocals))
         notes = []
@@ -61,8 +63,10 @@ def transcribe_vocals(source: Path, lyrics: str = '') -> dict:
             notes.append({"s": round(start, 3), "d": round(end - start, 3), "m": pitch})
         if not notes:
             raise ValueError("No reliable vocal melody notes detected")
+        print('V5_SCORE_STAGE:lyrics', file=sys.stderr, flush=True)
         with contextlib.redirect_stdout(sys.stderr):
             aligned = align_lyrics(vocals, lyrics, notes, duration)
+        print('V5_SCORE_STAGE:complete', file=sys.stderr, flush=True)
         return {
             **aligned, "part": "lead_vocal", "melody": notes, "chords": [],
             "provenance": {"method": "vocal_separation", "engine": "demucs-htdemucs+basic-pitch"},
