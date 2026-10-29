@@ -40,7 +40,7 @@ def attach_words(notes, segments, duration):
                     note_start = float(note['s'])
                     note_end = note_start + float(note['d'])
                     distance = max(0.0, note_start - raw_start, raw_start - note_end)
-                    if distance <= 0.20 and note_end >= previous + 0.04:
+                    if distance <= 0.20 and note_end >= previous + 0.04 and note_end >= raw_start + 0.03:
                         candidates.append((distance, note_start, note_end))
                 if not candidates:
                     raise ValueError('WORD_HAS_NO_VOCAL_ANCHOR')
