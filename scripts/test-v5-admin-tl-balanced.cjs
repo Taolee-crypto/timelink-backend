@@ -57,6 +57,22 @@ try{
  assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM v3_economy_transactions WHERE transaction_type=?').get('admin_adjustment').n,2);
  const paid=await req({...original,bucket:'tl_p',idempotency_key:'admin-tl-fixture1234567893'});
  assert.equal(paid.status,403);
- console.log('PASS infra admin TL: real signed-admin route, balanced issue/debit, replay no double credit, overdraw denied, TL_P cannot be fabricated');
+ const sqlReq=async(query)=>admin.request('/sql',{method:'POST',headers:{
+  'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({sql:query})},env);
+ const readOnly=await sqlReq('SELECT COUNT(*) AS n FROM v3_economy_transactions');
+ assert.equal(readOnly.status,200);
+ assert.equal((await readOnly.json()).read_only,true);
+ for(const mutation of [
+   "UPDATE v3_economy_balances SET available_atoms=99999",
+   "INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES('bad','fake','TL',123)",
+   "DELETE FROM v3_economy_transactions",
+   "REPLACE INTO v3_economy_balances(account_id,available_atoms) VALUES('fake',0)"
+ ]){
+  const response=await sqlReq(mutation);
+  assert.equal(response.status,403,mutation);
+  assert.equal((await response.json()).code,'ADMIN_SQL_READ_ONLY');
+ }
+ assert.equal(balance(),900000);
+ console.log('PASS infra admin TL: real signed-admin route, balanced issue/debit, replay no double credit, overdraw denied, TL_P and generic SQL mutation forbidden');
 }finally{sqlite?.close();fs.rmSync(dir,{recursive:true,force:true})}
 })().catch(e=>{console.error(e);process.exitCode=1});
