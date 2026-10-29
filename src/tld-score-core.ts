@@ -12,7 +12,7 @@
  * Never put master keys or decrypted document bytes in client logs.
  */
 const encoder = new TextEncoder();
-const decoder = new TextDecoder('utf-8', {fatal: true});
+const decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: false});
 const MAGIC = new Uint8Array([0x54, 0x4c, 0x4e, 0x4b]); // TLNK
 const VERSION = 5;
 const MAX_SCORE_BYTES = 2 * 1024 * 1024;
