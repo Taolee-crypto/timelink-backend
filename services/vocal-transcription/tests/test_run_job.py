@@ -19,6 +19,18 @@ spec.loader.exec_module(runner)
 
 
 class RunnerContractTests(TestCase):
+    def test_safe_reason_never_logs_model_or_lyric_text(self):
+        from subprocess import CalledProcessError
+        e = CalledProcessError(1, ['transcribe.py'], stderr=(
+            'lyrics secret text\nV5_SCORE_STAGE:lyrics_attach\n'
+            'V5_SCORE_REASON:WORD_HAS_NO_VOCAL_ANCHOR\n'))
+        self.assertEqual(runner.safe_alignment_reason(e), 'WORD_HAS_NO_VOCAL_ANCHOR')
+        self.assertEqual(runner.safe_alignment_reason(
+            CalledProcessError(1, ['inference'], stderr='V5_SCORE_REASON:my private lyrics')),
+            'none')
+        self.assertEqual(runner.safe_alignment_reason(ValueError('PRIVATE')), 'none')
+
+
     def test_stage_failure_classification_never_returns_private_data(self):
         from subprocess import CalledProcessError
         err = CalledProcessError(1, ['python', 'transcribe.py'],
