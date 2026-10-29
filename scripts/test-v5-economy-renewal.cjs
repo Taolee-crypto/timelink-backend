@@ -84,7 +84,7 @@ async function main(){
  },env);
  assert.equal(mint.status,409);
  assert.equal((await mint.json()).code,'V3_TLC_VERIFIED_ISSUANCE_REQUIRED');
- assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM tlc_mining_v2').get()?.n??0,0);
+ assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='tlc_mining_v2'").get().n,0,'Mint denial must have no DDL or DML side effects');
  console.log('PASS TLC proof gate: forged client POC blocked; unverified legacy TLC mint cannot change balances or write issuance');
  response=await api.eco.request('/daily-free-allowance',{},env);assert.equal(response.status,401);
  response=await api.eco.request('/daily-free-allowance?user_id=3',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,200);body=await response.json();assert.equal(body.active,false);assert.equal(body.subscriptionCheckoutEnabled,false);
