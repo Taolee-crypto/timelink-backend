@@ -4,11 +4,18 @@ import { verifyToken } from '../auth';
 
 const router = new Hono<{ Bindings: Env }>();
 async function member(c:any) {
-  const token=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/i,'').trim();
-  if(!token) return null;
-  const claims=await verifyToken(token,c.env.JWT_SECRET);
+  // Require a real HTTP Bearer separator, not the literal two-character "\s".
+  // A signed token still belongs to an active, non-forfeited account.
+  const header=String(c.req.header('Authorization')||'');
+  const match=/^Bearer\s+(\S+)$/i.exec(header.trim());
+  if(!match)return null;
+  const claims=await verifyToken(match[1],String(c.env.JWT_SECRET||'')).catch(()=>null);
   const id=Number(claims?.sub||0);
-  return Number.isSafeInteger(id)&&id>0?id:null;
+  if(!Number.isSafeInteger(id)||id<=0)return null;
+  const active=await c.env.DB.prepare(
+    'SELECT id FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0'
+  ).bind(id).first().catch(()=>null);
+  return active?id:null;
 }
 async function tables(db:any){
   await db.prepare("CREATE TABLE IF NOT EXISTS v5_member_referral_codes (user_id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
@@ -42,7 +49,9 @@ router.post('/claim',async c=>{
   if(!/^TILO-[A-F0-9]{24}$/.test(code))return c.json({ok:false,code:'INVALID_CODE'},400);
   try{
     await tables(c.env.DB);
-    const ref=await c.env.DB.prepare('SELECT user_id FROM v5_member_referral_codes WHERE code=?').bind(code).first<any>();
+    const ref=await c.env.DB.prepare(
+      'SELECT codes.user_id FROM v5_member_referral_codes codes JOIN users u ON u.id=codes.user_id WHERE codes.code=? AND COALESCE(u.is_active,1)=1 AND COALESCE(u.account_forfeited,0)=0'
+    ).bind(code).first<any>();
     if(!ref)return c.json({ok:false,code:'CODE_NOT_FOUND'},404);
     if(Number(ref.user_id)===id)return c.json({ok:false,code:'SELF_REFERRAL'},409);
     const inserted=await c.env.DB.prepare("INSERT OR IGNORE INTO v5_member_referral_claims(referred_user_id,referrer_user_id,code) VALUES (?,?,?)").bind(id,ref.user_id,code).run();
