@@ -120,6 +120,56 @@ router.post('/scores/v5/:reference/generate',async c=>{
       tld_issued:false,tl_charged:0},202,{'Cache-Control':'private, no-store'});
   }catch(e){console.error('[V5_SCORE_JOB_INTAKE]',e);return c.json({ok:false,code:'V5_SCORE_JOB_INTAKE_FAILED'},503);}
 });
+// Private inference worker: fetch only an authorized, queued encrypted container.
+// Master wrapping keys remain in the inference environment, never in responses.
+router.post('/scores/v5/internal/claim',async c=>{
+  const expected=String((c.env as any).V5_SCORE_WORKER_TOKEN||'');
+  const supplied=String(c.req.header('X-V5-Score-Worker-Token')||'');
+  if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
+  try{
+    await ensureV5ScoreJobs(c.env.DB);
+    const candidate=await c.env.DB.prepare(
+      "SELECT file_id,owner_id,source_sha256 FROM v5_score_jobs WHERE status='queued' ORDER BY created_at LIMIT 1"
+    ).first<any>();
+    if(!candidate)return c.json({ok:true,job:null},200,{'Cache-Control':'no-store'});
+    const updated=await c.env.DB.prepare(
+      "UPDATE v5_score_jobs SET status='running',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE file_id=? AND status='queued'"
+    ).bind(Number(candidate.file_id)).run();
+    if(Number(updated.meta?.changes||0)!==1)return c.json({ok:true,job:null},200,{'Cache-Control':'no-store'});
+    const release=await c.env.DB.prepare(
+      "SELECT file_id,user_id,share_id,object_key,source_sha256,container_sha256,wrapped_content_key,key_id,container_bytes FROM tl3_v5_releases WHERE file_id=? AND status='sealed'"
+    ).bind(Number(candidate.file_id)).first<any>();
+    if(!release||Number(release.user_id)!==Number(candidate.owner_id)||
+      String(release.source_sha256)!==String(candidate.source_sha256)){
+      await c.env.DB.prepare("UPDATE v5_score_jobs SET status='failed',error_code='RELEASE_CHANGED',updated_at=CURRENT_TIMESTAMP WHERE file_id=?")
+        .bind(Number(candidate.file_id)).run();
+      return c.json({ok:false,code:'RELEASE_CHANGED'},409);
+    }
+    return c.json({ok:true,job:{file_id:Number(release.file_id),share_id:String(release.share_id),
+      source_sha256:String(release.source_sha256),container_sha256:String(release.container_sha256),
+      wrapped_content_key:String(release.wrapped_content_key),key_id:String(release.key_id),
+      container_bytes:Number(release.container_bytes)}},200,{'Cache-Control':'no-store'});
+  }catch(e){console.error('[V5_SCORE_CLAIM]',e);return c.json({ok:false,code:'CLAIM_FAILED'},503);}
+});
+router.get('/scores/v5/internal/container/:fileId',async c=>{
+  const expected=String((c.env as any).V5_SCORE_WORKER_TOKEN||'');
+  const supplied=String(c.req.header('X-V5-Score-Worker-Token')||'');
+  if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
+  const id=Number(c.req.param('fileId'));
+  if(!Number.isSafeInteger(id)||id<=0)return c.json({ok:false,code:'INVALID_ID'},400);
+  try{
+    const job=await c.env.DB.prepare("SELECT status,source_sha256 FROM v5_score_jobs WHERE file_id=?").bind(id).first<any>();
+    const release=await c.env.DB.prepare("SELECT object_key,container_bytes,source_sha256 FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(id).first<any>();
+    if(!job||job.status!=='running'||!release||job.source_sha256!==release.source_sha256)
+      return c.json({ok:false,code:'JOB_NOT_RUNNING'},409);
+    const size=Number(release.container_bytes);
+    if(!Number.isSafeInteger(size)||size<1||size>20*1024*1024)return c.json({ok:false,code:'CONTAINER_SIZE_INVALID'},413);
+    const {readD1Range}=await import('../d1-storage');
+    const container=await readD1Range(c.env.DB,String(release.object_key),0,size);
+    return new Response(container.buffer as ArrayBuffer,{status:200,headers:{
+      'Content-Type':'application/octet-stream','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+  }catch(e){console.error('[V5_SCORE_CONTAINER]',e);return c.json({ok:false,code:'CONTAINER_UNAVAILABLE'},503);}
+});
 // Existing TRACK ID always resolves to its actual sealed V5 file, not V3.
 router.get('/scores/v5/:reference',async c=>{
   try{
