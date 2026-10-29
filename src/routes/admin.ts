@@ -475,6 +475,7 @@ router.post('/tl/adjust', async (c) => {
   // Paid TL is backed by real payment; manual issuance must not fabricate redeemable funds.
   if(bucket==='tl_p')return c.json({ok:false,error:'TL_P는 실결제·정산 원장으로만 처리합니다. 관리자 임의 충전/차감은 금지됩니다.'},403);
   const db=c.env.DB;
+  let fingerprint='';
   try{
     const scale=await db.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>();
     if(Number(scale?.decimals)!==4)return c.json({ok:false,error:'V5 경제원장 TL 정밀도 마이그레이션 미완료'},409);
@@ -482,7 +483,7 @@ router.post('/tl/adjust', async (c) => {
     if(!user)return c.json({ok:false,error:'회원을 찾을 수 없습니다.'},404);
     const targetBucket=bucket==='tl_a'?'wallet_ad':'wallet_bonus';
     const prior=await db.prepare('SELECT id,metadata_json FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>();
-    const fingerprint=JSON.stringify({user_id:Number(user.id),bucket,amount,reason,admin_id:adminId});
+    fingerprint=JSON.stringify({user_id:Number(user.id),bucket,amount,reason,admin_id:adminId});
     if(prior){
       const meta=JSON.parse(prior.metadata_json||'{}');
       return meta.adjustment_fingerprint===fingerprint
