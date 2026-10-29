@@ -19,6 +19,15 @@ spec.loader.exec_module(runner)
 
 
 class RunnerContractTests(TestCase):
+    def test_stage_failure_classification_never_returns_private_data(self):
+        from subprocess import CalledProcessError
+        err = CalledProcessError(1, ['python', 'transcribe.py'],
+            stderr='private audio\nV5_SCORE_STAGE:separation\nV5_SCORE_STAGE:melody\nprivate lyrics')
+        self.assertEqual(runner.classify_analysis_failure(err), ('VOCAL_MELODY_FAILED', 'melody'))
+        self.assertEqual(runner.classify_analysis_failure(ValueError('private')),
+                         ('VOCAL_ANALYSIS_FAILED', 'unknown'))
+
+
     @patch.dict(os.environ, {
         "V5_SCORE_API_BASE": "https://api.timelink.digital",
         "V5_SCORE_WORKER_TOKEN": "t" * 32,

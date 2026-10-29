@@ -9,6 +9,20 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 import requests
+import re
+
+
+def classify_analysis_failure(error):
+    # Only fixed stage markers are logged, never raw model stderr or creator content.
+    if not isinstance(error, subprocess.CalledProcessError):
+        return 'VOCAL_ANALYSIS_FAILED', 'unknown'
+    stages = re.findall(r'^V5_SCORE_STAGE:(separation|melody|lyrics|complete)$',
+                        error.stderr or '', flags=re.MULTILINE)
+    stage = stages[-1] if stages else 'unknown'
+    code = {'separation': 'VOCAL_SEPARATION_FAILED',
+            'melody': 'VOCAL_MELODY_FAILED',
+            'lyrics': 'VOCAL_LYRICS_FAILED'}.get(stage, 'VOCAL_ANALYSIS_FAILED')
+    return code, stage
 
 API_BASE = 'https://api.timelink.digital'
 AUDIENCE = API_BASE + '/v5-vocal-score'
@@ -63,9 +77,10 @@ def main() -> int:
         print('Completed V5 vocal score job', file_id)
         return 0
     except Exception as error:
-        print('V5 vocal job failed:', type(error).__name__, file=sys.stderr)
+        code, stage = classify_analysis_failure(error)
+        print('V5 vocal job failed:', type(error).__name__, 'stage=' + stage, file=sys.stderr)
         try:
-            session.post(root + '/fail/' + str(file_id), json={'code':'VOCAL_ANALYSIS_FAILED'}, timeout=30, allow_redirects=False)
+            session.post(root + '/fail/' + str(file_id), json={'code':code}, timeout=30, allow_redirects=False)
         except requests.RequestException: pass
         return 1
 
