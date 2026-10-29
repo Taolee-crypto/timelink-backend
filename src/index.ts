@@ -43,7 +43,6 @@ import adminRouter from './routes/admin';
 import adminMembersRouter from './routes/admin-members';
 import disputesRouter from './routes/disputes';
 import chartsRouter from './routes/charts';
-import scoreRouter from './routes/score';
 import paymentRouter from './payment';
 import ecoRouter, { reconcilePristineSignupBonus } from './economics';
 import economyV3Router from './routes/economy-v3';
@@ -484,7 +483,6 @@ app.route('/api/v3/music-admin', musicV3AdminRouter);
 app.route('/api/v3/music-social', musicV3SocialRouter);
 app.route('/api/v1/files', filesRouter);
 app.route('/api/v1/playback', playbackRouter);
-app.route('/api/v1', scoreRouter);
 app.route('/api/v1/shareplace', shareplaceRouter);
 // SharePlace legacy endpoint: 기존 프론트엔드가 사용하는 /api/shares 경로를 유지한다.
 app.route('/api/shares', shareplaceRouter);

@@ -43,6 +43,9 @@ jobs:
       - name: Validate TypeScript
         run: npx --no-install tsc --noEmit
 
+      - name: Ensure discontinued score routes and scheduled worker stay removed
+        run: node scripts/test-v5-score-retired.cjs
+
       - name: Verify CC0 retirement and disallow scraped audio re-ingestion
         run: node scripts/test-store-music-intake.cjs
 
@@ -160,6 +163,16 @@ jobs:
           if(![200,503].includes(response.status)||health.pipeline_version!=='music-gate-audio-v1'||!health.schema_ready)
             throw Error('Music Gate Worker/schema deployment verification failed');
           if(!health.ready)console.log('Worker deployed; live inference is disabled or provider configuration is missing.');
+          JS
+
+      - name: Verify retired score endpoints are not reachable (no charge)
+        run: |
+          node --input-type=module <<'JS'
+          for(const path of ['/api/v1/scores/v5/178','/api/v1/tl3/score/tl3_178']){
+            const result=await fetch('https://api.timelink.digital'+path,{signal:AbortSignal.timeout(15000)});
+            if(result.status!==404)throw Error('Retired score route unexpectedly active: '+path+' HTTP '+result.status);
+          }
+          console.log('Retired score endpoints return 404; music APIs remain independently verified.');
           JS
 
       - name: Smoke-test asset registration route (no charge)
