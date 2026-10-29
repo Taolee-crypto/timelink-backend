@@ -131,7 +131,7 @@ export async function settleReviewedPurchasedTlMaturity(db:D1Database,input:{
  nowMs?:number;adminId:number;
 }){
  if(!validUser(input.userId)||!validKey(input.paymentKey)||
-    !Number.isSafeInteger(input.adminId)||input.adminId<=0||
+    !Number.isSafeInteger(input.adminId)||input.adminId<0||
     !Number.isSafeInteger(input.expectedRemainingAtoms)||input.expectedRemainingAtoms<=0)
   throw Error('INVALID_PURCHASE_MATURITY_REQUEST');
  const nowMs=input.nowMs??Date.now();
@@ -145,10 +145,10 @@ export async function settleReviewedPurchasedTlMaturity(db:D1Database,input:{
   throw Error('PURCHASE_MATURITY_REQUIRES_BATCH_REVIEW');
  const lot=await storedLot(db,input.userId,input.paymentKey);
  const approved=await db.prepare(
-  'SELECT evidence_sha256,refund_deadline_ms,reviewed_remaining_atoms FROM '+
+  'SELECT evidence_sha256,refund_deadline_ms,reviewed_remaining_atoms,reviewer_id FROM '+
   'v5_purchased_tl_review_audit WHERE payment_key=? AND user_id=? ORDER BY id DESC LIMIT 1'
  ).bind(input.paymentKey,input.userId).first<{
-  evidence_sha256:string;refund_deadline_ms:number;reviewed_remaining_atoms:number;
+  evidence_sha256:string;refund_deadline_ms:number;reviewed_remaining_atoms:number;reviewer_id:number;
  }>();
  if(!approved||approved.refund_deadline_ms!==lot.refund_deadline_ms||
     approved.reviewed_remaining_atoms!==preview.remainingPurchasedAtoms)
@@ -186,7 +186,8 @@ export async function settleReviewedPurchasedTlMaturity(db:D1Database,input:{
   referenceId:input.paymentKey,actorUserId:input.userId,
   description:'법정 환불권 종료 확인 구매 TL_P 미사용분 TL_B 전환',
   metadata:{purchase_lot:input.paymentKey,amount_atoms:atoms,review_sha256:approved.evidence_sha256,
-   refund_deadline_ms:lot.refund_deadline_ms,reviewed_by_admin_user_id:input.adminId,
+   refund_deadline_ms:lot.refund_deadline_ms,reviewed_by_admin_user_id:approved.reviewer_id,
+   executed_by_admin_user_id:input.adminId||null,execution_mode:input.adminId===0?'scheduled':'admin',
    source_policy:'PURCHASED_FIRST_FIFO'},
   lines:[
    {accountId:wallet.id,assetCode:'TL',amountAtoms:-atoms},
