@@ -112,7 +112,10 @@ router.post('/scores/v5/:reference/generate',async c=>{
     await c.env.DB.prepare(`INSERT INTO v5_score_jobs(file_id,owner_id,source_sha256,status)
       VALUES(?,?,?,'queued') ON CONFLICT(file_id) DO UPDATE SET
       owner_id=excluded.owner_id,source_sha256=excluded.source_sha256,
-      status=CASE WHEN v5_score_jobs.source_sha256=excluded.source_sha256 AND\n        v5_score_jobs.status IN ('queued','running','completed') THEN v5_score_jobs.status ELSE 'queued' END,\n      attempts=CASE WHEN v5_score_jobs.source_sha256=excluded.source_sha256 AND\n        v5_score_jobs.status IN ('queued','running','completed') THEN v5_score_jobs.attempts ELSE 0 END,
+      status=CASE WHEN v5_score_jobs.source_sha256=excluded.source_sha256 AND
+        v5_score_jobs.status IN ('queued','running','completed') THEN v5_score_jobs.status ELSE 'queued' END,
+      attempts=CASE WHEN v5_score_jobs.source_sha256=excluded.source_sha256 AND
+        v5_score_jobs.status IN ('queued','running','completed') THEN v5_score_jobs.attempts ELSE 0 END,
       error_code=NULL,updated_at=CURRENT_TIMESTAMP`)
       .bind(Number(row.file_id),uid,String(row.source_sha256)).run();
     return c.json({ok:true,job_status:'queued_or_existing',file_id:Number(row.file_id),
@@ -127,7 +130,10 @@ router.post('/scores/v5/internal/claim',async c=>{
   if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
   try{
     await ensureV5ScoreJobs(c.env.DB);
-    // Recover abandoned claims after runner cancellation or a host crash.\n    await c.env.DB.prepare("UPDATE v5_score_jobs SET status='queued',error_code='RETRY_AFTER_TIMEOUT',updated_at=CURRENT_TIMESTAMP WHERE status='running' AND attempts<3 AND updated_at < datetime('now','-60 minutes')").run();\n    await c.env.DB.prepare("UPDATE v5_score_jobs SET status='failed',error_code='MAX_ATTEMPTS',updated_at=CURRENT_TIMESTAMP WHERE status='running' AND attempts>=3 AND updated_at < datetime('now','-60 minutes')").run();\n    const candidate=await c.env.DB.prepare(
+    // Recover abandoned claims after runner cancellation or a host crash.
+    await c.env.DB.prepare("UPDATE v5_score_jobs SET status='queued',error_code='RETRY_AFTER_TIMEOUT',updated_at=CURRENT_TIMESTAMP WHERE status='running' AND attempts<3 AND updated_at < datetime('now','-60 minutes')").run();
+    await c.env.DB.prepare("UPDATE v5_score_jobs SET status='failed',error_code='MAX_ATTEMPTS',updated_at=CURRENT_TIMESTAMP WHERE status='running' AND attempts>=3 AND updated_at < datetime('now','-60 minutes')").run();
+    const candidate=await c.env.DB.prepare(
       "SELECT file_id,owner_id,source_sha256 FROM v5_score_jobs WHERE status='queued' ORDER BY created_at LIMIT 1"
     ).first<any>();
     if(!candidate)return c.json({ok:true,job:null},200,{'Cache-Control':'no-store'});
