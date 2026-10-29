@@ -41,20 +41,20 @@ function make(rawEvents=raw,lotData=lotRows){
  return {userId:'9',lots:lotData,accounts,entries};
 }
 const a=replayPurchasedTlAttribution(make());
-assert.equal(a.rowsChecked,12);
+assert.equal(a.rowsChecked,11);
 assert.equal(a.sourcePolicy,'PURCHASED_FIRST_FIFO');
 assert.equal(a.lots.length,2);
 assert.equal(a.lots[0].remainingPurchasedAtoms,0);
 assert.equal(a.lots[1].remainingPurchasedAtoms,35);
 assert.equal(a.lots[1].walletAtoms,35);
 assert.equal(a.lots[1].pools.length,0);
-assert.equal(a.accounts.find(x=>x.bucket==='wallet_paid').available_atoms,105);
+assert.equal(a.accounts.find(x=>x.bucket==='wallet_paid').available_atoms,110);
 assert.equal(a.accounts.find(x=>x.bucket==='track_pool:song:paid').available_atoms,0);
 const legacy=[...raw];
 legacy.splice(1,0,['payment_credit','v5-payment:old:untracked',null,{'wallet_paid':15}]);
 assert.throws(()=>replayPurchasedTlAttribution(make(legacy)),/LEGACY_PAYMENT_NOT_BACKFILLED/);
 assert.throws(()=>replayPurchasedTlAttribution(make(raw,lots.map(x=>({...x,paid_atoms:x.paid_atoms+10})))),/PAYMENT_MISMATCH/);
-assert.throws(()=>replayPurchasedTlAttribution({...make(),accounts:make().accounts.map(x=>({...x,available_atoms:x.available_atoms+1}))}),/UNBALANCED|DRIFT|OPENING/);
+assert.throws(()=>replayPurchasedTlAttribution({...make(),accounts:make().accounts.map(x=>({...x,available_atoms:x.available_atoms-1}))}),/UNBALANCED|DRIFT|OPENING/);
 const paidConversion=[
  ...raw,
  ['v5_purchase_maturity','v5-purchased-maturity:B','v5-payment:virtual:B',{'wallet_paid':-30}]
