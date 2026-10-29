@@ -34,7 +34,7 @@ try{
  const unauthorized=await req(original,userToken);
  assert.equal(unauthorized.status,403);
  const first=await req(original);
- assert.equal(first.status,200,await first.text().catch(()=>''));const firstBody=await first.clone().json();
+ const firstBody=await first.json();assert.equal(first.status,200,JSON.stringify(firstBody));
  assert.equal(firstBody.balanced,true);assert.equal(firstBody.replayed,false);
  let tx=sqlite.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').get(original.idempotency_key);
  assert.ok(tx);
