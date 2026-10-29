@@ -106,7 +106,7 @@ router.post('/scores/v5/:reference/generate',async c=>{
     if(body?.rights_confirmed!==true)return c.json({ok:false,code:'CREATOR_RIGHTS_REQUIRED'},422);
     // Do not accept jobs until a private analysis service is configured.
     // A queue without a worker would strand users in a permanent "pending" state.
-    if(!c.env.V5_SCORE_WORKER_URL||!c.env.V5_SCORE_WORKER_TOKEN)
+    if(!(c.env as any).V5_SCORE_WORKER_URL||!(c.env as any).V5_SCORE_WORKER_TOKEN)
       return c.json({ok:false,code:'VOCAL_ANALYSIS_NOT_READY',message:'보컬 분석 서버가 아직 연결되지 않았습니다.'},503);
     await ensureV5ScoreJobs(c.env.DB);
     await c.env.DB.prepare(`INSERT INTO v5_score_jobs(file_id,owner_id,source_sha256,status)
@@ -146,7 +146,7 @@ router.get('/scores/v5/:reference',async c=>{
     return c.json({ok:true,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
       score_status:score?'draft':'not_generated',has_score:!!score,score,
-      can_generate:canGenerate&&!!c.env.V5_SCORE_WORKER_URL&&!!c.env.V5_SCORE_WORKER_TOKEN,source_sha256:owner?String(row.source_sha256):null,tld_issued:false,analysis_ready:!!c.env.V5_SCORE_WORKER_URL&&!!c.env.V5_SCORE_WORKER_TOKEN,tl_charged:0,
+      can_generate:canGenerate&&!!(c.env as any).V5_SCORE_WORKER_URL&&!!(c.env as any).V5_SCORE_WORKER_TOKEN,source_sha256:owner?String(row.source_sha256):null,tld_issued:false,analysis_ready:!!(c.env as any).V5_SCORE_WORKER_URL&&!!(c.env as any).V5_SCORE_WORKER_TOKEN,tl_charged:0,
       analysis_code:"VOCAL_ANALYSIS_NOT_READY",
       analysis_message:"보컬 분리 채보 서비스 연결을 준비 중입니다. 현재 자동 채보를 시작할 수 없습니다.",
       message:score?'자동 채보 초안입니다. 검수 전이며 정식 TLD는 발행되지 않았습니다.':'이 곡의 V5 TLD 악보는 아직 생성·발행되지 않았습니다.'
