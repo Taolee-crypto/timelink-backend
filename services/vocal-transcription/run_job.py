@@ -60,19 +60,22 @@ def main() -> int:
                 str(source), "--source-sha256", job["source_sha256"], "--rights-confirmed"
             ], check=True, capture_output=True, text=True, timeout=1500)
             result = json.loads(process.stdout)
-        if result.get('score_data', {}).get('part') != 'lead_vocal':\n            raise ValueError('Inference did not return lead vocal notes')\n        response = session.post(root + "/complete/" + str(file_id), json=result, timeout=60)
+        if result.get('score_data', {}).get('part') != 'lead_vocal':
+            raise ValueError('Inference did not return lead vocal notes')
+        response = session.post(root + "/complete/" + str(file_id), json=result, timeout=60)
         response.raise_for_status()
         if response.json().get("ok") is not True:
             raise RuntimeError("Score completion rejected")
         print("Completed V5 vocal score job", file_id)
         return 0
-    except Exception:
+    except Exception as error:
+        print('V5 vocal job failed:', type(error).__name__, file=sys.stderr)
         try:
             session.post(root + "/fail/" + str(file_id),
                          json={"code": "VOCAL_ANALYSIS_FAILED"}, timeout=15)
         except requests.RequestException:
             pass
-        raise
+        return 1
 
 
 if __name__ == "__main__":
