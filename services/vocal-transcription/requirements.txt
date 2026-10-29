@@ -4,3 +4,4 @@ soundfile>=0.12,<1
 cryptography>=42,<47
 requests>=2.31,<3
 stable-ts==2.19.1
+librosa>=0.10.2,<1
