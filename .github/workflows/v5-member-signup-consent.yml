@@ -1,0 +1,32 @@
+name: V5 mandatory member consent regression
+on:
+  pull_request:
+    paths:
+      - 'src/index.ts'
+      - 'src/v5-signup-consent.ts'
+      - 'scripts/test-v5-signup-policy.cjs'
+      - '.github/workflows/v5-member-signup-consent.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/index.ts'
+      - 'src/v5-signup-consent.ts'
+      - 'scripts/test-v5-signup-policy.cjs'
+      - '.github/workflows/v5-member-signup-consent.yml'
+permissions:
+  contents: read
+jobs:
+  signed-consent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Verify server rejects missing signup terms and audits verified consent
+        run: node scripts/test-v5-signup-policy.cjs
+      - name: TypeScript
+        run: npx --no-install tsc --noEmit
