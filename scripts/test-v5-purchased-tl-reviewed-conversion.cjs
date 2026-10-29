@@ -168,5 +168,51 @@ async function main(){
   'TL_A remains dormant and untouched');
  console.log('PASS reviewed TL_P maturity: legal hold, exact quote, atomic TL_P→TL_B, creator income excluded, no double conversion, JWT admin and safe default');
 
+ // Scheduler never chooses a legal deadline. It processes a human-approved
+ // LIVE purchase only after the approved deadline and only when both worker
+ // configuration switches are enabled at the entrypoint.
+ const schedulerSource=fs.readFileSync('src/index.ts','utf8');
+ const wrangler=fs.readFileSync('wrangler.toml','utf8');
+ assert.match(schedulerSource,/V5_TLP_MATURITY_WRITE_ENABLED==='true'&&env.V5_TLP_MATURITY_AUTO_ENABLED==='true'/);
+ assert.doesNotMatch(wrangler,/V5_TLP_MATURITY_(?:WRITE|AUTO)_ENABLED\s*=\s*["']true/i,
+  'production switches must never activate accidentally');
+ const scheduledKey='v5-payment:manual:live002',dueAt=deadline+20000;
+ const p2=await api.postLedgerTransaction(db,{
+  idempotencyKey:scheduledKey,transactionType:'payment_credit',source:'pg:manual',
+  referenceType:'payment',referenceId:'live002',actorUserId:'11',
+  lines:[{accountId:source,assetCode:'TL',amountAtoms:-100000},
+         {accountId:paid,assetCode:'TL',amountAtoms:100000}],
+  atomicStatements:[api.purchasedTlLotStatement(db,{
+    paymentKey:scheduledKey,userId:'11',method:'manual',paymentId:'live002',
+    orderId:'fixture-live-order-002',paidAtoms:100000,bonusAtoms:0,
+    paymentMode:'live',recordedAtMs:recordedAt+10000
+  })]
+ });
+ assert.equal(p2.replayed,false);
+ await api.reviewPurchasedTlMaturity(db,{
+  userId:'11',paymentKey:scheduledKey,reviewerId:99,refundDeadlineMs:dueAt,
+  country:'KR',legalBasis:'적용되는 모든 법정 환불권과 선불 충전액 환급 가능 기한을 검토함',
+  evidenceSha256:'b'.repeat(64),reviewNote:'구매 거래와 환급 분쟁 부재를 관리자 수동 검토로 확인 완료'
+ });
+ let cycle=await api.runReviewedPurchasedTlMaturityCycle(db,dueAt-1,10);
+ assert.equal(cycle.converted,0,'do not mature even a reviewed lot before its deadline');
+ const paidPreAuto=await balance(11,'wallet_paid'),bonusPreAuto=await balance(11,'wallet_bonus');
+ cycle=await api.runReviewedPurchasedTlMaturityCycle(db,dueAt+1000,10);
+ assert.equal(cycle.converted,1);
+ assert.equal(cycle.convertedAtoms,100000);
+ assert.equal(cycle.mode,'preapproved_only');
+ assert.equal(await balance(11,'wallet_paid'),paidPreAuto-100000);
+ assert.equal(await balance(11,'wallet_bonus'),bonusPreAuto+100000);
+ const automaticEntry=sql.prepare("SELECT metadata_json FROM v3_economy_transactions WHERE reference_id=? AND transaction_type='v5_purchase_maturity'").get(scheduledKey);
+ const automaticMeta=JSON.parse(automaticEntry.metadata_json);
+ assert.equal(automaticMeta.execution_mode,'scheduled');
+ assert.equal(automaticMeta.reviewed_by_admin_user_id,99,'auto conversions must retain the original administrator review');
+ assert.equal(automaticMeta.executed_by_admin_user_id,null,'scheduled work must not impersonate an administrator');
+ cycle=await api.runReviewedPurchasedTlMaturityCycle(db,dueAt+2000,10);
+ assert.equal(cycle.converted,0,'repeat scheduler cycles must not convert twice');
+ assert.equal(sql.prepare("SELECT COUNT(*) n FROM v3_economy_transactions WHERE transaction_type='v5_purchase_maturity'").get().n,2);
+ console.log('PASS legally approved TL_P maturity scheduler: never before deadline, manual review evidence retained, audited one-time conversion, both enable flags unset');
+
+
 }
 main().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{sql.close();fs.rmSync(temp,{recursive:true,force:true})});
