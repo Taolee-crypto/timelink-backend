@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'scripts/v5-release-watch.cjs'
+      - 'scripts/v5-d1-accounting-audit.cjs'
+      - 'scripts/test-v5-d1-accounting-audit.cjs'
       - 'scripts/test-v5-release-watch.cjs'
       - 'docs/V5_RELEASE_MONITOR_RECOVERY_20261029.md'
       - '.github/workflows/v5-ops-watch.yml'
@@ -28,6 +30,8 @@ jobs:
           node-version: '22'
       - name: Validate read-only watch and isolated SQLite snapshot restore
         run: node scripts/test-v5-release-watch.cjs
+      - name: Validate D1 financial integrity watch
+        run: node scripts/test-v5-d1-accounting-audit.cjs
   production-readonly-watch:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: isolated-recovery-contract
@@ -48,3 +52,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/v5-release-watch.cjs
+      - name: Read-only D1 accounting discrepancy monitor
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/v5-d1-accounting-audit.cjs
