@@ -1,0 +1,39 @@
+name: V5 global capacity and cost scenario
+on:
+  pull_request:
+    paths:
+      - 'scripts/v5-global-capacity.cjs'
+      - 'scripts/test-v5-global-capacity.cjs'
+      - 'docs/V5_GLOBAL_CAPACITY_COST_20261029.md'
+      - '.github/workflows/v5-global-capacity.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/v5-global-capacity.cjs'
+      - 'scripts/test-v5-global-capacity.cjs'
+      - 'docs/V5_GLOBAL_CAPACITY_COST_20261029.md'
+      - '.github/workflows/v5-global-capacity.yml'
+permissions:
+  contents: read
+jobs:
+  capacity-scenario:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Six-country peak-hour and Cloudflare unit-cost regression
+        run: node scripts/test-v5-global-capacity.cjs
+      - name: Model 100,000 / 1,000,000 / 10,000,000 monthly active users
+        run: |
+          mkdir -p test-results
+          for mau in 100000 1000000 10000000; do
+            node scripts/v5-global-capacity.cjs --mau=$mau > test-results/capacity-$mau.json
+          done
+      - name: Publish evidence (synthetic model only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-global-capacity-synthetic
+          path: test-results/capacity-*.json
+          retention-days: 30
