@@ -14,6 +14,7 @@ import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 import {reverseReferralReward} from '../v5-referral-reward';
+import {readGroupTlcReserve} from '../v5-tlc-mining-split';
 import {readProfitSafetyControls,saveProfitSafetyLimits,readProfitSafetyHistory,evaluateProfitSafety} from '../v5-profit-safety';
 
 const router = new Hono<{ Bindings: Env }>();
@@ -155,6 +156,25 @@ router.post('/profit-safety/limits',async c=>{
  }
 });
 
+/** Company TLC is a long-term held reserve, not operating cash or TON balance. */
+router.get('/tlc-group-reserve',async c=>{
+ c.header('Cache-Control','private, no-store');
+ try{
+   const reserve=await readGroupTlcReserve(c.env.DB);
+   const summary=await c.env.DB.prepare(`SELECT
+     COUNT(*) AS transaction_count,
+     COALESCE(SUM(CASE WHEN json_valid(metadata_json)
+       THEN json_extract(metadata_json,'$.group_mined_tlc') ELSE 0 END),0) AS total_group_mined_tlc
+     FROM v3_economy_transactions
+     WHERE transaction_type='tlc_development_mining'
+       AND source='server_poc_v1' AND json_valid(metadata_json)
+       AND json_extract(metadata_json,'$.split_policy')='tilo-group-5050-v1'`).first<any>();
+   return c.json({ok:true,...reserve,
+     mining_events:Number(summary?.transaction_count||0),
+     minted_to_group_tlc:Number(summary?.total_group_mined_tlc||0),
+     historical_rebalanced:false,redemption_enabled:false});
+ }catch(error){console.error('[GROUP_TLC_RESERVE]',String(error));return c.json({ok:false,code:'TLC_RESERVE_UNAVAILABLE'},503);}
+});
 router.get('/reward-policy',async c=>c.json({ok:true,...await readRewardPolicy(c.env.DB),definitions:REWARD_RULES,mode:'manual'}));
 router.get('/reward-policy/history',async c=>{
   await readRewardPolicy(c.env.DB);
