@@ -68,13 +68,14 @@ def main() -> int:
             raise RuntimeError("Score completion rejected")
         print("Completed V5 vocal score job", file_id)
         return 0
-    except Exception:
+    except Exception as error:
+        print('V5 vocal job failed:', type(error).__name__, file=sys.stderr)
         try:
             session.post(root + "/fail/" + str(file_id),
                          json={"code": "VOCAL_ANALYSIS_FAILED"}, timeout=15)
         except requests.RequestException:
             pass
-        raise
+        return 1
 
 
 if __name__ == "__main__":
