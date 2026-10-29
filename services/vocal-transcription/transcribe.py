@@ -20,6 +20,30 @@ with contextlib.redirect_stdout(sys.stderr):
     from basic_pitch.inference import predict
 
 
+
+def estimate_vocal_midi_contour(audio, sample_rate):
+    """Run a *single* YIN pass on the separated stem; returns MIDI frames and hop."""
+    # Heavy signal-processing libraries are deliberately loaded only for real
+    # inference, not for cheap contract validation in GitHub Actions.
+    with contextlib.redirect_stdout(sys.stderr):
+        import librosa
+        import numpy as np
+        mono = audio.mean(axis=1) if audio.ndim > 1 else audio
+        mono = librosa.resample(mono.astype(np.float32),
+                               orig_sr=sample_rate, target_sr=16000)
+        hop = 256
+        f0 = librosa.yin(mono, fmin=82.0, fmax=1000.0, sr=16000,
+                        frame_length=2048, hop_length=hop)
+        rms = librosa.feature.rms(y=mono, frame_length=2048, hop_length=hop)[0]
+        floor = max(0.0007, float(np.percentile(rms, 70))*0.08)
+        frames = [
+            float(librosa.hz_to_midi(float(hz)))
+            if math.isfinite(float(hz)) and hz > 0 and i < len(rms) and rms[i] > floor
+            else None
+            for i, hz in enumerate(f0)
+        ]
+    return frames, hop/16000
+
 def transcribe_vocals(source: Path, lyrics: str = '') -> dict:
     """Return V5 structured *vocal-only* note draft; with forced alignment of supplied lyrics."""
     source = source.resolve(strict=True)
@@ -45,27 +69,12 @@ def transcribe_vocals(source: Path, lyrics: str = '') -> dict:
         print('V5_SCORE_STAGE:melody', file=sys.stderr, flush=True)
         with contextlib.redirect_stdout(sys.stderr):
             _, _, events = predict(str(vocals))
-        # Confirm pitch against a second, inexpensive F0 analysis of the
-        # *separated vocal stem*, never the original mixed accompaniment.
-        # YIN runs once per track, not separately for every candidate note.
+        # Independent F0 of the authentic separated vocal stem.
+        if not events:
+            raise ValueError("No reliable vocal melody notes detected")
         print('V5_SCORE_STAGE:pitch_verify', file=sys.stderr, flush=True)
-        with contextlib.redirect_stdout(sys.stderr):
-            import librosa
-            import numpy as np
-            mono = audio.mean(axis=1) if audio.ndim > 1 else audio
-            mono = librosa.resample(mono.astype(np.float32), orig_sr=sample_rate, target_sr=16000)
-            hop = 256
-            f0 = librosa.yin(mono, fmin=82.0, fmax=1000.0, sr=16000,
-                            frame_length=2048, hop_length=hop)
-            rms = librosa.feature.rms(y=mono, frame_length=2048, hop_length=hop)[0]
-            floor = max(0.0007, float(np.percentile(rms, 70))*0.08)
-            midi_frames = [
-                float(librosa.hz_to_midi(float(hz)))
-                if math.isfinite(float(hz)) and hz > 0 and i < len(rms) and rms[i] > floor
-                else None
-                for i, hz in enumerate(f0)
-            ]
-        notes, pitch_report = refine_pitch_events(events, midi_frames, hop/16000, duration)
+        midi_frames, frame_seconds = estimate_vocal_midi_contour(audio, sample_rate)
+        notes, pitch_report = refine_pitch_events(events, midi_frames, frame_seconds, duration)
         if not notes:
             raise ValueError("No reliable vocal melody notes after independent F0 verification")
         print('V5_SCORE_STAGE:lyrics', file=sys.stderr, flush=True)
