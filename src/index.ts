@@ -22,6 +22,7 @@ import centralBroadcastV5Router from './routes/central-broadcast-v5';
 import tiloV5ApprovalsRouter from './routes/tilo-v5-approvals';
 import v5MusicGateAdminRouter from './routes/v5-music-gate-admin';
 import purchasedTlMaturityRouter from './routes/admin-v5-purchased-tl';
+import {runReviewedPurchasedTlMaturityCycle} from './v5-purchased-tl-conversion';
 import { musicGateHealth, runMusicGateAnalysis, requestMusicGateRetry } from './v5-music-gate-worker';
 import { creatorMusicGateDetails } from './v5-music-gate-public-details';
 import tl3PlayerSessionRouter from './tl3-player-session';
@@ -5140,6 +5141,9 @@ export default {
   async scheduled(_event:ScheduledEvent,env:Env,ctx:ExecutionContext) {
     ctx.waitUntil(refreshTiloCountryClocks(env.DB).catch(error=>console.error('[TILO_CLOCK]',error)));
     ctx.waitUntil(releaseExpiredStoreSessions(env).catch(error=>console.error('[STORE_MUSIC_EXPIRE]',error)));
+    if(env.V5_TLP_MATURITY_WRITE_ENABLED==='true'&&env.V5_TLP_MATURITY_AUTO_ENABLED==='true'){
+      ctx.waitUntil(runReviewedPurchasedTlMaturityCycle(env.DB).catch(error=>console.error('[TLP_MATURITY_SCHEDULED]',error)));
+    }
     ctx.waitUntil(runMusicGateAnalysis(env).catch(()=>console.error('[MUSIC_GATE_WORKER] ANALYSIS_CYCLE_FAILED')));
   }
 };
