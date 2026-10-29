@@ -26,6 +26,12 @@ class RunnerContractTests(TestCase):
         self.assertEqual(runner.classify_analysis_failure(err), ('VOCAL_MELODY_FAILED', 'melody'))
         self.assertEqual(runner.classify_analysis_failure(ValueError('private')),
                          ('VOCAL_ANALYSIS_FAILED', 'unknown'))
+        for stage, code in [('lyrics_model', 'VOCAL_LYRICS_MODEL_FAILED'),
+                            ('lyrics_align', 'VOCAL_LYRICS_ALIGN_FAILED'),
+                            ('lyrics_attach', 'VOCAL_LYRICS_TIMING_FAILED'),
+                            ('lyrics_verify', 'VOCAL_LYRICS_MISMATCH')]:
+            err = CalledProcessError(1, ['inference'], stderr='V5_SCORE_STAGE:' + stage)
+            self.assertEqual(runner.classify_analysis_failure(err), (code, stage))
 
 
     @patch.dict(os.environ, {
