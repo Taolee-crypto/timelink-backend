@@ -478,30 +478,18 @@ eco.post('/activity', async (c) => {
   const userId = await authId(c);
   if (!userId) return c.json({ error: '인증 필요' }, 401);
 
-  const body = await c.req.json() as any;
-  const {
-    seconds = 0,
-    tl_p_spent = 0,
-    tl_a_spent = 0,
-    tl_b_spent = 0,
-    mode = 'listen',
-    share_id,
-    new_uploads = 0,
-    listen_minutes = 0,
-  } = body;
+  // Only server-committed playback/payment events may earn POC. User-reported
+  // time, purchases or uploads are never trusted as financial evidence.
+  const body = await c.req.json().catch(() => ({})) as any;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0)
+    return c.json({ok:false,code:'CLIENT_REPORTED_POC_DISABLED',
+      error:'활동 실적은 서버 검증 기록으로만 집계됩니다. 직접 입력한 소비·청취 시간은 인정되지 않습니다.'},403);
 
   try {
     await migrateDB(c.env.DB);
     const {rules:policy}=await readRewardPolicy(c.env.DB);
 
-    // POC 로그 기록
-    if (seconds > 0 || tl_p_spent > 0 || tl_a_spent > 0 || new_uploads > 0) {
-      await c.env.DB.prepare(`
-        INSERT INTO poc_logs (user_id, mode, seconds, tl_spent, poc_gained)
-        VALUES (?, ?, ?, ?, 0)
-      `).bind(userId, mode, seconds, tl_p_spent).run().catch(() => {});
-    }
-
+    // Read-only compatibility preview: never create POC events on user request.
     // 월간 집계 데이터 조회 (POC 계산용)
     const now = new Date();
     const monthStart = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
@@ -541,13 +529,13 @@ eco.post('/activity', async (c) => {
     `).bind(userId, monthStart).first().catch(() => ({ shares: 0, uses: 0, views: 0 })) as any;
     // ── POC 신 알고리즘 ──
     // 요소별 정규화 (각 최대값 기준)
-    const monthlyTlP   = Number(monthlyStats?.monthly_tl_p || 0) + tl_p_spent;
+    const monthlyTlP   = Number(monthlyStats?.monthly_tl_p || 0);
     const monthlyPlays = Number(shareStats?.play_count || 0);
-    const monthlyHours = (Number(monthlyStats?.total_seconds || 0) + seconds) / 3600;
+    const monthlyHours = Number(monthlyStats?.total_seconds || 0) / 3600;
     // MP3 = 1점, TL3 = 3점 (가중치)
     const mp3Count = Number(uploadStats?.mp3_count || 0);
     const tl3Count = Number(uploadStats?.tl3_count || 0);
-    const uploads  = mp3Count * policy.upload_mp3_weight + tl3Count * policy.upload_tl3_weight + new_uploads;
+    const uploads  = mp3Count * policy.upload_mp3_weight + tl3Count * policy.upload_tl3_weight;
 
     // 각 요소 점수 (0 ~ 최대값)
     const contentScore = Math.min(policy.content_cap,monthlyPlays/policy.content_target);        // 500회 = 만점
@@ -576,9 +564,7 @@ eco.post('/activity', async (c) => {
     // 하드캡 5.0, 최솟값 0.1
     const pocIndex = Math.min(policy.poc_max,Math.max(policy.poc_min,rawPoc*policy.poc_scale));
 
-    await c.env.DB.prepare(
-      'UPDATE users SET poc_index=? WHERE id=?'
-    ).bind(pocIndex, userId).run();
+    // A legacy preview is not verification; never persist a payout/cashout POC index.
 
     // ── TLC 채굴 가능량 계산 ──
     const user = await c.env.DB.prepare(
@@ -597,6 +583,7 @@ eco.post('/activity', async (c) => {
 
     return c.json({
       ok: true,
+      preview_only:true,verified_issuance:false,policy_source:'legacy_read_only',
       poc_index: Number(pocIndex.toFixed(3)),
       poc_components: {
         content: Number(contentScore.toFixed(3)),
@@ -606,8 +593,9 @@ eco.post('/activity', async (c) => {
         score:   Number(scoreScore.toFixed(3)),
       },
       tlc_mining: {
-        daily_max: Number(dailyTLC.toFixed(2)),
+        daily_max: 0, // No TLC can be issued from legacy or self-reported evidence.
         monthly_hard_cap: Number(monthHardCap.toFixed(0)),
+        theoretical_daily_max: Number(dailyTLC.toFixed(2)),
         plan_multiplier: mineMultiplier,
       }
     });
@@ -645,88 +633,15 @@ eco.get('/mining-history', async (c) => {
 ══════════════════════════════════════════════════════ */
 eco.post('/mine-tlc', async (c) => {
   const userId = await authId(c);
-  if (!userId) return c.json({ error: '인증 필요' }, 401);
-
-  const { tlc_amount } = await c.req.json() as any;
-  if (!tlc_amount || tlc_amount <= 0) return c.json({ error: '채굴량 없음' }, 400);
-
-  try {
-    await migrateDB(c.env.DB);
-    const {rules:policy}=await readRewardPolicy(c.env.DB);
-
-    // 오늘 채굴 내역 확인
-    const today = new Date().toISOString().slice(0, 10);
-    const already = await c.env.DB.prepare(`
-      SELECT COALESCE(SUM(tlc_mined), 0) as mined
-      FROM tlc_mining_v2
-      WHERE user_id=? AND DATE(created_at)=?
-    `).bind(userId, today).first() as any;
-    const todayMined = Number(already?.mined || 0);
-
-    // 유저 데이터
-    const user = await c.env.DB.prepare(`
-      SELECT tl_p, tl, tl_p_lifetime, tl_p_exchanged, poc_index, plan, tlc_balance
-      FROM users WHERE id=?
-    `).bind(userId).first() as any;
-    if (!user) return c.json({ error: '유저 없음' }, 404);
-
-    const pocIndex      = Number(user.poc_index || 1.0);
-    const userPlan      = user.plan || 'A';
-    const mineMultiplier = userPlan === 'B' ? policy.plan_b_multiplier : 1.0;
-
-    // 이번 달 TL_P 소비 조회
-    const monthStart = new Date().toISOString().slice(0, 7) + '-01';
-    const monthStats = await c.env.DB.prepare(`
-      SELECT COALESCE(SUM(tl_spent), 0) as monthly_tl_p
-      FROM poc_logs WHERE user_id=? AND mode='consume' AND created_at >= ?
-    `).bind(userId, monthStart).first() as any;
-
-    const monthlyTlP = Number(monthStats?.monthly_tl_p || 0);
-
-    // 일일 최대 채굴량
-    const dailyMax = (monthlyTlP / 30) * policy.mining_rate * pocIndex * mineMultiplier;
-    // 월 하드캡 (일 환산)
-    const monthHardCapDaily = (monthlyTlP * policy.mining_month_cap) / 30;
-    const actualDailyMax = Math.min(dailyMax, monthHardCapDaily);
-
-    // 오늘 남은 채굴량
-    const remainToday = Math.max(0, actualDailyMax - todayMined);
-    const actualMine = Math.min(tlc_amount, remainToday);
-
-    if (actualMine <= 0.01) {
-      return c.json({
-        error: '오늘 채굴 한도 초과 또는 TL_P 소비 실적 없음',
-        today_mined: todayMined,
-        daily_max: actualDailyMax
-      }, 400);
-    }
-
-    // TLC 지급
-    await c.env.DB.prepare(
-      'UPDATE users SET tlc_balance = tlc_balance + ? WHERE id=?'
-    ).bind(actualMine, userId).run();
-
-    await c.env.DB.prepare(`
-      INSERT INTO tlc_mining_v2 (user_id, tl_p_base, poc_index, plan, multiplier, tlc_mined)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(userId, monthlyTlP, pocIndex, userPlan, mineMultiplier, actualMine).run();
-
-    const updated = await c.env.DB.prepare(
-      'SELECT tlc_balance FROM users WHERE id=?'
-    ).bind(userId).first() as any;
-
-    return c.json({
-      ok: true,
-      mined: Number(actualMine.toFixed(4)),
-      tlc_total: updated?.tlc_balance || 0,
-      today_total: todayMined + actualMine,
-      daily_max: Number(actualDailyMax.toFixed(4)),
-      poc_index: pocIndex,
-      plan_multiplier: mineMultiplier
-    });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
+  if (!userId) return c.json({ok:false,code:'AUTH_REQUIRED',error:'인증 필요'},401);
+  // Historical users.tlc_balance + tlc_mining_v2 writes were non-atomic and
+  // never posted to the canonical V3 TLC issuance ledger. No client-supplied
+  // amount can create TLC without a verified POC snapshot, authoritative TL_P
+  // consumption, a unique daily claim, and balanced ledger entries in one batch.
+  return c.json({
+    ok:false,code:'V3_TLC_VERIFIED_ISSUANCE_REQUIRED',
+    error:'채굴 지급은 검증된 기여도 원장과 중복 지급 방지 연동 후 가능합니다. 확인되지 않은 TLC를 발행하지 않습니다.'
+  },409);
 });
 
 /* ══════════════════════════════════════════════════════

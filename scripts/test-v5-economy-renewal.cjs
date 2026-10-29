@@ -65,6 +65,27 @@ async function main(){
  response=await api.admin.request('/contribution-policy',{headers:{Authorization:'Bearer '+adminToken}},env);assert.equal(response.status,200);let body=await response.json();assert.equal(body.policyStatus,'retired');assert.equal(body.activeRewardPolicy,'v5_reward_policy');assert.equal(body.definitions.length,24);assert.ok(body.products.every(p=>p.miningMode==='individual'));
  response=await api.admin.request('/contribution-policy',{method:'POST',headers:{Authorization:'Bearer '+adminToken,'Content-Type':'application/json'},body:JSON.stringify({expected_version:0,policy:changed,note:'stale'})},env);assert.equal(response.status,410);assert.equal((await response.json()).error,'CONTRIBUTION_POLICY_RETIRED');
  response=await api.eco.request('/contribution',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,200);body=await response.json();assert.equal(body.newMiningEnabled,false);
+
+ // POC and TLC must never trust arbitrary client-provided time, spending,
+ // uploads or chosen mining amount. These requests cannot write wallet/POC.
+ const forgedActivity=await api.eco.request('/activity',{
+   method:'POST',headers:{Authorization:'Bearer '+userToken,'Content-Type':'application/json'},
+   body:JSON.stringify({seconds:86400,tl_p_spent:999999999,new_uploads:99999})
+ },env);
+ assert.equal(forgedActivity.status,403);
+ assert.equal((await forgedActivity.json()).code,'CLIENT_REPORTED_POC_DISABLED');
+ const withoutLogin=await api.eco.request('/activity',{
+   method:'POST',headers:{'Content-Type':'application/json'},body:'{}'
+ },env);
+ assert.equal(withoutLogin.status,401);
+ const mint=await api.eco.request('/mine-tlc',{
+   method:'POST',headers:{Authorization:'Bearer '+userToken,'Content-Type':'application/json'},
+   body:JSON.stringify({tlc_amount:999999999})
+ },env);
+ assert.equal(mint.status,409);
+ assert.equal((await mint.json()).code,'V3_TLC_VERIFIED_ISSUANCE_REQUIRED');
+ assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='tlc_mining_v2'").get().n,0,'Mint denial must have no DDL or DML side effects');
+ console.log('PASS TLC proof gate: forged client POC blocked; unverified legacy TLC mint cannot change balances or write issuance');
  response=await api.eco.request('/daily-free-allowance',{},env);assert.equal(response.status,401);
  response=await api.eco.request('/daily-free-allowance?user_id=3',{headers:{Authorization:'Bearer '+userToken}},env);assert.equal(response.status,200);body=await response.json();assert.equal(body.active,false);assert.equal(body.subscriptionCheckoutEnabled,false);
  response=await api.eco.request('/daily-free-products',{},env);body=await response.json();assert.equal(body.products.length,24);assert.equal(body.purchasable,false);
