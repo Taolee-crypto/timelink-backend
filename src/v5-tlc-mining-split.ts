@@ -11,6 +11,21 @@ export const TLC_ATOMS_PER_UNIT=1000000000;
 export const TLC_RESERVE_OWNER='tilo-group';
 export const TLC_RESERVE_BUCKET='permanent_value_reserve_locked';
 export const TLC_SPLIT_POLICY='tilo-group-5050-v1';
+/** Gold is a second-stage independently custody-verified reserve, not automatically minted gold. */
+export const TLC_TWO_STAGE_VALUE_POLICY=Object.freeze({
+  stage_1:'timelink_utility_and_verified_market_demand',
+  stage_2:'externally_custodied_gold_after_verified_conversion',
+  group_mining_share_bps:5000,
+  member_mining_share_bps:5000,
+  fixed_max_supply:null,
+  automatic_gold_conversion:false,
+  direct_tlc_gold_redemption_guaranteed:false,
+  // A sale of treasury TLC without permanent retirement or lock-up
+  // would grow circulating supply beyond the intended member portion.
+  permissible_future_conversion:'independently_approved_gold_acquisition_with_tlc_retirement_or_counterparty_lock',
+  gold_custody_verified:false,
+  gold_grams_verified:0
+});
 
 export function splitMinedTlcAtoms(gross:number){
  if(!Number.isSafeInteger(gross)||gross<2)throw Error('INVALID_GROSS_TLC_ATOMS');
@@ -38,5 +53,12 @@ export async function readGroupTlcReserve(db:D1Database){
  return {group:'TILO Group',locked_tlc:Number(row?.held_atoms||0)/TLC_ATOMS_PER_UNIT,
    available_tlc:Number(row?.available_atoms||0)/TLC_ATOMS_PER_UNIT,
    custodian:'platform_internal_dev_ledger',transfer_allowed:false,
-   gold_conversion_enabled:false,external_chain_minted:false};
+   gold_conversion_enabled:false,external_chain_minted:false,
+   gold_value_backup_status:'planned_not_funded',
+   gold_grams_verified:TLC_TWO_STAGE_VALUE_POLICY.gold_grams_verified,
+   gold_custody_verified:false,
+   gold_conversion_mechanism:TLC_TWO_STAGE_VALUE_POLICY.permissible_future_conversion,
+   direct_gold_redemption_guaranteed:false,
+   value_stabilization_stages:[TLC_TWO_STAGE_VALUE_POLICY.stage_1,TLC_TWO_STAGE_VALUE_POLICY.stage_2],
+   fixed_max_supply:null};
 }
