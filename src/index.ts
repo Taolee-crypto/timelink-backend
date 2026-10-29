@@ -1,4 +1,4 @@
-import { rejectedImmutableShareFields } from './v5-share-metadata-guard';
+import { rejectedImmutableShareFields, validateSealedV5MetadataPatch, SealedV5MetadataError } from './v5-share-metadata-guard';
 import { ownsLinkedReleaseForDeletion } from './v5-share-delete-ownership';
 import musicBulkIntakeRouter from './routes/music-bulk-intake-v5';
 import storeMusicV5Router,{releaseExpiredStoreSessions} from './routes/store-music-v5';
@@ -4249,6 +4249,14 @@ app.get('/api/shares/:id', async (c) => {
     const lyricRow=await c.env.DB.prepare('SELECT lyrics FROM tl3_v5_track_metadata WHERE share_id=?').bind(resolvedShareId).first<any>().catch(()=>null);
     v5Lyrics=String(lyricRow?.lyrics||'');
   }
+  // Optional display overlay is separate from sealed TL3 audio and royalty splits.
+  // Older databases may not yet have this table; public reads remain available.
+  const display=v5Release?await c.env.DB.prepare(
+    'SELECT artist,album,producer FROM tl3_v5_display_metadata WHERE share_id=? AND file_id=?'
+  ).bind(String(v5Release.share_id),Number(file.id)).first<any>().catch((err:unknown)=>{
+    if(/no such table/i.test(String(err)))return null;
+    throw err;
+  }):null;
   const creditSplit=await readCreatorSplit(c.env.DB,Number(file.id));
   const credits=(creditSplit?.members||[]).map(m=>({role:String(m.role),name:String(m.name),status:String(m.consent)}));
   const names=(role:string)=>credits.filter(m=>m.role===role).map(m=>m.name).join(', ');
@@ -4256,11 +4264,11 @@ app.get('/api/shares/:id', async (c) => {
     .bind(file.id).first<{metadata_json:string}>().catch((e:unknown)=>{if(/no such table.*tl_creator_spotify_metadata/i.test(String(e)))return null;throw e;});
   const externalMetadata=externalReference?JSON.parse(externalReference.metadata_json):null;
   const response={
-    composer:names('composition')||String(file.composer||''),lyricist:names('lyrics')||String(file.lyricist||''),arranger:names('arrangement')||String(file.arranger||''),contributors:credits,
+    composer:names('composition')||String(file.composer||''),lyricist:names('lyrics')||String(file.lyricist||''),arranger:names('arrangement')||String(file.arranger||''),producer:String(display?.producer??''),contributors:credits,
     isrc:externalMetadata?.isrc||null,release_date:externalMetadata?.release_date||null,
     spotify_url:externalMetadata?.spotify_url||null,spotify_metadata:externalMetadata,
     id:String(v5Release?.share_id||file.id),file_id:Number(file.id),share_id:resolvedShareId||null,user_id:Number(file.user_id||0),username:String(file.username||'User'),
-    title:String(file.title||''),artist:String(file.artist||''),album:externalMetadata?.album||'',duration:durationSec,duration_sec:durationSec,
+    title:String(file.title||''),artist:String(display?.artist??file.artist??''),album:String(display?.album??externalMetadata?.album??''),duration:durationSec,duration_sec:durationSec,
     file_tl:requiredTL,price_tl:requiredTL,category:String(file.genre||'Music'),file_type:v5Release?'audio/tl3':String(file.file_type||''),
     category_type:'audio',description:'',plan:'A',cover_url:file.cover_image||null,pulse:Number(file.pulse||0),
     play_count:Number(file.play_count||0),created_at:file.created_at,
@@ -4294,32 +4302,68 @@ app.patch('/api/shares/:id', async (c) => {
   ).bind(shareId).first<any>();
   if (!existing) {
     const v5 = await c.env.DB.prepare(`SELECT v.share_id,v.file_id,v.user_id FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id WHERE (v.share_id=? OR CAST(v.file_id AS TEXT)=? OR ('tl3_'||CAST(v.file_id AS TEXT))=?) AND v.status='sealed' AND LOWER(f.file_type)='audio/tl3' LIMIT 1`).bind(shareId,shareId,shareId).first<any>().catch(()=>null);
-    if (!v5) return c.json({ error: 'V5 곡을 찾을 수 없습니다.' }, 404);
-    if (String(v5.user_id) !== String(userId)) return c.json({ error: '권한 없음' }, 403);
-    // Genre is mutable classification metadata, not sealed audio content.
-    if (body.category !== undefined) {
-      if (typeof body.category !== 'string' || !body.category.trim() || body.category.length > 120)
-        return c.json({error:'장르를 1~120자로 입력해 주세요.'},400);
-      await c.env.DB.prepare('UPDATE tl_files SET genre=? WHERE id=? AND user_id=?')
-        .bind(body.category.trim(),Number(v5.file_id),userId).run();
+    if (!v5) return c.json({error:'V5 곡을 찾을 수 없습니다.'},404);
+    if (String(v5.user_id)!==String(userId))return c.json({error:'권한 없음'},403);
+
+    // Authenticated display edits must never override verified contributors or
+    // their royalty shares. Identical credit fields from old clients are ignored.
+    const split=await readCreatorSplit(c.env.DB,Number(v5.file_id));
+    const names=(role:string)=>(split?.members||[])
+      .filter(m=>String(m.role)===role).map(m=>String(m.name)).join(', ');
+    let fields:ReturnType<typeof validateSealedV5MetadataPatch>;
+    try {
+      fields=validateSealedV5MetadataPatch(body,{
+        composer:names('composition'),lyricist:names('lyrics'),arranger:names('arrangement')
+      });
+    } catch(err) {
+      if(err instanceof SealedV5MetadataError)
+        return c.json({error:err.code==='V5_RIGHTS_VERIFICATION_REQUIRED'
+          ?'작곡·작사·편곡 등 권리자 정보는 공동 권리자 확인·승인 절차에서 수정해야 합니다.'
+          :'수정할 수 없는 필드 또는 잘못된 곡 정보입니다.',
+          code:err.code,fields:err.fields},err.code==='V5_RIGHTS_VERIFICATION_REQUIRED'?409:400);
+      throw err;
     }
-    // V5 artwork is mutable metadata on tl_files, never part of the sealed TL3 asset.
-    // The authenticated owner may replace artwork without changing audio or billing.
-    if (body.cover_url !== undefined) {
-      if (typeof body.cover_url !== 'string') return c.json({error:'커버 주소 형식이 올바르지 않습니다.'},400);
-      const coverUrl=body.cover_url.trim();
-      if (coverUrl.length>2048 || (coverUrl && !/^https:\/\//i.test(coverUrl))) return c.json({error:'HTTPS 커버 이미지 주소만 허용됩니다.'},400);
-      await c.env.DB.prepare('UPDATE tl_files SET cover_image=? WHERE id=? AND user_id=?')
-        .bind(coverUrl,Number(v5.file_id),userId).run();
-      if (body.lyrics === undefined) return c.json({ok:true,share:{id:String(v5.share_id),cover_url:coverUrl}});
+    const db=c.env.DB;
+    const changes=[];
+    if(fields.artist!==undefined||fields.album!==undefined||fields.producer!==undefined){
+      await db.prepare(`CREATE TABLE IF NOT EXISTS tl3_v5_display_metadata (
+        share_id TEXT PRIMARY KEY,file_id INTEGER NOT NULL,user_id INTEGER NOT NULL,
+        artist TEXT,album TEXT,producer TEXT,updated_at INTEGER NOT NULL
+      )`).run();
+      changes.push(db.prepare(`INSERT INTO tl3_v5_display_metadata
+        (share_id,file_id,user_id,artist,album,producer,updated_at) VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(share_id) DO UPDATE SET
+          artist=COALESCE(excluded.artist,tl3_v5_display_metadata.artist),
+          album=COALESCE(excluded.album,tl3_v5_display_metadata.album),
+          producer=COALESCE(excluded.producer,tl3_v5_display_metadata.producer),
+          updated_at=excluded.updated_at
+        WHERE tl3_v5_display_metadata.user_id=excluded.user_id
+          AND tl3_v5_display_metadata.file_id=excluded.file_id`)
+        .bind(String(v5.share_id),Number(v5.file_id),userId,
+          fields.artist??null,fields.album??null,fields.producer??null,Date.now()));
     }
-    if (body.lyrics === undefined && body.category !== undefined) return c.json({ok:true,share:{id:String(v5.share_id),category:body.category.trim()}});
-    if (body.lyrics === undefined) return c.json({ error: 'V5 곡은 현재 가사 또는 커버 이미지만 수정할 수 있습니다.' }, 400);
-    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_v5_track_metadata (share_id TEXT PRIMARY KEY, file_id INTEGER NOT NULL, user_id INTEGER NOT NULL, lyrics TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL)`).run();
-    await c.env.DB.prepare(`INSERT INTO tl3_v5_track_metadata (share_id,file_id,user_id,lyrics,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(share_id) DO UPDATE SET lyrics=excluded.lyrics,updated_at=excluded.updated_at WHERE tl3_v5_track_metadata.user_id=excluded.user_id`).bind(String(v5.share_id),Number(v5.file_id),userId,String(body.lyrics).slice(0,20000),Date.now()).run();
-    const saved=await c.env.DB.prepare('SELECT lyrics FROM tl3_v5_track_metadata WHERE share_id=? AND user_id=?').bind(String(v5.share_id),userId).first<any>();
-    if (!saved) return c.json({error:'가사 저장 권한 또는 저장 결과를 확인할 수 없습니다.'},403);
-    return c.json({ok:true,share:{id:String(v5.share_id),lyrics:String(saved.lyrics||'')}});
+    if(fields.lyrics!==undefined){
+      await db.prepare(`CREATE TABLE IF NOT EXISTS tl3_v5_track_metadata
+        (share_id TEXT PRIMARY KEY,file_id INTEGER NOT NULL,user_id INTEGER NOT NULL,
+         lyrics TEXT NOT NULL DEFAULT '',updated_at INTEGER NOT NULL)`).run();
+      changes.push(db.prepare(`INSERT INTO tl3_v5_track_metadata
+        (share_id,file_id,user_id,lyrics,updated_at) VALUES(?,?,?,?,?)
+        ON CONFLICT(share_id) DO UPDATE SET lyrics=excluded.lyrics,
+          updated_at=excluded.updated_at WHERE
+          tl3_v5_track_metadata.user_id=excluded.user_id
+          AND tl3_v5_track_metadata.file_id=excluded.file_id`)
+        .bind(String(v5.share_id),Number(v5.file_id),userId,fields.lyrics,Date.now()));
+    }
+    if(fields.category!==undefined)
+      changes.push(db.prepare('UPDATE tl_files SET genre=? WHERE id=? AND user_id=?')
+        .bind(fields.category,Number(v5.file_id),userId));
+    if(fields.cover_url!==undefined)
+      changes.push(db.prepare('UPDATE tl_files SET cover_image=? WHERE id=? AND user_id=?')
+        .bind(fields.cover_url,Number(v5.file_id),userId));
+    // D1 batch commits all metadata changes together; never change sealed
+    // release identity, audio bytes, ownership, royalty split or economic ledger.
+    if(changes.length)await db.batch(changes);
+    return c.json({ok:true,share:{id:String(v5.share_id)},updated_fields:Object.keys(fields)});
   }
   if (String(existing.user_id) !== String(userId)) return c.json({ error: '권한 없음' }, 403);
 
