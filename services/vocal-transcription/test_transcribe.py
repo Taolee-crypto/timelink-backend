@@ -46,7 +46,7 @@ class VocalContract(unittest.TestCase):
 
     def test_timed_lyrics_alignment(self):
         draft = {"melody": [{"s": 0.2, "d": 0.4, "m": 60}, {"s": 1.2, "d": 0.4, "m": 62}], "chords": []}
-        aligned = module.align_timed_lyrics(draft, "[00:00.10]RED\\n[00:01.10]AND YELLOW")
+        aligned = module.align_timed_lyrics(draft, "[00:00.10]RED\n[00:01.10]AND YELLOW")
         self.assertEqual([n["lyric"] for n in aligned["melody"]], ["RED", "AND YELLOW"])
         self.assertNotIn("lyric", draft["melody"][0])
         self.assertEqual(aligned["lyrics_status"], "timed_draft_review_required")
