@@ -766,7 +766,7 @@ app.get('/api/social/stats/:id',async(c)=>{
   const requestedId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
-    const viewerId=await shareAuthUser(c).catch(()=>0);
+    const viewerId=Number(await shareAuthUser(c).catch(()=>0) || 0);
     const asset=await resolveSocialTrackAsset(c.env.DB,requestedId,viewerId,
       share=>isPublicPlaybackShare(c.env.DB,share));
     if(!asset)return c.json({error:'곡을 찾을 수 없습니다.'},404);
@@ -857,7 +857,7 @@ app.get('/api/social/comments/:id',async(c)=>{
   const requestedId=c.req.param('id');
   try{
     await ensureTrackSocialTables(c.env.DB);
-    const viewerId=await shareAuthUser(c).catch(()=>0);
+    const viewerId=Number(await shareAuthUser(c).catch(()=>0) || 0);
     const asset=await resolveSocialTrackAsset(c.env.DB,requestedId,viewerId,
       share=>isPublicPlaybackShare(c.env.DB,share));
     if(!asset)return c.json({error:'곡을 찾을 수 없습니다.'},404);
