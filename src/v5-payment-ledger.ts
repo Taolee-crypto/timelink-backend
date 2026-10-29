@@ -1,5 +1,6 @@
 import {ensureContributionSchema,contributionEventStatement} from './v5-contribution-store';
 import { assertTLAtomScale, ensureLedgerAccount, postLedgerTransaction, tlToAtoms } from './economy-ledger';
+import {ensurePurchasedTlLotSchema,purchasedTlLotStatement} from './v5-purchased-tl-lifecycle';
 
 /** Called only after provider verification. The payment receipt and wallet
  * posting either both commit or both roll back. Package bonuses stay TL_B. */
@@ -17,6 +18,10 @@ export async function creditVerifiedPayment(db:D1Database,input:{userId:string;m
       BEGIN SELECT RAISE(ABORT,'PAYMENT_ORDER_ALREADY_USED_OR_MISMATCHED'); END`).run();
     if(!input.atomicStatements?.length)throw new Error('PAYMENT_ORDER_TRANSITION_REQUIRED');
   }
+  // Maintain a per-receipt purchase trail. The TL_P bucket also contains
+  // creator royalty cash-source settlements, which must NOT be aged as
+  // purchases. Never assign a generic 7-day expiry without legal review.
+  await ensurePurchasedTlLotSchema(db);
   // Only verified LIVE receipts enter the renewal PoC record. Test/unknown
   // payments remain excluded; this does not activate new mining.
   if(input.paymentMode==='live')await ensureContributionSchema(db);
@@ -40,6 +45,12 @@ export async function creditVerifiedPayment(db:D1Database,input:{userId:string;m
       .bind(tlToAtoms(paidTL+bonusTL),source)],
     atomicStatements:[
       ...contributionStatements,
+      purchasedTlLotStatement(db,{
+        paymentKey:'v5-payment:'+method+':'+paymentId,
+        userId,method,paymentId,orderId,
+        paidAtoms:tlToAtoms(paidTL),bonusAtoms:tlToAtoms(bonusTL),
+        paymentMode:input.paymentMode||'unknown',recordedAtMs:Date.now()
+      }),
       db.prepare(`INSERT INTO tl_payments (user_id,method,pg_id,merchant_uid,amount_krw,tl_granted,bonus_tl,status)
         VALUES (?,?,?,?,?,?,?,'success')`).bind(userId,method,paymentId,orderId,paidTL,paidTL+bonusTL,bonusTL),
       db.prepare('UPDATE users SET tl_p_lifetime=COALESCE(tl_p_lifetime,0)+? WHERE id=?').bind(paidTL,userId),
