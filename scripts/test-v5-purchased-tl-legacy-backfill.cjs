@@ -28,6 +28,7 @@ const db={prepare(q){let args=[];const statement={q,bind(...a){args=a;return sta
 const balance=async(user,bucket)=>{const id=await api.ensureLedgerAccount(db,'user',user,'TL',bucket);return Number((await db.prepare('SELECT available_atoms FROM v3_economy_balances WHERE account_id=?').bind(id).first())?.available_atoms||0);};
 
 async function main(){
+ await api.ensurePurchasedTlLotSchema(db);
  const user='11';
  async function legacyReceipt({id,mode=null,paidTL=100,bonusTL=15,order='order-'+id}){
   const method='toss',key='v5-payment:toss:'+id;
