@@ -170,6 +170,62 @@ router.get('/scores/v5/internal/container/:fileId',async c=>{
       'Content-Type':'application/octet-stream','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
   }catch(e){console.error('[V5_SCORE_CONTAINER]',e);return c.json({ok:false,code:'CONTAINER_UNAVAILABLE'},503);}
 });
+// Only the private inference worker may complete a claimed job.
+router.post('/scores/v5/internal/complete/:fileId',async c=>{
+  const expected=String((c.env as any).V5_SCORE_WORKER_TOKEN||'');
+  const supplied=String(c.req.header('X-V5-Score-Worker-Token')||'');
+  if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
+  const id=Number(c.req.param('fileId'));
+  if(!Number.isSafeInteger(id)||id<=0)return c.json({ok:false,code:'INVALID_ID'},400);
+  try{
+    await ensureV5ScoreJobs(c.env.DB);
+    const job=await c.env.DB.prepare("SELECT owner_id,source_sha256,status FROM v5_score_jobs WHERE file_id=?").bind(id).first<any>();
+    if(!job||job.status!=='running')return c.json({ok:false,code:'JOB_NOT_RUNNING'},409);
+    const release=await c.env.DB.prepare("SELECT user_id,source_sha256,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(id).first<any>();
+    if(!release||Number(release.user_id)!==Number(job.owner_id)||String(release.source_sha256)!==String(job.source_sha256))
+      return c.json({ok:false,code:'RELEASE_CHANGED'},409);
+    const body=await c.req.json<any>().catch(()=>null);
+    if(body?.source_sha256!==job.source_sha256)return c.json({ok:false,code:'SCORE_SOURCE_MISMATCH'},422);
+    const score=body?.score_data;
+    if(!score||score.part!=='lead_vocal'||!Array.isArray(score.melody)||score.melody.length<1||score.melody.length>20000||
+      (score.chords!==undefined&&(!Array.isArray(score.chords)||score.chords.length!==0)))
+      return c.json({ok:false,code:'VOCAL_NOTES_INVALID'},422);
+    const duration=Number(release.duration_ms)/1000;
+    let end=0;
+    for(const n of score.melody){
+      if(!Number.isFinite(n?.s)||!Number.isFinite(n?.d)||!Number.isInteger(n?.m)||
+        n.s<0||n.d<=0||n.d>60||n.m<21||n.m>108||n.s<end-0.03||n.s+n.d>duration+1)
+        return c.json({ok:false,code:'VOCAL_NOTES_INVALID'},422);
+      end=n.s+n.d;
+    }
+    const provenance=body?.provenance;
+    if(provenance?.method!=='vocal_separation'||provenance?.engine!=='demucs-htdemucs+basic-pitch')
+      return c.json({ok:false,code:'VOCAL_PROVENANCE_INVALID'},422);
+    const serialized=JSON.stringify({...score,provenance});
+    if(serialized.length>900000)return c.json({ok:false,code:'SCORE_TOO_LARGE'},413);
+    await ensureV5ScoreDrafts(c.env.DB);
+    await c.env.DB.prepare(`INSERT INTO v5_track_score_drafts(file_id,owner_id,source_sha256,score_json,algorithm,status)
+      VALUES(?,?,?,?,?,'draft') ON CONFLICT(file_id) DO UPDATE SET owner_id=excluded.owner_id,
+      source_sha256=excluded.source_sha256,score_json=excluded.score_json,algorithm=excluded.algorithm,
+      status='draft',updated_at=CURRENT_TIMESTAMP`)
+      .bind(id,Number(job.owner_id),String(job.source_sha256),serialized,'demucs-htdemucs+basic-pitch').run();
+    await c.env.DB.prepare("UPDATE v5_score_jobs SET status='completed',error_code=NULL,updated_at=CURRENT_TIMESTAMP WHERE file_id=? AND status='running'").bind(id).run();
+    return c.json({ok:true,notes:score.melody.length,tld_issued:false,tl_charged:0},200,{'Cache-Control':'no-store'});
+  }catch(e){console.error('[V5_SCORE_COMPLETE]',e);return c.json({ok:false,code:'V5_SCORE_COMPLETE_FAILED'},503);}
+});
+router.post('/scores/v5/internal/fail/:fileId',async c=>{
+  const expected=String((c.env as any).V5_SCORE_WORKER_TOKEN||'');
+  const supplied=String(c.req.header('X-V5-Score-Worker-Token')||'');
+  if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
+  const id=Number(c.req.param('fileId'));
+  if(!Number.isSafeInteger(id)||id<=0)return c.json({ok:false,code:'INVALID_ID'},400);
+  const body=await c.req.json<any>().catch(()=>null);
+  const code=String(body?.code||'VOCAL_ANALYSIS_FAILED');
+  if(!/^[A-Z_]{3,60}$/.test(code))return c.json({ok:false,code:'INVALID_CODE'},422);
+  await ensureV5ScoreJobs(c.env.DB);
+  const result=await c.env.DB.prepare("UPDATE v5_score_jobs SET status='failed',error_code=?,updated_at=CURRENT_TIMESTAMP WHERE file_id=? AND status='running'").bind(code,id).run();
+  return c.json({ok:Number(result.meta?.changes||0)===1},200,{'Cache-Control':'no-store'});
+});
 // Existing TRACK ID always resolves to its actual sealed V5 file, not V3.
 router.get('/scores/v5/:reference',async c=>{
   try{
