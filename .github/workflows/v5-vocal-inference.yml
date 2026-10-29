@@ -1,0 +1,43 @@
+name: V5 vocal score inference
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/15 * * * *'
+permissions:
+  contents: read
+concurrency:
+  group: v5-vocal-score-inference
+  cancel-in-progress: false
+jobs:
+  infer:
+    if: github.repository == 'Taolee-crypto/timelink-backend'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify inference secrets are configured
+        env:
+          API_BASE: ${{ secrets.V5_SCORE_API_BASE }}
+          WORKER_TOKEN: ${{ secrets.V5_SCORE_WORKER_TOKEN }}
+          MASTER_SECRET: ${{ secrets.TL3_MASTER_SECRET }}
+        run: |
+          test -n "$API_BASE" || { echo "::error::V5_SCORE_API_BASE missing"; exit 1; }
+          test -n "$WORKER_TOKEN" || { echo "::error::V5_SCORE_WORKER_TOKEN missing"; exit 1; }
+          test -n "$MASTER_SECRET" || { echo "::error::TL3_MASTER_SECRET missing"; exit 1; }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: services/vocal-transcription/requirements.txt
+      - name: Install ffmpeg and vocal inference dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          python -m pip install --upgrade pip
+          python -m pip install -r services/vocal-transcription/requirements.txt
+      - name: Process one authorized V5 vocal score job
+        env:
+          V5_SCORE_API_BASE: ${{ secrets.V5_SCORE_API_BASE }}
+          V5_SCORE_WORKER_TOKEN: ${{ secrets.V5_SCORE_WORKER_TOKEN }}
+          TL3_MASTER_SECRET: ${{ secrets.TL3_MASTER_SECRET }}
+        run: python services/vocal-transcription/run_job.py
