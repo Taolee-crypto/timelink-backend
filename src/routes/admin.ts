@@ -16,6 +16,7 @@ import { verifyToken } from '../auth';
 import {reverseReferralReward} from '../v5-referral-reward';
 import {readGroupTlcReserve} from '../v5-tlc-mining-split';
 import {readTlcIssuanceIntegrity} from '../v5-tlc-issuance-audit';
+import {ensureLedgerAccount,postLedgerTransaction} from '../economy-ledger';
 import {readProfitSafetyControls,saveProfitSafetyLimits,readProfitSafetyHistory,evaluateProfitSafety} from '../v5-profit-safety';
 
 const router = new Hono<{ Bindings: Env }>();
@@ -438,15 +439,19 @@ router.post('/tl/initial-issuance', async (c) => {
       return c.json({ok:false,code:'TL_LEDGER_NOT_EMPTY',error:'V5 경제원장이 비어 있지 않습니다. 중복 발행을 방지하기 위해 중단했습니다.'},409);
     }
     const accountId=crypto.randomUUID();
+    const sourceId=crypto.randomUUID();
     const transactionId=crypto.randomUUID();
     const atoms=1000000*10000;
     // One-time issuance is not a transfer: record a positive mint entry and provenance.
     // Atomic batch prevents an issuance transaction without its wallet credit.
     await db.batch([
       db.prepare("INSERT INTO v3_economy_accounts(id,owner_type,owner_id,asset_code,bucket) VALUES (?,'user',?,'TL','wallet_bonus')").bind(accountId,String(adminId)),
+      db.prepare("INSERT INTO v3_economy_accounts(id,owner_type,owner_id,asset_code,bucket) VALUES (?,'system','v5-initial-bootstrap','TL','issuance')").bind(sourceId),
       db.prepare("INSERT INTO v3_economy_balances(account_id,available_atoms) VALUES (?,?)").bind(accountId,atoms),
+      db.prepare("INSERT INTO v3_economy_balances(account_id,available_atoms) VALUES (?,0)").bind(sourceId),
       db.prepare("INSERT INTO v3_economy_transactions(id,idempotency_key,transaction_type,source,reference_type,reference_id,actor_user_id,description,metadata_json) VALUES (?,'initial_dev_tl_issuance_20261022','initial_issuance','admin','user',?,?,'관리자 개발용 최초 TL 1,000,000 지급',?)").bind(transactionId,String(adminId),String(adminId),JSON.stringify({amount_atoms:atoms,non_redeemable:true,development_only:true})),
-      db.prepare("INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES (?,?,'TL',?)").bind(transactionId,accountId,atoms)
+      db.prepare("INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES (?,?,'TL',?)").bind(transactionId,accountId,atoms),
+      db.prepare("INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES (?,?,'TL',?)").bind(transactionId,sourceId,-atoms)
     ]);
     return c.json({ok:true,admin_user_id:adminId,issued_tl:1000000,bucket:'wallet_bonus',development_only:true});
   }catch(e:any){return c.json({ok:false,error:e?.message||'최초 TL 지급 실패'},500);}
@@ -470,6 +475,7 @@ router.post('/tl/adjust', async (c) => {
   // Paid TL is backed by real payment; manual issuance must not fabricate redeemable funds.
   if(bucket==='tl_p')return c.json({ok:false,error:'TL_P는 실결제·정산 원장으로만 처리합니다. 관리자 임의 충전/차감은 금지됩니다.'},403);
   const db=c.env.DB;
+  let fingerprint='';
   try{
     const scale=await db.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>();
     if(Number(scale?.decimals)!==4)return c.json({ok:false,error:'V5 경제원장 TL 정밀도 마이그레이션 미완료'},409);
@@ -477,7 +483,7 @@ router.post('/tl/adjust', async (c) => {
     if(!user)return c.json({ok:false,error:'회원을 찾을 수 없습니다.'},404);
     const targetBucket=bucket==='tl_a'?'wallet_ad':'wallet_bonus';
     const prior=await db.prepare('SELECT id,metadata_json FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>();
-    const fingerprint=JSON.stringify({user_id:Number(user.id),bucket,amount,reason,admin_id:adminId});
+    fingerprint=JSON.stringify({user_id:Number(user.id),bucket,amount,reason,admin_id:adminId});
     if(prior){
       const meta=JSON.parse(prior.metadata_json||'{}');
       return meta.adjustment_fingerprint===fingerprint
@@ -488,22 +494,40 @@ router.post('/tl/adjust', async (c) => {
     const atoms=amount*10000;
     if(amount<0&&(!existing||Number(existing.available_atoms)<-atoms))
       return c.json({ok:false,error:'차감할 해당 TL 잔액이 부족합니다.'},409);
-    // Single D1 batch: account creation (when needed), balance update and audit entry.
-    const accountId=existing?.id||crypto.randomUUID(),txId=crypto.randomUUID();
-    const stmts:any[]=[];
-    if(!existing){
-      stmts.push(db.prepare("INSERT INTO v3_economy_accounts(id,owner_type,owner_id,asset_code,bucket) VALUES (?,'user',?,'TL',?)").bind(accountId,String(user.id),targetBucket));
-      stmts.push(db.prepare('INSERT INTO v3_economy_balances(account_id,available_atoms) VALUES (?,0)').bind(accountId));
-    }
-    stmts.push(db.prepare("INSERT INTO v3_economy_transactions(id,idempotency_key,transaction_type,source,reference_type,reference_id,actor_user_id,description,metadata_json) VALUES (?,?,'admin_adjustment','admin','user',?,?,?,?)").bind(txId,key,String(user.id),String(adminId),reason,JSON.stringify({adjustment_fingerprint:fingerprint,amount_atoms:atoms,bucket,non_redeemable:true})));
-    stmts.push(db.prepare("INSERT INTO v3_economy_entries(transaction_id,account_id,asset_code,amount_atoms) VALUES (?,?,'TL',?)").bind(txId,accountId,atoms));
-    stmts.push(db.prepare("UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1,updated_at=datetime('now') WHERE account_id=? AND available_atoms+?>=0").bind(atoms,accountId,atoms));
-    const results=await db.batch(stmts);
-    if(Number(results[results.length-1]?.meta?.changes||0)!==1)throw new Error('원장 잔액 변경 실패');
-    return c.json({ok:true,transaction_id:txId,bucket,amount,non_redeemable:true});
+    // All new TL adjustments are true double-entry transactions. The
+    // source/sink is explicit, while the member still receives exactly
+    // the requested amount. Existing historic receipts remain immutable.
+    const memberAccount=await ensureLedgerAccount(db,'user',String(user.id),'TL',targetBucket);
+    const systemAccount=await ensureLedgerAccount(db,'system','v5-admin-adjustments','TL','issuance');
+    // Positive issuance is prefunded solely in the same atomic D1 batch.
+    // When negative, the system account receives returned nonredeemable TL.
+    const issued=atoms>0?[db.prepare(`
+      UPDATE v3_economy_balances
+      SET available_atoms=available_atoms+?,version=version+1,updated_at=datetime('now')
+      WHERE account_id=?`).bind(atoms,systemAccount)]:[];
+    const posted=await postLedgerTransaction(db,{
+      idempotencyKey:key,transactionType:'admin_adjustment',source:'admin',
+      referenceType:'user',referenceId:String(user.id),actorUserId:String(adminId),
+      description:reason,metadata:{adjustment_fingerprint:fingerprint,amount_atoms:atoms,
+        bucket,non_redeemable:true,balanced:true},
+      issuanceStatements:issued,
+      lines:[
+        {accountId:systemAccount,assetCode:'TL',amountAtoms:-atoms},
+        {accountId:memberAccount,assetCode:'TL',amountAtoms:atoms}
+      ]
+    });
+    return c.json({ok:true,replayed:posted.replayed,transaction_id:posted.id,
+      bucket,amount,non_redeemable:true,balanced:true});
   }catch(e:any){
     const existing=await db.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>().catch(()=>null);
-    if(existing)return c.json({ok:true,replayed:true,transaction_id:existing.id});
+    if(existing){
+      const recorded=await db.prepare('SELECT metadata_json FROM v3_economy_transactions WHERE id=?').bind(existing.id).first<any>().catch(()=>null);
+      try{
+        if(JSON.parse(recorded?.metadata_json||'{}').adjustment_fingerprint===fingerprint)
+          return c.json({ok:true,replayed:true,transaction_id:existing.id});
+      }catch(_){}
+      return c.json({ok:false,code:'IDEMPOTENCY_CONFLICT',error:'요청 식별자가 다른 작업에 사용되었습니다.'},409);
+    }
     return c.json({ok:false,error:e?.message||'TL 원장 반영 실패'},500);
   }
 });
@@ -548,15 +572,17 @@ router.post('/sql', async (c) => {
     return c.json({ ok: false, error: '여러 개의 SQL 문은 실행할 수 없습니다.' }, 400);
   }
 
-  const isSelect = /^\s*(SELECT|WITH)\b/i.test(sql);
-
+  // A generic admin SQL console must never bypass V3 ledger invariants,
+  // payout approvals, or immutable audit history. All writes use dedicated APIs.
+  const normalized=stripped.replace(/\s+/g,' ').trim();
+  const isSelect=/^SELECT\b/i.test(normalized)
+    || (/^WITH\b/i.test(normalized)&&/\bSELECT\b/i.test(normalized)
+        && !/\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|MERGE|UPSERT)\b/i.test(normalized));
+  if(!isSelect)return c.json({ok:false,code:'ADMIN_SQL_READ_ONLY',
+    error:'관리자 SQL은 조회만 가능합니다. 변경은 전용 관리자 승인 API를 사용하세요.'},403);
   try {
-    if (isSelect) {
-      const result = await c.env.DB.prepare(sql).all();
-      return c.json({ ok: true, results: result.results || [], rows: result.results || [] });
-    }
-    const result = await c.env.DB.prepare(sql).run();
-    return c.json({ ok: true, changes: Number(result.meta?.changes || 0), meta: result.meta || null });
+    const result=await c.env.DB.prepare(sql).all();
+    return c.json({ok:true,results:result.results||[],rows:result.results||[],read_only:true});
   } catch (e: any) {
     return c.json({ ok: false, error: e?.message || 'SQL 실행 실패' }, 500);
   }
