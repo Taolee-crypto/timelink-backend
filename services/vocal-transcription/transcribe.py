@@ -70,7 +70,7 @@ def align_timed_lyrics(draft: dict, lyrics_text: str) -> dict:
     Untimed lines are rejected: guessing timing would misrepresent the singer.
     """
     import re
-    pattern = re.compile(r"^\\[(\\d{1,3}):(\\d{2})(?:\\.(\\d{1,3}))?\\]\\s*(.+?)\\s*$")
+    pattern = re.compile(r"^\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]\s*(.+?)\s*$")
     lines = []
     for raw in lyrics_text.splitlines():
         if not raw.strip():
