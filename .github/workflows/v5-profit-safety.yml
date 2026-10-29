@@ -1,0 +1,29 @@
+name: V5 profit sustainability and operator approvals
+on:
+  pull_request:
+    paths:
+      - 'src/v5-profit-safety.ts'
+      - 'src/routes/admin.ts'
+      - 'scripts/test-v5-profit-safety.cjs'
+      - '.github/workflows/v5-profit-safety.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/v5-profit-safety.ts'
+      - 'src/routes/admin.ts'
+      - 'scripts/test-v5-profit-safety.cjs'
+      - '.github/workflows/v5-profit-safety.yml'
+permissions:
+  contents: read
+jobs:
+  profit-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node scripts/test-v5-profit-safety.cjs
+      - run: npx --no-install tsc --noEmit
