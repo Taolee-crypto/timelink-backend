@@ -1,0 +1,37 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {REGIONS,RATES,DEFAULT,costModel,simulate}=require('./v5-global-capacity.cjs');
+assert.equal(REGIONS.length,6);
+assert.deepEqual(REGIONS.map(x=>x.country),['KR','JP','US','CN','TH','VN']);
+assert.ok(Math.abs(REGIONS.reduce((n,r)=>n+r.share,0)-1)<1e-12);
+const small=simulate({mau:100000}),medium=simulate({mau:1000000}),large=simulate({mau:10000000});
+assert.equal(small.kind,'scenario_not_measured');
+for(const model of [small,medium,large]){
+ assert.equal(model.countryShares.length,6);
+ assert.equal(model.alerts.some(x=>!['EXCEEDS_ASSUMED_RPS_CAPACITY','EXCEEDS_MODELED_MONTHLY_BUDGET'].includes(x)),false);
+ assert.equal(model.countryShares.reduce((n,r)=>n+r.monthlyApiRequests,0),Math.round(model.metrics.requests));
+ assert.ok(model.worldwidePeakRps>0);
+ assert.ok(model.worldwidePeakUTC>=0&&model.worldwidePeakUTC<24);
+ assert.ok(model.estimatedCosts.monthlyUsd>=5);
+ assert.ok(model.modeledConcurrency>=0);
+ assert.ok(Object.values(model.estimatedCosts.components).every(x=>x>=0));
+ assert.ok(model.caveats.some(s=>s.includes('No live load')));
+ assert.equal(model.estimatedCosts.components.workers_plan,5);
+}
+assert.ok(small.estimatedCosts.monthlyUsd<medium.estimatedCosts.monthlyUsd);
+assert.ok(medium.estimatedCosts.monthlyUsd<large.estimatedCosts.monthlyUsd);
+assert.ok(medium.worldwidePeakRps>small.worldwidePeakRps);
+assert.ok(large.worldwidePeakRps>medium.worldwidePeakRps);
+assert.ok(Math.abs(medium.worldwidePeakRps/small.worldwidePeakRps-10)<.01);
+assert.equal(simulate({mau:1}).estimatedCosts.components.workers_requests,0);
+assert.ok(simulate({mau:50000000}).alerts.includes('EXCEEDS_ASSUMED_RPS_CAPACITY'));
+assert.ok(simulate({mau:50000000}).alerts.includes('EXCEEDS_MODELED_MONTHLY_BUDGET'));
+const cost=costModel({requests:10000000,cpuMs:30000000,d1Reads:25000000000,d1Writes:50000000,r2Reads:10000000,r2Writes:1000000,storageGb:10});
+assert.equal(cost.monthlyUsd,RATES.workersPlanUsd,'all included usage must cost only the plan base');
+assert.equal(cost.components.d1_writes,0);
+assert.equal(costModel({requests:11000000,cpuMs:30000000,d1Reads:25000000000,d1Writes:50000000,r2Reads:10000000,r2Writes:1000000,storageGb:10}).components.workers_requests,.30);
+assert.throws(()=>simulate({mau:0}),/INVALID/);
+assert.throws(()=>simulate({mau:100000,unknown:2}),/UNKNOWN/);
+assert.throws(()=>simulate({dauRatio:2}),/INVALID/);
+assert.throws(()=>simulate({workerCpuMsPerRequest:-1}),/INVALID/);
+console.log('PASS capacity forecast: 6 regions, UTC overlap, 100K/1M/10M MAU, Cloudflare tier included/overage, stress alerts and input validation (synthetic, NOT production load)');
