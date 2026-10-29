@@ -83,8 +83,8 @@ async function run(){
   reward.rules.referral_store_tl_b=1200;
   const nextVersion=reward.version+1;
   sql.prepare("UPDATE v5_reward_policy SET version=?,rules_json=? WHERE id=1").run(nextVersion,JSON.stringify(reward.rules));
-  assert.equal((await req(3,'/claim','POST',{code})).status,200);
   sql.exec("UPDATE users SET email_verified=0 WHERE id=3");
+  assert.equal((await req(3,'/claim','POST',{code})).status,200);
   assert.equal((await req(1,'/settle','POST',{referred_user_id:3,milestone:'signup_verified'})).json.code,'REFERRAL_VERIFICATION_REQUIRED');
   sql.exec("UPDATE users SET email_verified=1 WHERE id=3");
   payout=await req(1,'/settle','POST',{referred_user_id:3,milestone:'signup_verified'});
