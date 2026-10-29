@@ -35,3 +35,4 @@ jobs:
       - run: node scripts/test-v5-score-identity.cjs
       - run: node scripts/test-v5-score-owner-draft.cjs
       - run: node scripts/test-v5-score-audio.cjs
+      - run: node scripts/test-v5-score-workerd.cjs

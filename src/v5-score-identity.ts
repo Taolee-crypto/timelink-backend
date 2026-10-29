@@ -26,7 +26,7 @@ export async function verifyScoreIdentity(authorization: string): Promise<string
     const claims = JSON.parse(new TextDecoder().decode(decode(parts[1])));
     const identity = validateScoreClaims(claims);
     if(header.alg !== 'RS256' || typeof header.kid !== 'string') return null;
-    const response = await fetch(ISSUER + '/.well-known/jwks', {signal: AbortSignal.timeout(10000), redirect:'error'});
+    const response = await fetch(ISSUER + '/.well-known/jwks', {signal: AbortSignal.timeout(10000), redirect:'manual'});
     if(!response.ok) return null;
     const jwks = await response.json<{keys: (JsonWebKey & {kid?:string})[]}>();
     const jwk = jwks.keys.find(k => k.kid === header.kid && k.kty === 'RSA' && k.alg === 'RS256');
