@@ -6,6 +6,7 @@ export interface Env {
   TOSS_CLIENT_KEY?: string;
   MUSIC_SUBSCRIPTION_PLAYBACK_ENABLED?: string;
   V5_TLP_MATURITY_WRITE_ENABLED?: string;
+  V5_TLP_MATURITY_AUTO_ENABLED?: string;
   MUSIC_SUBSCRIPTION_CHECKOUT_MODE?: 'disabled'|'test'|'live';
   MUSIC_SUBSCRIPTION_BILLING_TIMEZONE?: string;
   R2?: R2Bucket;

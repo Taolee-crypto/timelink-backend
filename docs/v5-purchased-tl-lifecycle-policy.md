@@ -34,9 +34,11 @@
 - `POST /api/admin/v5/purchased-tl/review/:userId/:paymentKey`: 법적 환불 및 선불 잔액 환급권 종료 근거(국가, 환불 기한, 법적 근거, 증빙 SHA-256, 검토 의견)를 확인한 뒤 관리자 승인 이력을 남긴다. `confirmation=I_VERIFIED_ALL_REFUND_RIGHTS` 필수. 관리자는 환불 기한을 기존보다 앞당길 수 없고 시험 결제의 유료 구매 전환을 승인할 수 없음.
 - `POST /api/admin/v5/purchased-tl/convert/:userId/:paymentKey`: `V5_TLP_MATURITY_WRITE_ENABLED=true`로 별도 활성화되고 `confirmation=CONVERT_REVIEWED_TL_P_TO_TL_B`와 직전 원장과 같은 `expected_remaining_atoms`가 명시된 경우에만 시도. 계산된 **구매분 TL_P만** wallet_paid에서 wallet_bonus로 같은 거래의 차변·대변을 기록한다. 창작자 현금성 수익은 구매 lot에 속하지 않는다. 지갑 버전·승인 이력·법적 기한·구매분 잔액의 원자적 재검증 및 중복 실행 보호.
   
+**선택형 예약 실행:** 기존 Cloudflare Worker의 scheduled 이벤트는 `V5_TLP_MATURITY_WRITE_ENABLED=true` **그리고** `V5_TLP_MATURITY_AUTO_ENABLED=true` 두 개 설정이 모두 명시되었을 때에만 `runReviewedPurchasedTlMaturityCycle`을 호출한다. 기한을 자동 추정하거나 법적 승인 상태를 임의로 채우지 않는다. 수동 법률 검토 감사 이력이 존재하고, 유효한 실거래 구매분의 승인된 모든 환급권 종료일이 도래하고, 직전 원장 잔액과 재계산한 구매 출처가 일치하는 건만 한 주기 최대 10건 처리한다. 환불 분쟁·곡별 사용 중·불일치·만기 전 건은 건너뛴다. 실행 거래에는 `execution_mode=scheduled`와 최초 검토한 관리자 번호를 기록하며 가짜 관리자로 실행하지 않는다.
+
 **안전 조건:** 현재 `wrangler.toml`에는 `V5_TLP_MATURITY_WRITE_ENABLED`가 지정되지 않았다. 따라서 운영 전환은 기본적으로 **403 차단** 상태다. 곡별 전용 TL_P 풀에 구매분이 남아 있을 때는 청취/환불에 영향을 주지 않도록 전환을 보류한다. 구매 출처를 입증할 수 없는 이력이나 분쟁·환급권이 열려 있는 건도 차단한다.
 
-자동 배치 실행, 회원별 법적 안내와 실제 환불 재심사, 과거 결제 증빙 백필, 곡별 활성 사용 상태와 구분된 만기 이전 처리는 운영 활성화 전에 추가로 검증한다. 승인·실행 준비 코드가 있다는 것은 모든 회원 자산에 대한 자동 전환 완료를 의미하지 않는다.
+예약 실행 코드는 구현했지만 **운영 자동 실행은 미활성화**다. 회원별 법적 안내와 실제 환불 재심사, 과거 결제 증빙 백필, 곡별 활성 사용 상태와 구분된 만기 이전 처리, 대규모 배치의 공정한 페이지네이션은 운영 활성화 전에 추가로 검증한다. 승인·실행 준비 코드가 있다는 것은 모든 회원 자산에 대한 자동 전환 완료를 의미하지 않는다.
 
 ## 운영 전 반드시 필요한 추가 개발
 
