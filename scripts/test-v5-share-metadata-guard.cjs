@@ -30,8 +30,11 @@ try{
   assert.match(block,/rejectedImmutableShareFields\(body\)/);
   assert.match(block,/code:'IMMUTABLE_SHARE_FIELD'/);
   assert.doesNotMatch(block,/stream_url:'stream_url'|file_tl:'file_tl'|content_kind:'content_kind'/);
-  assert.match(block,/lyrics:'lyrics'/);
-  assert.match(block,/cover_url:'cover_url'/);
+  assert.match(block,/validateSealedV5MetadataPatch\(body/);
+  assert.match(block,/changes\.push\(db\.prepare\(/);
+  assert.match(block,/await db\.batch\(changes\)/);
+  assert.match(block,/tl3_v5_display_metadata/);
+  assert.match(block,/tl3_v5_track_metadata/);
   console.log('PASS share metadata: JWT HMAC verified (forged or fallback denied), owner/sealed TL3 URL and billing fields immutable, lyrics/artwork editable');
  })().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>fs.rmSync(dir,{recursive:true,force:true}));
 }catch(e){fs.rmSync(dir,{recursive:true,force:true});throw e}
