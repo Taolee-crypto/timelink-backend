@@ -1,4 +1,3 @@
-import {assignmentPlan,settleCafeService} from '../sales-managers';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../types';
@@ -182,7 +181,8 @@ router.get('/my-channels', async (c) => {
   try {
     await ensureCafeTables(c.env.DB);
     const { results } = await c.env.DB.prepare(
-      `SELECT channel_id, name, owner_id, country, addr, description, images, playlist, schedules, plan, status, expires_at, created_at
+      `SELECT channel_id, name, owner_id, country, addr, description, images, playlist, schedules, plan, status, expires_at, created_at,
+         biz_type, biz_verified, biz_verified_at
        FROM cafe_channels WHERE owner_id=? ORDER BY created_at DESC`
     ).bind(auth.id).all();
     return c.json({ ok: true, channels: results || [] });
@@ -236,21 +236,23 @@ router.post('/channels', async (c) => {
   const existing = await c.env.DB.prepare('SELECT channel_id FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
   if (existing) return c.json({ ok: false, error: '이미 사용 중인 채널 ID입니다.' }, 409);
 
+  // V5 store owner registers directly. Deprecated sales managers and DJs
+  // are not part of the onboarding contract, settlement or authorization.
+  if(body.sales_manager_id||body.sales_invite_code||body.dj_id)
+    return c.json({ok:false,code:'RETIRED_STORE_SALES_BINDING',
+      error:'영업 매니저·DJ 연결 기능은 종료되었습니다. 사업자 정보로 직접 매장을 개설해 주세요.'},400);
   const requestId=String(body.request_id||'');
-  if(requestId&&!/^[a-zA-Z0-9_-]{16,100}$/.test(requestId))return c.json({ok:false,error:'등록 요청 번호 확인 필요'},400);
+  if(requestId&&!/^[a-zA-Z0-9_-]{16,100}$/.test(requestId))
+    return c.json({ok:false,error:'등록 요청 번호 확인 필요'},400);
   const requestKey=requestId?'store:create:'+auth.id+':'+requestId:'';
-  const inputHash=JSON.stringify({name,country,bizNo,addr,manager:body.sales_manager_id||null,invite:body.sales_invite_code||null,dj:body.dj_id||null,kind:body.store_kind||'cafe'});
+  const inputHash=JSON.stringify({name,country,bizNo,addr,kind:body.store_kind||'cafe'});
   if(requestKey){
-    const previous=await c.env.DB.prepare('SELECT input_hash,result_json FROM v5_sales_channel_requests WHERE request_key=? AND owner_id=?').bind(requestKey,auth.id).first<any>();
-    if(previous){if(previous.input_hash!==inputHash)return c.json({ok:false,error:'같은 요청 번호로 다른 매장을 등록할 수 없습니다.'},409);return c.json({...JSON.parse(previous.result_json),already:true});}
-  }
-  let salesBinding:Awaited<ReturnType<typeof assignmentPlan>>|null=null;
-  if(body.sales_invite_code||body.sales_manager_id){
-    if(body.sales_accept!==true)return c.json({ok:false,error:'상점주의 영업 매니저 연결 동의가 필요합니다.'},400);
-    try{salesBinding=await assignmentPlan(c.env.DB,{channel_id:channelId,owner_id:auth.id,country},auth.id,{
-      invite_code:body.sales_invite_code||undefined,manager_user_id:Number(body.sales_manager_id||0),dj_id:Number(body.dj_id),
-      kind:body.store_kind||'cafe',expected_version:0,reason:'상점주 매장 개설 및 담당 매니저 연결 동의'
-    });}catch(e:any){return c.json({ok:false,error:e.message},400);}
+    const previous=await c.env.DB.prepare('SELECT input_hash,result_json FROM v5_sales_channel_requests WHERE request_key=? AND owner_id=?')
+      .bind(requestKey,auth.id).first<any>();
+    if(previous){
+      if(previous.input_hash!==inputHash)return c.json({ok:false,error:'같은 요청 번호로 다른 매장을 등록할 수 없습니다.'},409);
+      return c.json({...JSON.parse(previous.result_json),already:true});
+    }
   }
 
   // V5: store registration is free; legacy paid channel signup is retired.
@@ -316,14 +318,12 @@ router.post('/channels', async (c) => {
       trial ? 'trial' : 'free', 'active', expiresAt, now, now
     );
 
-    const salesStatements=[...(salesBinding?.statements||[])];
-    if(requestKey)salesStatements.push(c.env.DB.prepare('INSERT INTO v5_sales_channel_requests(request_key,owner_id,channel_id,input_hash,result_json)VALUES(?,?,?,?,?)')
+    const createStatements: D1PreparedStatement[]=[];
+    if(requestKey)createStatements.push(c.env.DB.prepare('INSERT INTO v5_sales_channel_requests(request_key,owner_id,channel_id,input_hash,result_json)VALUES(?,?,?,?,?)')
       .bind(requestKey,auth.id,channelId,inputHash,JSON.stringify({ok:true,channel_id:channelId,name,country,expires_at:expiresAt,fee:finalFee,original_fee:channelFee,trial,trial_days:trial?trialDays:0})));
-    if(finalFee>0){
-      await settleCafeService(c.env.DB,{payerId:auth.id,channelId,amountAtoms:feeAtoms,key:requestKey||'cafe:create:'+channelId,
-        managerId:salesBinding?.manager_user_id,djUserId:salesBinding?.dj_user_id,
-        atomic:[channelInsert,...salesStatements],metadata:{service:'channel_open',fee_tl:finalFee}});
-    }else await c.env.DB.batch([channelInsert,...salesStatements]);
+    // The V5 store registration fee is zero. Do not call retired
+    // manager/DJ distribution or payment posting paths.
+    await c.env.DB.batch([channelInsert,...createStatements]);
 
     // Store welcome top-up: 42,500 TL personal signup + 57,500 TL store bonus.
     // A user receives this top-up only once, regardless of store count.
@@ -406,7 +406,9 @@ router.get('/channels/:id', async (c) => {
   try {
     await ensureCafeTables(c.env.DB);
     const channelId = c.req.param('id');
-    const row = await c.env.DB.prepare('SELECT * FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
+    const row = await c.env.DB.prepare(
+      "SELECT channel_id,name,country,addr,description,images,playlist,plan,status,expires_at,created_at FROM cafe_channels WHERE channel_id=? AND status='active'"
+    ).bind(channelId).first<any>();
     if (!row) return c.json({ ok: false, error: '채널을 찾을 수 없습니다.' }, 404);
     return c.json({ ok: true, channel: row });
   } catch (e: any) {
