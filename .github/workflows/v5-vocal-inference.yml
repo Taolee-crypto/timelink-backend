@@ -1,17 +1,10 @@
 name: V5 vocal score inference
 on:
   workflow_run:
-    workflows: ['Deploy TimeLink API Worker']
+    workflows: ['Deploy TimeLink API Worker', 'V5 vocal transcription contract']
     types: [completed]
     branches: [main]
   workflow_dispatch:
-  # Runner changes must start an authenticated real queue consumer without
-  # redeploying an unchanged Cloudflare API Worker.
-  push:
-    branches: [main]
-    paths:
-      - 'services/vocal-transcription/**'
-      - '.github/workflows/v5-vocal-inference.yml'
   schedule:
     - cron: '*/15 * * * *'
 permissions:
