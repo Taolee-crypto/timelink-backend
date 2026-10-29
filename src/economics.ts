@@ -5,7 +5,7 @@ import { Hono } from 'hono';
 import { requestListenerCashout } from './v5-cashout';
 import { readRewardPolicy } from './v5-reward-policy';
 import {readReferralPocBonus} from './v5-referral-reward';
-import {assertTlcAssetScale,splitMinedTlcAtoms,readGroupTlcReserve,TLC_RESERVE_OWNER,TLC_RESERVE_BUCKET,TLC_SPLIT_POLICY} from './v5-tlc-mining-split';
+import {assertTlcAssetScale,splitMinedTlcAtoms,TLC_RESERVE_OWNER,TLC_RESERVE_BUCKET,TLC_SPLIT_POLICY} from './v5-tlc-mining-split';
 import { completeAdReward, startAdReward } from './v5-ad-reward';
 import { verifyToken } from './auth';
 import type { Env } from './types';
@@ -580,7 +580,11 @@ async function calculateServerPoc(db:D1Database,userId:string){
     const today=new Date().toISOString().slice(0,10);
     const priorToday=await db.prepare("SELECT id FROM tlc_mining_v2 WHERE user_id=? AND DATE(created_at)=? LIMIT 1")
       .bind(userId,today).first<any>();
-    const availableToday=priorToday?0:Math.min(dailyTLC,monthHardCap/30);
+    const postedToday=await db.prepare('SELECT id FROM v3_tlc_mining_records WHERE user_id=? AND period_date=? LIMIT 1')
+      .bind(userId,today).first<any>();
+    const availableToday=priorToday||postedToday?0:Math.min(dailyTLC,monthHardCap/30);
+    const grossAtoms=Math.round(Math.max(0,availableToday)*1000000000);
+    const splitPreview=grossAtoms>=2?splitMinedTlcAtoms(grossAtoms):null;
 
     return {
       ok: true,
@@ -596,7 +600,11 @@ async function calculateServerPoc(db:D1Database,userId:string){
         referral:Number(verifiedReferralPoc.toFixed(3)),
       },
       tlc_mining: {
-        daily_max: Number(availableToday.toFixed(9)),
+        daily_max: Number(availableToday.toFixed(9)), // gross production ceiling
+        member_daily_max:splitPreview?.memberTlc||0,
+        group_daily_max:splitPreview?.groupTlc||0,
+        split_policy:TLC_SPLIT_POLICY,
+        company_reserve_locked:true,
         monthly_hard_cap: Number(monthHardCap.toFixed(4)),
         monthly_eligible_tl_p: Number(monthlyTlP.toFixed(4)),
         theoretical_daily_max: Number(dailyTLC.toFixed(9)),
@@ -627,12 +635,22 @@ eco.get('/mining-history', async (c) => {
     await migrateDB(c.env.DB);
     const {rules:policy}=await readRewardPolicy(c.env.DB);
     const result = await c.env.DB.prepare(`
-      SELECT tl_p_base, poc_index, plan, multiplier, tlc_mined, created_at
-      FROM tlc_mining_v2
-      WHERE user_id=?
-      ORDER BY created_at DESC
+      SELECT m.tl_p_base,m.poc_index,m.plan,m.multiplier,m.tlc_mined,m.created_at,
+        CASE WHEN t.source='server_poc_v1' AND json_valid(t.metadata_json)
+             AND json_extract(t.metadata_json,'$.split_policy')=?
+          THEN json_extract(t.metadata_json,'$.gross_mined_tlc') ELSE m.tlc_mined END gross_mined,
+        CASE WHEN t.source='server_poc_v1' AND json_valid(t.metadata_json)
+             AND json_extract(t.metadata_json,'$.split_policy')=?
+          THEN json_extract(t.metadata_json,'$.group_mined_tlc') ELSE 0 END group_mined,
+        CASE WHEN t.source='server_poc_v1' AND json_valid(t.metadata_json)
+             AND json_extract(t.metadata_json,'$.split_policy')=?
+          THEN ? ELSE 'legacy_member_only' END split_policy
+      FROM tlc_mining_v2 m
+      LEFT JOIN v3_economy_transactions t ON t.idempotency_key='v5-tlc-day:'||m.user_id||':'||DATE(m.created_at)
+      WHERE m.user_id=?
+      ORDER BY m.created_at DESC
       LIMIT 20
-    `).bind(userId).all();
+    `).bind(TLC_SPLIT_POLICY,TLC_SPLIT_POLICY,TLC_SPLIT_POLICY,TLC_SPLIT_POLICY,userId).all();
     return c.json({ ok: true, history: result.results || [] });
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
