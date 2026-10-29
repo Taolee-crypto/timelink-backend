@@ -1,0 +1,40 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {buildSync}=require('esbuild');
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'v5-track-display-'));
+try {
+ buildSync({stdin:{contents:"export * from './src/v5-share-metadata-guard';",loader:'ts',resolveDir:process.cwd()},bundle:true,platform:'node',format:'cjs',outfile:path.join(dir,'policy.cjs'),logLevel:'silent'});
+ const {validateSealedV5MetadataPatch:validate,SealedV5MetadataError}=require(path.join(dir,'policy.cjs'));
+ const credits={composer:'이작곡, 박작곡',lyricist:'김작사',arranger:'박편곡'};
+ const p=validate({artist:'새 아티스트',album:'새 앨범',producer:'새 프로듀서',lyrics:'새 가사',category:'Pop',composer:credits.composer,lyricist:credits.lyricist,arranger:credits.arranger},credits);
+ assert.deepEqual(p,{artist:'새 아티스트',album:'새 앨범',producer:'새 프로듀서',category:'Pop',lyrics:'새 가사'});
+ assert.deepEqual(validate({album:''},credits),{album:''},'owner must be able to clear album');
+ assert.deepEqual(validate({lyrics:'첫 줄\n둘째 줄'},credits),{lyrics:'첫 줄\n둘째 줄'});
+ const rejection=(payload,code,fields)=>{
+   assert.throws(()=>validate(payload,credits),e=>e instanceof SealedV5MetadataError&&e.code===code&&fields.every(f=>e.fields.includes(f)));
+ };
+ rejection({composer:'가짜 작곡가'},'V5_RIGHTS_VERIFICATION_REQUIRED',['composer']);
+ rejection({arranger:'가짜 편곡자'},'V5_RIGHTS_VERIFICATION_REQUIRED',['arranger']);
+ rejection({lyricist:'가짜 작사가'},'V5_RIGHTS_VERIFICATION_REQUIRED',['lyricist']);
+ rejection({user_id:88},'V5_METADATA_UNSUPPORTED_FIELDS',['user_id']);
+ rejection({stream_url:'evil'},'V5_METADATA_UNSUPPORTED_FIELDS',['stream_url']);
+ rejection({category:''},'V5_METADATA_INVALID_FIELDS',['category']);
+ rejection({cover_url:'javascript:alert(1)'},'V5_METADATA_INVALID_FIELDS',['cover_url']);
+ rejection({lyrics:'x'.repeat(20001)},'V5_METADATA_INVALID_FIELDS',['lyrics']);
+ rejection({artist:123},'V5_METADATA_INVALID_FIELDS',['artist']);
+ const src=fs.readFileSync('src/index.ts','utf8');
+ const getStart=src.indexOf("app.get('/api/shares/:id'"),patchStart=src.indexOf("app.patch('/api/shares/:id'"),delStart=src.indexOf("app.delete('/api/shares/:id'");
+ assert.ok(getStart>0&&patchStart>getStart&&delStart>patchStart);
+ const get=src.slice(getStart,patchStart),patch=src.slice(patchStart,delStart);
+ assert.match(get,/SELECT artist,album,producer FROM tl3_v5_display_metadata/);
+ assert.match(get,/display\?\.artist\?\?file\.artist/);
+ assert.match(get,/display\?\.album\?\?externalMetadata\?\.album/);
+ assert.match(get,/producer:String\(display\?\.producer\?\?''\)/);
+ assert.match(patch,/validateSealedV5MetadataPatch\(body/);
+ assert.match(patch,/String\(v5\.user_id\)!==String\(userId\)/);
+ assert.match(patch,/await db\.batch\(changes\)/,'all V5 updates must commit as one D1 batch');
+ assert.match(patch,/ON CONFLICT\(share_id\) DO UPDATE/);
+ assert.match(patch,/tl3_v5_track_metadata/,'lyrics must remain in existing table');
+ assert.doesNotMatch(patch,/UPDATE tl3_v5_releases|UPDATE tl_creator_contributors|INSERT INTO tl_ledger/);
+ console.log('PASS V5 sealed track display: artist/album/producer persistence, song lyrics/genre/artwork, rights protection, validation, atomic D1 batch and canonical GET');
+}finally{fs.rmSync(dir,{recursive:true,force:true})}
