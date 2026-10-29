@@ -4,11 +4,11 @@
  * SELECT only. NEVER apply historic "fixes", and never print customer IDs.
  */
 const DATABASE_ID='7a61cb9f-d368-439e-b175-f3e958aeb84f';
-const HISTORIC_MANUAL_ADJUSTMENTS=new Set([
- '8ae5aadd-e85d-4c38-9aca-2ef2e0b003e3',
- '6cde8940-148e-4fb9-bba2-a5d7900a6d79',
- '8252188e-8db3-4f45-bc6d-e1ffb4d12260',
- 'e4ef5195-f43f-4476-8044-50e28f081331'
+const HISTORIC_MANUAL_ADJUSTMENTS=new Map([
+ ['8ae5aadd-e85d-4c38-9aca-2ef2e0b003e3',10000000000],
+ ['6cde8940-148e-4fb9-bba2-a5d7900a6d79',1000000000],
+ ['8252188e-8db3-4f45-bc6d-e1ffb4d12260',1000000000],
+ ['e4ef5195-f43f-4476-8044-50e28f081331',1000000000]
 ]);
 const UNBALANCED_SQL=`SELECT e.transaction_id,e.asset_code,
     SUM(e.amount_atoms) AS delta,COUNT(*) AS count,
@@ -23,7 +23,7 @@ function classifyAccountIntegrity({quickCheck,unbalanced,checkedAt}){
  if(quickCheck!=='ok')violations.push('SQLITE_QUICK_CHECK_FAILED');
  if(!Array.isArray(unbalanced))violations.push('LEDGER_READ_UNAVAILABLE');
  else for(const row of unbalanced){
-   const historic=HISTORIC_MANUAL_ADJUSTMENTS.has(row.transaction_id)
+   const historic=Number(row.delta)===HISTORIC_MANUAL_ADJUSTMENTS.get(row.transaction_id)
      && row.asset_code==='TL'&&row.transaction_type==='admin_adjustment'
      && Number(row.count)===1&&Number(row.delta)>0;
    if(historic)legacy.push({asset_code:row.asset_code,
