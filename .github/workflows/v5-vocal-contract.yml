@@ -3,11 +3,17 @@ on:
   pull_request:
     paths:
       - 'services/vocal-transcription/**'
+      - 'src/v5-score-*.ts'
+      - 'src/routes/score.ts'
+      - 'scripts/test-v5-score-*.cjs'
       - '.github/workflows/v5-vocal-contract.yml'
   push:
     branches: [main]
     paths:
       - 'services/vocal-transcription/**'
+      - 'src/v5-score-*.ts'
+      - 'src/routes/score.ts'
+      - 'scripts/test-v5-score-*.cjs'
       - '.github/workflows/v5-vocal-contract.yml'
 jobs:
   python-contract:
@@ -21,3 +27,11 @@ jobs:
       - run: python -m compileall -q services/vocal-transcription
       - run: python -m unittest discover -s services/vocal-transcription -p 'test_*.py' -v
       - run: python -m unittest discover -s services/vocal-transcription/tests -p 'test_*.py' -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/test-v5-score-identity.cjs
+      - run: node scripts/test-v5-score-owner-draft.cjs
+      - run: node scripts/test-v5-score-audio.cjs

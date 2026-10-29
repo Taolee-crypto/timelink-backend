@@ -1,0 +1,30 @@
+import type { Env } from './types';
+import {resolveMasterKeyring, unwrapAssetKey} from './routes/tl3-v5';
+const bytes=(v:Uint8Array)=>v.buffer.slice(v.byteOffset,v.byteOffset+v.byteLength) as ArrayBuffer;
+const hex=async(v:Uint8Array)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes(v))),n=>n.toString(16).padStart(2,'0')).join('');
+export async function recoverScoreAudio(env:Env, container:Uint8Array, release:{file_id:number;share_id:string;key_id:string;wrapped_content_key:string;container_sha256:string;source_sha256:string}):Promise<Uint8Array>{
+  if(container.length<25 || container.length>20*1024*1024 || await hex(container)!==release.container_sha256)throw Error('CONTAINER_INTEGRITY');
+  if(new TextDecoder().decode(container.slice(0,4))!=='TLNK'||container[4]!==5)throw Error('CONTAINER_VERSION');
+  const headerLength=new DataView(bytes(container.slice(5,9))).getUint32(0);
+  if(headerLength<1||headerLength>4096||9+headerLength+16>container.length)throw Error('HEADER_LENGTH');
+  const end=9+headerLength;
+  const header=JSON.parse(new TextDecoder().decode(container.slice(9,end)));
+  if(header.profile!=='TL3-V5'||header.algorithm!=='AES-256-GCM'||header.ciphertext_bytes!==container.length-end)throw Error('HEADER_INVALID');
+  const ring=resolveMasterKeyring(env);
+  const secret=ring.keys[release.key_id||'legacy'];
+  if(!secret)throw Error('RELEASE_KEY_MISSING');
+  const contentKey=await unwrapAssetKey(secret,release.file_id,release.share_id,release.wrapped_content_key);
+  const key=await crypto.subtle.importKey('raw',bytes(contentKey),'AES-GCM',false,['decrypt']);
+  contentKey.fill(0);
+  const nonce=Uint8Array.from(atob(header.nonce.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+  if(nonce.length!==12)throw Error('NONCE_INVALID');
+  const plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:nonce,additionalData:bytes(container.slice(0,end)),tagLength:128},key,bytes(container.slice(end))));
+  if(plain.length<5)throw Error('PAYLOAD_INVALID');
+  const length=new DataView(bytes(plain.slice(0,4))).getUint32(0);
+  if(length<1||length>65536||4+length>=plain.length)throw Error('MANIFEST_LENGTH');
+  const manifest=JSON.parse(new TextDecoder().decode(plain.slice(4,4+length)));
+  const audio=plain.slice(4+length);
+  if(manifest.source_sha256!==release.source_sha256||await hex(audio)!==release.source_sha256)throw Error('SOURCE_INTEGRITY');
+  plain.fill(0);
+  return audio;
+}

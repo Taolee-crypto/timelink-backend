@@ -6,17 +6,21 @@ Requires Demucs and Basic Pitch to be installed in this private service environm
 from __future__ import annotations
 
 import json
+import contextlib
+import sys
+from lyrics_alignment import align_lyrics
 import math
 import subprocess
 import tempfile
 from pathlib import Path
 
-import soundfile as sf
-from basic_pitch.inference import predict
+with contextlib.redirect_stdout(sys.stderr):
+    import soundfile as sf
+    from basic_pitch.inference import predict
 
 
-def transcribe_vocals(source: Path) -> dict:
-    """Return V5 structured *vocal-only* note draft; lyrics require later alignment."""
+def transcribe_vocals(source: Path, lyrics: str = '') -> dict:
+    """Return V5 structured *vocal-only* note draft; with forced alignment of supplied lyrics."""
     source = source.resolve(strict=True)
     if not source.is_file() or source.suffix.lower() not in {".mp3", ".wav", ".flac"}:
         raise ValueError("Expected a local MP3, WAV or FLAC file")
@@ -36,7 +40,8 @@ def transcribe_vocals(source: Path) -> dict:
             raise ValueError("Empty or invalid vocal stem")
 
         duration = len(audio) / sample_rate
-        _, _, events = predict(str(vocals))
+        with contextlib.redirect_stdout(sys.stderr):
+            _, _, events = predict(str(vocals))
         notes = []
         for start, end, pitch, confidence, *_ in sorted(events, key=lambda n: n[0]):
             if not all(math.isfinite(float(v)) for v in (start, end, pitch, confidence)):
@@ -56,10 +61,11 @@ def transcribe_vocals(source: Path) -> dict:
             notes.append({"s": round(start, 3), "d": round(end - start, 3), "m": pitch})
         if not notes:
             raise ValueError("No reliable vocal melody notes detected")
+        with contextlib.redirect_stdout(sys.stderr):
+            aligned = align_lyrics(vocals, lyrics, notes, duration)
         return {
-            "part": "lead_vocal", "melody": notes, "chords": [],
+            **aligned, "part": "lead_vocal", "melody": notes, "chords": [],
             "provenance": {"method": "vocal_separation", "engine": "demucs-htdemucs+basic-pitch"},
-            "lyrics_status": "not_aligned",
         }
 
 
@@ -69,6 +75,7 @@ if __name__ == "__main__":
     parser.add_argument("source", type=Path, help="Locally staged audio; never a URL")
     parser.add_argument('--source-sha256', help='Expected 64-character V5 source SHA-256')
     parser.add_argument('--rights-confirmed', action='store_true', help='Authorized operator confirmation')
+    parser.add_argument('--lyrics', type=Path)
     args = parser.parse_args()
     if args.source_sha256:
         import hashlib
@@ -86,10 +93,9 @@ if __name__ == "__main__":
         digest = hasher.hexdigest()
         if digest.lower() != args.source_sha256.lower():
             raise ValueError('V5 source SHA-256 mismatch')
-    draft = transcribe_vocals(args.source)
+    draft = transcribe_vocals(args.source, args.lyrics.read_text(encoding='utf-8') if args.lyrics else '')
     if args.source_sha256:
         provenance = draft.pop('provenance')
-        draft.pop('lyrics_status', None)
         print(json.dumps({'rights_confirmed': True, 'source_sha256': digest, 'provenance': provenance, 'score_data': draft}, ensure_ascii=False))
     else:
         print(json.dumps(draft, ensure_ascii=False))

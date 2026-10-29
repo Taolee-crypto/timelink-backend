@@ -19,8 +19,17 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import {verifyToken} from '../auth';
+import {verifyScoreIdentity} from '../v5-score-identity';
+import {validateScoreLyrics} from '../v5-score-lyrics';
+import {recoverScoreAudio} from '../v5-score-audio';
 
-const router = new Hono<{ Bindings: Env }>();
+const router = new Hono<{ Bindings: Env; Variables: {scoreRunner:string} }>();
+router.use('/scores/v5/internal/*',async(c,next)=>{
+  const identity=await verifyScoreIdentity(c.req.header('Authorization')||'');
+  if(!identity)return c.json({ok:false,code:'FORBIDDEN'},403);
+  c.set('scoreRunner',identity);
+  await next();
+});
 
 // ─────────────────────────────────────────
 // 상수
@@ -89,6 +98,9 @@ async function ensureV5ScoreJobs(db:D1Database){
     error_code TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`).run();
+  const columns=await db.prepare("PRAGMA table_info(v5_score_jobs)").all<{name:string}>();
+  if(!columns.results.some(c=>c.name==='worker_run_id'))
+    await db.prepare("ALTER TABLE v5_score_jobs ADD COLUMN worker_run_id TEXT").run();
 }
 router.post('/scores/v5/:reference/generate',async c=>{
   const uid=await v5ScoreUser(c);
@@ -106,7 +118,7 @@ router.post('/scores/v5/:reference/generate',async c=>{
     if(body?.rights_confirmed!==true)return c.json({ok:false,code:'CREATOR_RIGHTS_REQUIRED'},422);
     // Do not accept jobs until a private analysis service is configured.
     // A queue without a worker would strand users in a permanent "pending" state.
-    if(!(c.env as any).V5_SCORE_WORKER_TOKEN)
+    if((c.env as any).V5_SCORE_AUTH_MODE!=='github-oidc')
       return c.json({ok:false,code:'VOCAL_ANALYSIS_NOT_READY',message:'보컬 분석 서버가 아직 연결되지 않았습니다.'},503);
     await ensureV5ScoreJobs(c.env.DB);
     await c.env.DB.prepare(`INSERT INTO v5_score_jobs(file_id,owner_id,source_sha256,status)
@@ -123,11 +135,8 @@ router.post('/scores/v5/:reference/generate',async c=>{
   }catch(e){console.error('[V5_SCORE_JOB_INTAKE]',e);return c.json({ok:false,code:'V5_SCORE_JOB_INTAKE_FAILED'},503);}
 });
 // Private inference worker: fetch only an authorized, queued encrypted container.
-// Master wrapping keys remain in the inference environment, never in responses.
+// Master keys and content keys stay inside Cloudflare; runners receive only job-scoped audio.
 router.post('/scores/v5/internal/claim',async c=>{
-  const expected=String((c.env as any).V5_SCORE_WORKER_TOKEN||'');
-  const supplied=String(c.req.header('X-V5-Score-Worker-Token')||'');
-  if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
   try{
     await ensureV5ScoreJobs(c.env.DB);
     // Recover abandoned claims after runner cancellation or a host crash.
@@ -138,8 +147,8 @@ router.post('/scores/v5/internal/claim',async c=>{
     ).first<any>();
     if(!candidate)return c.json({ok:true,job:null},200,{'Cache-Control':'no-store'});
     const updated=await c.env.DB.prepare(
-      "UPDATE v5_score_jobs SET status='running',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE file_id=? AND status='queued'"
-    ).bind(Number(candidate.file_id)).run();
+      "UPDATE v5_score_jobs SET status='running',attempts=attempts+1,worker_run_id=?,updated_at=CURRENT_TIMESTAMP WHERE file_id=? AND status='queued'"
+    ).bind(c.get('scoreRunner'),Number(candidate.file_id)).run();
     if(Number(updated.meta?.changes||0)!==1)return c.json({ok:true,job:null},200,{'Cache-Control':'no-store'});
     const release=await c.env.DB.prepare(
       "SELECT file_id,user_id,share_id,object_key,source_sha256,container_sha256,wrapped_content_key,key_id,container_bytes FROM tl3_v5_releases WHERE file_id=? AND status='sealed'"
@@ -150,42 +159,36 @@ router.post('/scores/v5/internal/claim',async c=>{
         .bind(Number(candidate.file_id)).run();
       return c.json({ok:false,code:'RELEASE_CHANGED'},409);
     }
-    return c.json({ok:true,job:{file_id:Number(release.file_id),share_id:String(release.share_id),
-      source_sha256:String(release.source_sha256),container_sha256:String(release.container_sha256),
-      wrapped_content_key:String(release.wrapped_content_key),key_id:String(release.key_id),
-      container_bytes:Number(release.container_bytes)}},200,{'Cache-Control':'no-store'});
+    const lyrics=await c.env.DB.prepare("SELECT lyrics FROM tl3_v5_track_metadata WHERE file_id=? AND user_id=?").bind(Number(release.file_id),Number(release.user_id)).first<{lyrics:string}>();
+    return c.json({ok:true,job:{file_id:Number(release.file_id),
+      source_sha256:String(release.source_sha256),lyrics:String(lyrics?.lyrics||'').slice(0,20000)}},200,{'Cache-Control':'private, no-store'});
   }catch(e){console.error('[V5_SCORE_CLAIM]',e);return c.json({ok:false,code:'CLAIM_FAILED'},503);}
 });
-router.get('/scores/v5/internal/container/:fileId',async c=>{
-  const expected=String((c.env as any).V5_SCORE_WORKER_TOKEN||'');
-  const supplied=String(c.req.header('X-V5-Score-Worker-Token')||'');
-  if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
+router.get('/scores/v5/internal/audio/:fileId',async c=>{
   const id=Number(c.req.param('fileId'));
   if(!Number.isSafeInteger(id)||id<=0)return c.json({ok:false,code:'INVALID_ID'},400);
   try{
-    const job=await c.env.DB.prepare("SELECT status,source_sha256 FROM v5_score_jobs WHERE file_id=?").bind(id).first<any>();
-    const release=await c.env.DB.prepare("SELECT object_key,container_bytes,source_sha256 FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(id).first<any>();
-    if(!job||job.status!=='running'||!release||job.source_sha256!==release.source_sha256)
+    const job=await c.env.DB.prepare("SELECT status,source_sha256,worker_run_id FROM v5_score_jobs WHERE file_id=?").bind(id).first<any>();
+    const release=await c.env.DB.prepare("SELECT file_id,share_id,key_id,wrapped_content_key,container_sha256,object_key,container_bytes,source_sha256 FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(id).first<any>();
+    if(!job||job.status!=='running'||job.worker_run_id!==c.get('scoreRunner')||!release||job.source_sha256!==release.source_sha256)
       return c.json({ok:false,code:'JOB_NOT_RUNNING'},409);
     const size=Number(release.container_bytes);
     if(!Number.isSafeInteger(size)||size<1||size>20*1024*1024)return c.json({ok:false,code:'CONTAINER_SIZE_INVALID'},413);
     const {readD1Range}=await import('../d1-storage');
     const container=await readD1Range(c.env.DB,String(release.object_key),0,size);
-    return new Response(container.buffer as ArrayBuffer,{status:200,headers:{
-      'Content-Type':'application/octet-stream','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
-  }catch(e){console.error('[V5_SCORE_CONTAINER]',e);return c.json({ok:false,code:'CONTAINER_UNAVAILABLE'},503);}
+    const audio=await recoverScoreAudio(c.env,container,release);
+    return new Response(audio.buffer as ArrayBuffer,{status:200,headers:{
+      'Content-Type':'audio/mpeg','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+  }catch(e){console.error('[V5_SCORE_CONTAINER] unavailable');return c.json({ok:false,code:'CONTAINER_UNAVAILABLE'},503);}
 });
 // Only the private inference worker may complete a claimed job.
 router.post('/scores/v5/internal/complete/:fileId',async c=>{
-  const expected=String((c.env as any).V5_SCORE_WORKER_TOKEN||'');
-  const supplied=String(c.req.header('X-V5-Score-Worker-Token')||'');
-  if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
   const id=Number(c.req.param('fileId'));
   if(!Number.isSafeInteger(id)||id<=0)return c.json({ok:false,code:'INVALID_ID'},400);
   try{
     await ensureV5ScoreJobs(c.env.DB);
-    const job=await c.env.DB.prepare("SELECT owner_id,source_sha256,status FROM v5_score_jobs WHERE file_id=?").bind(id).first<any>();
-    if(!job||job.status!=='running')return c.json({ok:false,code:'JOB_NOT_RUNNING'},409);
+    const job=await c.env.DB.prepare("SELECT owner_id,source_sha256,status,worker_run_id FROM v5_score_jobs WHERE file_id=?").bind(id).first<any>();
+    if(!job||job.status!=='running'||job.worker_run_id!==c.get('scoreRunner'))return c.json({ok:false,code:'JOB_NOT_RUNNING'},409);
     const release=await c.env.DB.prepare("SELECT user_id,source_sha256,duration_ms FROM tl3_v5_releases WHERE file_id=? AND status='sealed'").bind(id).first<any>();
     if(!release||Number(release.user_id)!==Number(job.owner_id)||String(release.source_sha256)!==String(job.source_sha256))
       return c.json({ok:false,code:'RELEASE_CHANGED'},409);
@@ -203,6 +206,9 @@ router.post('/scores/v5/internal/complete/:fileId',async c=>{
         return c.json({ok:false,code:'VOCAL_NOTES_INVALID'},422);
       end=n.s+n.d;
     }
+    const lyricRow=await c.env.DB.prepare("SELECT lyrics FROM tl3_v5_track_metadata WHERE file_id=? AND user_id=?").bind(id,Number(job.owner_id)).first<{lyrics:string}>();
+    if(!validateScoreLyrics(score,String(lyricRow?.lyrics||''),duration))
+      return c.json({ok:false,code:'LYRICS_ALIGNMENT_INVALID'},422);
     const provenance=body?.provenance;
     if(provenance?.method!=='vocal_separation'||provenance?.engine!=='demucs-htdemucs+basic-pitch')
       return c.json({ok:false,code:'VOCAL_PROVENANCE_INVALID'},422);
@@ -214,21 +220,18 @@ router.post('/scores/v5/internal/complete/:fileId',async c=>{
       source_sha256=excluded.source_sha256,score_json=excluded.score_json,algorithm=excluded.algorithm,
       status='draft',updated_at=CURRENT_TIMESTAMP`)
       .bind(id,Number(job.owner_id),String(job.source_sha256),serialized,'demucs-htdemucs+basic-pitch').run();
-    await c.env.DB.prepare("UPDATE v5_score_jobs SET status='completed',error_code=NULL,updated_at=CURRENT_TIMESTAMP WHERE file_id=? AND status='running'").bind(id).run();
+    await c.env.DB.prepare("UPDATE v5_score_jobs SET status='completed',error_code=NULL,updated_at=CURRENT_TIMESTAMP WHERE file_id=? AND status='running' AND worker_run_id=?").bind(id,c.get('scoreRunner')).run();
     return c.json({ok:true,notes:score.melody.length,tld_issued:false,tl_charged:0},200,{'Cache-Control':'no-store'});
   }catch(e){console.error('[V5_SCORE_COMPLETE]',e);return c.json({ok:false,code:'V5_SCORE_COMPLETE_FAILED'},503);}
 });
 router.post('/scores/v5/internal/fail/:fileId',async c=>{
-  const expected=String((c.env as any).V5_SCORE_WORKER_TOKEN||'');
-  const supplied=String(c.req.header('X-V5-Score-Worker-Token')||'');
-  if(!expected||!supplied||supplied!==expected)return c.json({ok:false,code:'FORBIDDEN'},403);
   const id=Number(c.req.param('fileId'));
   if(!Number.isSafeInteger(id)||id<=0)return c.json({ok:false,code:'INVALID_ID'},400);
   const body=await c.req.json<any>().catch(()=>null);
   const code=String(body?.code||'VOCAL_ANALYSIS_FAILED');
   if(!/^[A-Z_]{3,60}$/.test(code))return c.json({ok:false,code:'INVALID_CODE'},422);
   await ensureV5ScoreJobs(c.env.DB);
-  const result=await c.env.DB.prepare("UPDATE v5_score_jobs SET status='failed',error_code=?,updated_at=CURRENT_TIMESTAMP WHERE file_id=? AND status='running'").bind(code,id).run();
+  const result=await c.env.DB.prepare("UPDATE v5_score_jobs SET status='failed',error_code=?,updated_at=CURRENT_TIMESTAMP WHERE file_id=? AND status='running' AND worker_run_id=?").bind(code,id,c.get('scoreRunner')).run();
   return c.json({ok:Number(result.meta?.changes||0)===1},200,{'Cache-Control':'no-store'});
 });
 // Existing TRACK ID always resolves to its actual sealed V5 file, not V3.
@@ -264,7 +267,7 @@ router.get('/scores/v5/:reference',async c=>{
         jobErrorCode=job.error_code?String(job.error_code):null;
       }
     }
-    const ready=!!(c.env as any).V5_SCORE_WORKER_TOKEN;
+    const ready=(c.env as any).V5_SCORE_AUTH_MODE==='github-oidc';
     return c.json({ok:true,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id),
       title:String(row.title||''),artist:String(row.artist||''),duration_ms:Number(row.duration_ms),
       score_status:score?'draft':'not_generated',job_status:jobStatus,job_error_code:jobErrorCode,has_score:!!score,score,

@@ -149,7 +149,7 @@ async function wrapAssetKey(secret: string, fileId: number, shareId: string, con
   const cipher = new Uint8Array(await crypto.subtle.encrypt({ name:'AES-GCM', iv, additionalData:aad, tagLength:128 }, key, bytes(contentKey)));
   return b64u(concat(iv, cipher));
 }
-async function unwrapAssetKey(secret: string, fileId: number, shareId: string, wrapped: string): Promise<Uint8Array> {
+export async function unwrapAssetKey(secret: string, fileId: number, shareId: string, wrapped: string): Promise<Uint8Array> {
   const value = unb64u(wrapped);
   if (value.length !== 60) throw new Error('V5 자산 키 봉투가 손상되었습니다.');
   const key = await masterWrapKey(secret);
@@ -160,7 +160,7 @@ async function unwrapAssetKey(secret: string, fileId: number, shareId: string, w
 type MasterKeyring = { keys: Record<string, string>; activeId: string };
 
 /** Parse key IDs while preserving the original single-secret key as "legacy". */
-function resolveMasterKeyring(env: Env): MasterKeyring {
+export function resolveMasterKeyring(env: Env): MasterKeyring {
   const keys: Record<string, string> = {};
   const legacy = String(env.TL3_MASTER_SECRET || '');
   if (legacy) keys.legacy = legacy;
