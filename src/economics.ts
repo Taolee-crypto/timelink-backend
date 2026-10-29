@@ -4,6 +4,7 @@ import {dailyFreeCatalogue} from './v5-daily-free-policy';
 import { Hono } from 'hono';
 import { requestListenerCashout } from './v5-cashout';
 import { readRewardPolicy } from './v5-reward-policy';
+import {readReferralPocBonus} from './v5-referral-reward';
 import { completeAdReward, startAdReward } from './v5-ad-reward';
 import { verifyToken } from './auth';
 import type { Env } from './types';
@@ -548,7 +549,8 @@ async function calculateServerPoc(db:D1Database,userId:string){
     );
 
     // 가중합 (5요소, 총 100%)
-    const rawPoc =
+    const verifiedReferralPoc=Math.min(policy.referral_poc_cap,await readReferralPocBonus(db,userId,monthStart));
+    const rawPoc = verifiedReferralPoc +
       contentScore * policy.weight_content +      // 40% → 35%
       spendScore   * policy.weight_spend +      // 30% → 25%
       listenScore  * policy.weight_listen +      // 20% → 18%
@@ -590,6 +592,7 @@ async function calculateServerPoc(db:D1Database,userId:string){
         listen:  Number(listenScore.toFixed(3)),
         upload:  Number(uploadScore.toFixed(3)),
         score:   Number(scoreScore.toFixed(3)),
+        referral:Number(verifiedReferralPoc.toFixed(3)),
       },
       tlc_mining: {
         daily_max: Number(availableToday.toFixed(9)),

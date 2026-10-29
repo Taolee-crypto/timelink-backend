@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import type { Env } from './types';
 import { verifyToken } from './auth';
 import { creditVerifiedPayment } from './v5-payment-ledger';
+import {settleVerifiedReferral} from './v5-referral-reward';
 import { readV5Wallet } from './v5-wallet';
 import { assertTLAtomScale, ensureLedgerAccount, postLedgerTransaction, tlToAtoms } from './economy-ledger';
 import { readRewardPolicy,paymentBonusMap } from './v5-reward-policy';
@@ -166,6 +167,15 @@ payment.post('/v5/commercial-time/toss/confirm',async c=>{
    return c.json({ok:false,error:'PAYMENT_KEY_MISMATCH'},409);
   const grant=await c.env.DB.prepare("SELECT granted_seconds FROM v5_store_airtime_grants WHERE order_id=? AND user_id=?").bind(orderId,Number(uid)).first<any>();
   if(!grant)return c.json({ok:false,error:'ENTITLEMENT_NOT_GRANTED'},503);
+  // First sandbox store payment is already confirmed by Toss and the
+  // airtime entitlement. Referral reward failure cannot undo the paid order;
+  // its unique milestone can be retried independently without double credit.
+  try{
+    const claim=await c.env.DB.prepare('SELECT referrer_user_id FROM v5_member_referral_claims WHERE referred_user_id=?')
+      .bind(Number(uid)).first<any>();
+    if(claim?.referrer_user_id)
+      await settleVerifiedReferral(c.env.DB,Number(claim.referrer_user_id),Number(uid),'store_first_paid');
+  }catch(error){console.warn('[STORE_REFERRAL_RETRY_PENDING]',String(error));}
   return c.json({ok:true,seconds:Number(grant.granted_seconds),amount,channelId:o.channel_id,mode:'test',entitlementType:'store_airtime',tlBCredited:false});
  }catch(e){console.error('[STORE_AIRTIME_CONFIRM]',e);return c.json({ok:false,error:'STORE_CONFIRM_UNAVAILABLE'},503);}
 });

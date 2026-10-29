@@ -1,6 +1,12 @@
 // Explicit operator-controlled rules. There is no automatic optimizer.
 export const REWARD_RULES={
   signup_bonus:[42500,0,1000000,'일반 가입 TL_B'],advertiser_signup_bonus:[300000,0,1000000,'광고주 가입 TL_B'],
+  // Disabled TL_B grants by default until an operator explicitly budgets them.
+  referral_signup_tl_b:[0,0,100000,'추천 회원 인증 후 TL_B'],
+  referral_store_tl_b:[0,0,100000,'추천 매장 첫 검증 결제 후 TL_B'],
+  referral_signup_poc:[0.2,0,5,'추천 회원 인증 POC'],
+  referral_store_poc:[0.5,0,5,'추천 매장 검증 결제 POC'],
+  referral_poc_cap:[1,0,5,'추천 월간 POC 가산 상한'],
   ad_min:[50,1,100000,'광고 최소 TL_A'],ad_max:[1000,1,100000,'광고 최대 TL_A'],ad_default:[300,1,100000,'광고 기본 TL_A'],
   exchange_min:[1000,1,1000000,'일반 환전 최소 TL_P'],fee_a:[0.05,0,1,'플랜 A 환전 수수료율'],fee_b:[0.03,0,1,'플랜 B 환전 수수료율'],
   mining_rate:[0.08,0,1,'TLC 채굴 기본 비율'],mining_month_cap:[0.30,0,1,'TLC 월 소비 대비 상한'],plan_b_multiplier:[2,0,10,'플랜 B 채굴 배수'],
@@ -40,7 +46,12 @@ export function validateRewardRules(input:any):RewardRules{
 export async function readRewardPolicy(db:D1Database){
   await ensureRewardPolicy(db);
   const row=await db.prepare('SELECT version,rules_json FROM v5_reward_policy WHERE id=1').first<any>();
-  return {version:Number(row.version),rules:validateRewardRules(JSON.parse(row.rules_json))};
+  // Forward compatible with existing production policy JSON. New fields stay
+  // at safe defaults until the administrator explicitly saves a new version.
+  const stored=JSON.parse(row.rules_json);
+  if(!stored||typeof stored!=='object'||Array.isArray(stored)||
+    Object.keys(stored).some(key=>!(key in REWARD_RULES)))throw Error('INVALID_REWARD_POLICY_KEYS');
+  return {version:Number(row.version),rules:validateRewardRules({...DEFAULT_REWARD_RULES,...stored})};
 }
 export function paymentBonusMap(rules:RewardRules):Record<number,number>{
   return {5000:rules.bonus_5000,10000:rules.bonus_10000,30000:rules.bonus_30000,50000:rules.bonus_50000,100000:rules.bonus_100000};
