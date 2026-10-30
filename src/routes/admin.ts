@@ -37,6 +37,45 @@ router.use('*',async(c,next)=>{
   finally{await c.env.DB.prepare("UPDATE v5_admin_access_audit SET status=?,outcome=?,finished_at=datetime('now') WHERE id=?")
     .bind(c.res.status,c.res.status<400?'completed':'failed',id).run();}
 });
+// TILO discount coefficient: administrator-only, auditable, prospective policy.
+router.get('/central-broadcast/discount',async c=>{
+  try{
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tilo_broadcast_discount_policy(
+      id INTEGER PRIMARY KEY CHECK(id=1),coefficient_bps INTEGER NOT NULL,
+      revision INTEGER NOT NULL,updated_by INTEGER NOT NULL,updated_at TEXT NOT NULL)`).run();
+    const row=await c.env.DB.prepare('SELECT coefficient_bps,revision,updated_at FROM tilo_broadcast_discount_policy WHERE id=1').first();
+    return c.json({ok:true,discount_coefficient_bps:row?.coefficient_bps??3000,revision:row?.revision??0,updated_at:row?.updated_at??null,settlement_integration:'pending'});
+  }catch{return c.json({ok:false,error:'DISCOUNT_POLICY_UNAVAILABLE'},503)}
+});
+router.put('/central-broadcast/discount',async c=>{
+  const actor=await requireAdmin(c);
+  const body=await c.req.json().catch(()=>null) as any;
+  if(!body||!Number.isInteger(body.coefficient_bps)||body.coefficient_bps<0||body.coefficient_bps>10000||!Number.isInteger(body.expected_revision)||body.expected_revision<0||typeof body.reason!=='string'||body.reason.trim().length<8||body.reason.length>500)
+    return c.json({ok:false,error:'INVALID_DISCOUNT_POLICY'},400);
+  try{
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tilo_broadcast_discount_policy(
+      id INTEGER PRIMARY KEY CHECK(id=1),coefficient_bps INTEGER NOT NULL,
+      revision INTEGER NOT NULL,updated_by INTEGER NOT NULL,updated_at TEXT NOT NULL)`).run();
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tilo_broadcast_discount_audit(
+      id TEXT PRIMARY KEY,revision INTEGER NOT NULL,coefficient_bps INTEGER NOT NULL,
+      actor INTEGER NOT NULL,reason TEXT NOT NULL,created_at TEXT NOT NULL)`).run();
+    const existing=await c.env.DB.prepare('SELECT revision FROM tilo_broadcast_discount_policy WHERE id=1').first<{revision:number}>();
+    const revision=existing?.revision??0;
+    if(revision!==body.expected_revision)return c.json({ok:false,error:'REVISION_CONFLICT',current_revision:revision},409);
+    const next=revision+1,now=new Date().toISOString(),id=crypto.randomUUID();
+    const statements=[
+      c.env.DB.prepare(`INSERT INTO tilo_broadcast_discount_policy(id,coefficient_bps,revision,updated_by,updated_at)
+        VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET coefficient_bps=excluded.coefficient_bps,
+        revision=excluded.revision,updated_by=excluded.updated_by,updated_at=excluded.updated_at
+        WHERE tilo_broadcast_discount_policy.revision=?`).bind(body.coefficient_bps,next,actor,now,revision),
+      c.env.DB.prepare('INSERT INTO tilo_broadcast_discount_audit(id,revision,coefficient_bps,actor,reason,created_at) VALUES(?,?,?,?,?,?)')
+        .bind(id,next,body.coefficient_bps,actor,body.reason.trim(),now)
+    ];
+    const results=await c.env.DB.batch(statements);
+    if(!results[0].meta?.changes) return c.json({ok:false,error:'REVISION_CONFLICT'},409);
+    return c.json({ok:true,discount_coefficient_bps:body.coefficient_bps,revision:next,settlement_integration:'pending'});
+  }catch{return c.json({ok:false,error:'DISCOUNT_POLICY_SAVE_FAILED'},503)}
+});
 router.get('/cafe/channels',async c=>{
   try {
     const rows=await c.env.DB.prepare('SELECT channel_id,name,status FROM cafe_channels ORDER BY channel_id DESC LIMIT 500').all();
