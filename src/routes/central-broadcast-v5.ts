@@ -56,6 +56,49 @@ router.get('/settlement-preview', c => {
     platform_atoms:Number(r.platformAtoms),atoms_per_tl:10000,posted:false});
 });
 
+/** Read-only verified local-day settlement reconciliation; no wallet credit. */
+router.get('/settlement/local-day-preview',async c=>{
+  const secret=c.env.CENTRAL_BROADCAST_WORKER_SECRET;
+  if(!secret||c.req.header('X-Central-Broadcast-Secret')!==secret)
+    return c.json({ok:false,error:'UNAUTHORIZED'},403);
+  const country=String(c.req.query('country')||'').toUpperCase();
+  const day=String(c.req.query('local_day')||'');
+  if(!['KR','JP','US','CN','TH','VN'].includes(country)||
+     !/^\\d{4}-\\d{2}-\\d{2}$/.test(day))return c.json({ok:false,error:'INVALID_LOCAL_DAY'},400);
+  const zones:Record<string,string>={KR:'Asia/Seoul',JP:'Asia/Tokyo',US:'America/New_York',CN:'Asia/Shanghai',TH:'Asia/Bangkok',VN:'Asia/Ho_Chi_Minh'};
+  const localDay=(iso:string)=>{
+    const parts=new Intl.DateTimeFormat('en-US',{timeZone:zones[country],year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(iso));
+    const v=(key:string)=>parts.find(p=>p.type===key)?.value||'';
+    return v('year')+'-'+v('month')+'-'+v('day');
+  };
+  if(localDay(new Date().toISOString())<=day)return c.json({ok:false,error:'LOCAL_DAY_NOT_CLOSED'},409);
+  try{
+    // Query bounded UTC range, then apply country-local date to handle DST.
+    const utcStart=Date.parse(day+'T00:00:00Z');
+    if(!Number.isFinite(utcStart)||new Date(utcStart).toISOString().slice(0,10)!==day)
+      return c.json({ok:false,error:'INVALID_LOCAL_DAY'},400);
+    const from=new Date(utcStart-36*3600000).toISOString();
+    const to=new Date(utcStart+60*3600000).toISOString();
+    const rows=await c.env.DB.prepare(`SELECT event_id,creator_id,audible_ms,creator_atoms,platform_atoms,started_at
+      FROM tilo_v5_verified_airtime WHERE country=? AND started_at>=? AND started_at<? ORDER BY event_id`)
+      .bind(country,from,to).all<any>();
+    const totals=new Map<number,{creator_id:number;events:number;audible_ms:number;creator_atoms:number;platform_atoms:number}>();
+    for(const row of rows.results||[]){
+      if(localDay(String(row.started_at))!==day)continue;
+      const id=Number(row.creator_id),prev=totals.get(id)||{creator_id:id,events:0,audible_ms:0,creator_atoms:0,platform_atoms:0};
+      prev.events++;prev.audible_ms+=Number(row.audible_ms);prev.creator_atoms+=Number(row.creator_atoms);prev.platform_atoms+=Number(row.platform_atoms);
+      if(![prev.audible_ms,prev.creator_atoms,prev.platform_atoms].every(Number.isSafeInteger))
+        return c.json({ok:false,error:'SETTLEMENT_OVERFLOW'},409);
+      totals.set(id,prev);
+    }
+    const allocations=[...totals.values()].sort((a,b)=>a.creator_id-b.creator_id);
+    return c.json({ok:true,country,local_day:day,allocations,posted:false,
+      total_creator_atoms:allocations.reduce((n,r)=>n+r.creator_atoms,0),
+      total_platform_atoms:allocations.reduce((n,r)=>n+r.platform_atoms,0),
+      note:'Read-only reconciliation. No ledger entries or wallet credits are posted.'});
+  }catch{return c.json({ok:false,error:'SETTLEMENT_PREVIEW_UNAVAILABLE'},503)}
+});
+
 /**
  * Internal cumulative-settlement preview for a verified monthly rights-holder
  * aggregate. Does not write to the economic ledger or accept public airtime.
