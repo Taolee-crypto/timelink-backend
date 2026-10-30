@@ -1,0 +1,40 @@
+name: TILO country-local broadcast schedule
+on:
+  pull_request:
+    paths:
+      - 'src/tilo-station-schedule.ts'
+      - 'src/tilo-country-clock.ts'
+      - 'src/tilo-station.ts'
+      - 'src/tilo-v5-scheduler.ts'
+      - 'scripts/test-v5-tilo-local-day-schedule.cjs'
+      - 'scripts/test-tilo-station-v5.cjs'
+      - '.github/workflows/v5-tilo-local-day-schedule.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/tilo-station-schedule.ts'
+      - 'src/tilo-country-clock.ts'
+      - 'src/tilo-station.ts'
+      - 'src/tilo-v5-scheduler.ts'
+      - 'scripts/test-v5-tilo-local-day-schedule.cjs'
+      - 'scripts/test-tilo-station-v5.cjs'
+      - '.github/workflows/v5-tilo-local-day-schedule.yml'
+permissions:
+  contents: read
+jobs:
+  local-day-rights-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: TILO local midnight and DST playlist continuity
+        run: node scripts/test-v5-tilo-local-day-schedule.cjs
+      - name: TILO existing granted/revoked rights in station inventory
+        run: node scripts/test-tilo-station-v5.cjs
+      - name: TypeScript validation
+        run: npx --no-install tsc --noEmit
