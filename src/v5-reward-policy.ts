@@ -43,15 +43,18 @@ export function validateRewardRules(input:any):RewardRules{
   if(Math.abs(weight-1)>0.000001)throw new Error('POC 비중 합계는 1이어야 합니다.');
   return input as RewardRules;
 }
+/** Normalize previously saved operator policies without rewriting them.
+ * New rule keys are absent from older rows and must use established defaults.
+ */
+export function validateStoredRewardRules(stored:any):RewardRules{
+  if(!stored||typeof stored!=='object'||Array.isArray(stored)||
+    Object.keys(stored).some(key=>!(key in REWARD_RULES)))throw Error('INVALID_REWARD_POLICY_KEYS');
+  return validateRewardRules({...DEFAULT_REWARD_RULES,...stored});
+}
 export async function readRewardPolicy(db:D1Database){
   await ensureRewardPolicy(db);
   const row=await db.prepare('SELECT version,rules_json FROM v5_reward_policy WHERE id=1').first<any>();
-  // Forward compatible with existing production policy JSON. New fields stay
-  // at safe defaults until the administrator explicitly saves a new version.
-  const stored=JSON.parse(row.rules_json);
-  if(!stored||typeof stored!=='object'||Array.isArray(stored)||
-    Object.keys(stored).some(key=>!(key in REWARD_RULES)))throw Error('INVALID_REWARD_POLICY_KEYS');
-  return {version:Number(row.version),rules:validateRewardRules({...DEFAULT_REWARD_RULES,...stored})};
+  return {version:Number(row.version),rules:validateStoredRewardRules(JSON.parse(row.rules_json))};
 }
 export function paymentBonusMap(rules:RewardRules):Record<number,number>{
   return {5000:rules.bonus_5000,10000:rules.bonus_10000,30000:rules.bonus_30000,50000:rules.bonus_50000,100000:rules.bonus_100000};
