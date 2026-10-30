@@ -1,5 +1,7 @@
 /** V5 central broadcast settlement policy. Pure arithmetic; does not credit wallets. */
 export const CENTRAL_BROADCAST_V5 = Object.freeze({
+  /** Initial 70% promotional discount: 0.3 of nominal 1 TL/second. */
+  discountCoefficientBps: 3000n,
   weightNumerator: 3n,
   weightDenominator: 10n,
   creatorNumerator: 7n,
@@ -28,12 +30,15 @@ export function calculateCentralBroadcastAllocation(playedSeconds: bigint): Broa
  * Call only with verified audible music milliseconds (not DJ/news/buffering).
  * Rounding occurs once per event; no ledger posting is performed here.
  */
-export function calculateCentralBroadcastAtoms(playedMilliseconds: bigint): {
+export function calculateCentralBroadcastAtoms(playedMilliseconds: bigint, discountCoefficientBps: bigint = CENTRAL_BROADCAST_V5.discountCoefficientBps): {
   totalAtoms: bigint; creatorAtoms: bigint; platformAtoms: bigint;
 } {
   if (playedMilliseconds < 0n) throw new RangeError('playedMilliseconds must be nonnegative');
-  // 1,000 ms => 0.3 TL => 3,000 TL atoms; creator 2,100, platform 900.
-  const totalAtoms = (playedMilliseconds * 3n + 0n) / 1n;
+  if (discountCoefficientBps < 0n || discountCoefficientBps > 10_000n)
+    throw new RangeError('Discount coefficient must be between 0 and 1 (basis points)');
+  // 1 TL/sec = 10 atoms/ms; coefficient expressed in basis points.
+  // Default 3000 bps: 1000 ms => 3000 atoms, creator 2100, platform 900.
+  const totalAtoms = (playedMilliseconds * discountCoefficientBps) / 1000n;
   const creatorAtoms = (totalAtoms * 7n) / 10n;
   return { totalAtoms, creatorAtoms, platformAtoms: totalAtoms - creatorAtoms };
 }
