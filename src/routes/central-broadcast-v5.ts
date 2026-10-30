@@ -145,7 +145,14 @@ router.post('/airtime/record', async c => {
       .bind(fileId).first<{user_id:number}>();
     if(!permitted.some(t=>t.file_id===fileId)||Number(creator?.user_id)!==creatorId)
       return c.json({ok:false,error:'BROADCAST_RIGHTS_NOT_GRANTED'},403);
-    const atoms=calculateCentralBroadcastAtoms(BigInt(audibleMs));
+    // Snapshot the effective administrator discount at evidence ingestion.
+    // A future edit must never reprice already recorded broadcast intervals.
+    const policy=await c.env.DB.prepare(`SELECT coefficient_bps,revision
+      FROM tilo_broadcast_discount_policy WHERE id=1`).first<{coefficient_bps:number;revision:number}>().catch(()=>null);
+    const coefficientBps=policy?.coefficient_bps??3000;
+    if(!Number.isSafeInteger(coefficientBps)||coefficientBps<0||coefficientBps>10000)
+      return c.json({ok:false,error:'INVALID_DISCOUNT_CONFIGURATION'},503);
+    const atoms=calculateCentralBroadcastAtoms(BigInt(audibleMs),BigInt(coefficientBps));
     const inserted=await c.env.DB.prepare(`
       INSERT OR IGNORE INTO tilo_v5_verified_airtime
         (event_id,country,service_id,creator_id,file_id,started_at,ended_at,
@@ -165,7 +172,7 @@ router.post('/airtime/record', async c => {
       return c.json({ok:true,replayed:true,posted:false,event_id:eventId});
     }
     return c.json({ok:true,replayed:false,posted:false,event_id:eventId,
-      creator_atoms:Number(atoms.creatorAtoms),platform_atoms:Number(atoms.platformAtoms)});
+      creator_atoms:Number(atoms.creatorAtoms),platform_atoms:Number(atoms.platformAtoms),discount_coefficient_bps:coefficientBps,discount_revision:policy?.revision??0});
   }catch(e){if(String(e).includes('TILO_AIRTIME_INTERVAL_OVERLAP'))return c.json({ok:false,error:'AIRTIME_INTERVAL_OVERLAP'},409);console.error('[TILO_AIRTIME_RECORD]',e);return c.json({ok:false,error:'AIRTIME_STORAGE_UNAVAILABLE'},503);}
 });
 
