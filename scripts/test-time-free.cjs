@@ -42,7 +42,7 @@ async function main(){
  const privateResponse=await api.worker.fetch(new Request('https://fixture/api/v1/tl3/play/preflight/12',{method:'POST',headers:{Authorization:'Bearer '+token}}),env,{});assert.equal(privateResponse.status,404);
  await begin(1);let r=await api.meterTimeFreePlayback(db,input(1,1000),start+1000);assert.equal(r.charged_tl,0);assert.equal(r.tl_reward,0);assert.equal(r.time_free_remaining_ms,H-1000);assert.equal(r.contribution_seconds,1);
  const poc=sql.prepare('SELECT poc_index FROM users WHERE id=1').get().poc_index;assert.ok(poc>0.1);
- r=await api.meterTimeFreePlayback(db,input(1,1000),start+2000);assert.equal(r.contribution_seconds,0);assert.equal(sql.prepare('SELECT COUNT(*) n FROM poc_logs').get().n,1);
+ r=await api.meterTimeFreePlayback(db,input(1,1000),start+2000);assert.equal(r.contribution_seconds,0);assert.equal(sql.prepare('SELECT COUNT(*) n FROM poc_logs WHERE user_id=1').get().n,1);
  // A pause of one hour followed by one second consumes one second only.
  r=await api.meterTimeFreePlayback(db,input(1,2000),start+H+2000);assert.equal(r.time_free_remaining_ms,H-2000);
  await api.closeTimeFreeSession(db,'tf_fixture_session_1',1,10);await assert.rejects(api.meterTimeFreePlayback(db,input(1,3000),start+H+3000),/CLOSED/);
