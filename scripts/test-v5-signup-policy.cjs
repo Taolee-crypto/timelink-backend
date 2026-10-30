@@ -28,4 +28,51 @@ assert.equal(audited.consent_context,'v5-public-registration-20261030');
 }
 assert.equal(sql.prepare('SELECT COUNT(*) n FROM v3_economy_transactions WHERE transaction_type=\'signup_bonus\'').get().n,3);
 console.log('PASS actual registration handlers: all aliases reject unchecked/forged consent, verified users record mandatory and optional consent atomically with V5 TL_B');
+
+const request=async(path,body)=>{
+ const response=await api.worker.fetch(new Request('https://fixture.test'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),{DB:db,JWT_SECRET:'fixture-key'},{});
+ return {status:response.status,body:await response.json()};
+};
+const validLogin={email:'fixture1@example.test',password:'fixture-password'};
+let login=await request('/api/auth/login',validLogin);
+assert.equal(login.status,200,JSON.stringify(login.body));
+assert.equal(typeof login.body.token,'string');
+assert.ok(login.body.token.length>20,'verified login returns signed session token');
+const firstUser=sql.prepare('SELECT id FROM users WHERE email=?').get(validLogin.email);
+sql.prepare('UPDATE users SET email_verified=0 WHERE id=?').run(firstUser.id);
+login=await request('/api/auth/login',validLogin);
+assert.equal(login.status,403);assert.equal(login.body.code,'EMAIL_VERIFICATION_REQUIRED');
+sql.prepare('UPDATE users SET email_verified=1,is_active=0 WHERE id=?').run(firstUser.id);
+login=await request('/api/auth/login',validLogin);
+assert.equal(login.status,403);assert.equal(login.body.code,'ACCOUNT_DISABLED');
+sql.prepare('UPDATE users SET is_active=1,password_hash=? WHERE id=?').run(validLogin.password,firstUser.id);
+login=await request('/api/auth/login',validLogin);
+assert.equal(login.status,401,'legacy plaintext comparison must not authenticate');
+assert.equal(login.body.token,undefined);
+sql.prepare('UPDATE users SET password_hash=? WHERE id=?').run('not-a-legacy-password',firstUser.id);
+login=await request('/api/auth/login',validLogin);
+assert.equal(login.status,401);
+
+const pending='pending@example.test';
+sql.prepare("INSERT INTO email_verifications(email,code,expires_at,created_at) VALUES(?,'123456',?,datetime('now'))").run(pending,new Date(Date.now()+600000).toISOString());
+for(const url of ['/api/auth/resend','/api/auth/send-code','/api/auth/signup']){
+ const input=url.endsWith('/signup')?{email:pending,username:'pending',password:'secure-password',...consent}:{email:pending};
+ const reply=await request(url,input);
+ assert.equal(reply.status,429,url+' must throttle repeated verification emails');
+ assert.equal(reply.body.code,'VERIFY_CODE_RATE_LIMIT');
+}
+const bad=await request('/api/auth/verify',{email:pending,username:'pending',password:'secure-password',code:'123x56',...consent});
+assert.equal(bad.status,400,'non-numeric code must not be accepted as valid challenge');
+assert.equal(sql.prepare('SELECT COUNT(*) n FROM email_verifications WHERE email=?').get(pending).n,1);
+
+const interruptedEmail='failed-atomic@example.test';
+sql.prepare("INSERT INTO email_verifications(email,code,expires_at) VALUES(?,'222222',?)").run(interruptedEmail,new Date(Date.now()+600000).toISOString());
+sql.exec("CREATE TRIGGER reject_test_member BEFORE INSERT ON users WHEN NEW.email='failed-atomic@example.test' BEGIN SELECT RAISE(ABORT,'intentional db failure'); END;");
+const failed=await request('/api/auth/verify',{email:interruptedEmail,username:'failed-member',password:'secure-password',code:'222222',...consent});
+assert.equal(failed.status,500);
+assert.equal(sql.prepare('SELECT COUNT(*) n FROM email_verifications WHERE email=? AND code=?').get(interruptedEmail,'222222').n,1,'verification code must remain after atomic user creation failure');
+assert.equal(sql.prepare('SELECT COUNT(*) n FROM users WHERE email=?').get(interruptedEmail).n,0);
+sql.exec('DROP TRIGGER reject_test_member');
+console.log('PASS email verification/login: signed verified login, disabled/unverified/plaintext denied, resend throttled, cryptographic challenge format and failed-batch code retention');
+
 }finally{sql.close();fs.rmSync(temp,{recursive:true,force:true})}})().catch(e=>{console.error(e);process.exitCode=1});
