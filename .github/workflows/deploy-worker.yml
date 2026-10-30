@@ -101,6 +101,7 @@ jobs:
           node scripts/test-v5-music-orders.cjs
           node scripts/test-v5-subscription-meter.cjs
           node scripts/test-v5-subscription-playback.cjs
+          node scripts/test-time-free.cjs
           node scripts/test-v5-subscription-review.cjs
           node scripts/test-v5-economy-renewal.cjs
 

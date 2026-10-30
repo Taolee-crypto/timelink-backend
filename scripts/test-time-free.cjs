@@ -1,7 +1,7 @@
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict');
 const {DatabaseSync}=require('node:sqlite'),{buildSync}=require('esbuild');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'time-free-'));
-buildSync({stdin:{contents:"export * from './src/v5-time-free';export * from './src/auth';export {default as payment} from './src/payment';export {default as worker} from './src/index';",resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'api.cjs'),logLevel:'silent'});
+buildSync({stdin:{contents:"export * from './src/v5-time-free';export * from './src/v5-reward-policy';export * from './src/auth';export {default as payment} from './src/payment';export {default as worker} from './src/index';",resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'api.cjs'),logLevel:'silent'});
 const api=require(path.join(temp,'api.cjs')),sql=new DatabaseSync(':memory:');
 const db={prepare(q){let args=[];const s={q,bind(...a){args=a;return s},async first(){return sql.prepare(q).get(...args)||null},async all(){return {results:sql.prepare(q).all(...args)}},async run(){const r=sql.prepare(q).run(...args);return {meta:{changes:Number(r.changes)}}}};return s},async batch(items){sql.exec('BEGIN IMMEDIATE');try{const results=[];for(const s of items)results.push(/^\s*(SELECT|WITH|PRAGMA)/i.test(s.q)?await s.all():await s.run());sql.exec('COMMIT');return results}catch(e){sql.exec('ROLLBACK');throw e}}};
 const H=3600000,start=Date.parse('2026-10-27T00:00:00Z');
@@ -18,6 +18,23 @@ const begin=(user,fileId=10,durationMs=2*H,sessionId='tf_fixture_session_'+user,
 const env={DB:db,JWT_SECRET:'isolated-fixture-secret',TOSS_CLIENT_KEY:'test_ck_fixture',TOSS_SECRET_KEY:'test_sk_fixture'};
 async function requestPayment(user,url,body){const token=await api.makeAccessToken(user,env.JWT_SECRET);const r=await api.payment.fetch(new Request('https://fixture'+url,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})}),env);return {status:r.status,data:await r.json()};}
 async function main(){
+ // Production policy JSON was saved before new referral rules existed.
+ // That legacy partial JSON must remain unchanged, while missing new keys
+ // receive their current defaults and operator-defined weights are retained.
+ await api.ensureRewardPolicy(db);
+ const oldPolicy={...api.DEFAULT_REWARD_RULES,listen_target:23};
+ for(const key of Object.keys(oldPolicy))if(key.startsWith('referral_'))delete oldPolicy[key];
+ const oldJson=JSON.stringify(oldPolicy);
+ sql.prepare('UPDATE v5_reward_policy SET rules_json=?,updated_by=1,version=version+1 WHERE id=1').run(oldJson);
+ const normalized=(await api.readRewardPolicy(db)).rules;
+ assert.equal(normalized.listen_target,23,'preserve actual administrator policy values');
+ assert.equal(normalized.referral_signup_tl_b,api.DEFAULT_REWARD_RULES.referral_signup_tl_b);
+ await grant(9,600,'legacy-rule-pass');
+ await begin(9,10,240000,'tf_legacy_rules_session_9',start);
+ const firstMeter=await api.meterTimeFreePlayback(db,input(9,1000,10,'tf_legacy_rules_session_9'),start+1000);
+ assert.equal(firstMeter.time_free_remaining_ms,599000,'first real TIME FREE meter must succeed with legacy policy');
+ assert.equal(firstMeter.charged_tl,0,'TIME FREE never spends TL');
+ assert.equal(sql.prepare('SELECT rules_json FROM v5_reward_policy WHERE id=1').get().rules_json,oldJson,'never rewrite administrator JSON during metering');
  let pre=await api.timeFreePreflight(db,1);assert.equal(pre.time_free_remaining_ms,H);assert.equal((await api.timeFreePreflight(db,1)).time_free_remaining_ms,H);assert.equal((await api.timeFreePreflight(db,2)).time_free_remaining_ms,H);assert.equal(await api.timeFreePreflight(db,3),null);assert.equal(await api.timeFreePreflight(db,4),null);
  // Actual worker preflight must bypass wallet/track TL for any public V5 song.
  const token=await api.makeAccessToken(1,env.JWT_SECRET);
@@ -25,7 +42,7 @@ async function main(){
  const privateResponse=await api.worker.fetch(new Request('https://fixture/api/v1/tl3/play/preflight/12',{method:'POST',headers:{Authorization:'Bearer '+token}}),env,{});assert.equal(privateResponse.status,404);
  await begin(1);let r=await api.meterTimeFreePlayback(db,input(1,1000),start+1000);assert.equal(r.charged_tl,0);assert.equal(r.tl_reward,0);assert.equal(r.time_free_remaining_ms,H-1000);assert.equal(r.contribution_seconds,1);
  const poc=sql.prepare('SELECT poc_index FROM users WHERE id=1').get().poc_index;assert.ok(poc>0.1);
- r=await api.meterTimeFreePlayback(db,input(1,1000),start+2000);assert.equal(r.contribution_seconds,0);assert.equal(sql.prepare('SELECT COUNT(*) n FROM poc_logs').get().n,1);
+ r=await api.meterTimeFreePlayback(db,input(1,1000),start+2000);assert.equal(r.contribution_seconds,0);assert.equal(sql.prepare('SELECT COUNT(*) n FROM poc_logs WHERE user_id=1').get().n,1);
  // A pause of one hour followed by one second consumes one second only.
  r=await api.meterTimeFreePlayback(db,input(1,2000),start+H+2000);assert.equal(r.time_free_remaining_ms,H-2000);
  await api.closeTimeFreeSession(db,'tf_fixture_session_1',1,10);await assert.rejects(api.meterTimeFreePlayback(db,input(1,3000),start+H+3000),/CLOSED/);
