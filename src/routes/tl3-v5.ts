@@ -366,6 +366,35 @@ router.post('/manufacture', async (c) => {
   }
 });
 
+/** Match a downloaded, sealed V5 container without exposing its master key,
+ * rights manifest or raw audio. The SHA256 is only a lookup ID. Playback must
+ * still pass the normal authenticated preflight and license metering gates. */
+router.get('/resolve-by-container/:sha256', async (c) => {
+  try {
+    const userId=await userFromRequest(c);
+    if(!userId)return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const sha=String(c.req.param('sha256')||'').toLowerCase();
+    if(!/^[a-f0-9]{64}$/.test(sha))return c.json({ok:false,error:'TL3 V5 컨테이너 SHA-256이 올바르지 않습니다.'},400);
+    // Missing schema is a service failure, not a fake missing track.
+    const row=await c.env.DB.prepare(`SELECT v.file_id,v.share_id,v.container_sha256
+      FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id
+      WHERE v.container_sha256=? AND v.status='sealed'
+        AND f.shared=1 AND LOWER(f.file_type)='audio/tl3'
+        AND COALESCE(f.revenue_held,0)=0
+        AND EXISTS(SELECT 1 FROM tl_creator_metadata m
+          WHERE m.file_id=v.file_id AND m.user_id=v.user_id
+            AND m.rights_declared=1 AND m.rights_role IN ('owner','authorized_agent','licensee')
+            AND m.rights_scope IN ('master_recording','distribution_license','delegated_scope')
+            AND m.declaration_status IN ('declared','verified','approved'))
+      LIMIT 1`).bind(sha).first<{file_id:number;share_id:string;container_sha256:string}>();
+    if(!row)return c.json({ok:false,error:'공개된 최신 TL3 V5 자산과 일치하지 않습니다. 권리 상태 또는 파일 버전을 확인하세요.'},404);
+    return c.json({ok:true,version:5,profile:'TL3-V5',file_id:Number(row.file_id),share_id:String(row.share_id)});
+  }catch(e){
+    console.error('[TL3_V5_RESOLVE_CONTAINER]',e);
+    return c.json({ok:false,error:'TL3 V5 컨테이너 확인 서비스 오류'},503);
+  }
+});
+
 router.get('/resolve/:id', async (c) => {
   try {
     const userId = await userFromRequest(c);
