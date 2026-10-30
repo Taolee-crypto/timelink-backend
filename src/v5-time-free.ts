@@ -1,4 +1,4 @@
-import {readRewardPolicy,validateRewardRules} from './v5-reward-policy';
+import {readRewardPolicy} from './v5-reward-policy';
 
 /** Purchased listening time is an access entitlement, never a TL balance.
  * Sandbox orders grant sandbox listening access only, with no monetary rewards.
@@ -37,8 +37,11 @@ async function remainingTimeFreeMs(db:D1Database,userId:number){
  return Number(row?.remaining||0);
 }
 async function timeFreeRewardRules(db:D1Database){
- const exists=await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='v5_reward_policy'").first();
- if(exists){const row=await db.prepare('SELECT rules_json FROM v5_reward_policy WHERE id=1').first<{rules_json:string}>();if(row)return validateRewardRules(JSON.parse(row.rules_json));}
+ // Use the shared, backward-compatible policy reader. Existing operator
+ // policies predate newly added referral rules and intentionally lack those
+ // keys; validating their raw JSON as a full policy stops TIME FREE meters.
+ // The reader fills only absent fields from safe defaults, validates the
+ // complete policy and never alters the administrator's stored JSON.
  return (await readRewardPolicy(db)).rules;
 }
 export async function beginTimeFreeSession(db:D1Database,input:{sessionId:string;userId:number;fileId:number;durationMs:number},nowMs=Date.now()){
