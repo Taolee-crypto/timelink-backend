@@ -1,0 +1,30 @@
+name: V5 creator existing release privacy and duplicate contract
+on:
+  pull_request:
+    paths:
+      - 'src/routes/music-discovery.ts'
+      - 'scripts/test-v5-creator-private-duplicate.cjs'
+      - '.github/workflows/v5-creator-existing-duplicate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/routes/music-discovery.ts'
+      - 'scripts/test-v5-creator-private-duplicate.cjs'
+      - '.github/workflows/v5-creator-existing-duplicate.yml'
+permissions:
+  contents: read
+jobs:
+  verified-private-rights:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Run actual Hono/D1 private recording and duplicate guard
+        run: node scripts/test-v5-creator-private-duplicate.cjs
+      - name: Validate TypeScript
+        run: npx --no-install tsc --noEmit
