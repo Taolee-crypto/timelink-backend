@@ -31,6 +31,8 @@ export interface Env {
   TL3_MASTER_SECRET?: string;
   TL3_MASTER_KEYRING?: string | Record<string, unknown>;
   TL3_MASTER_KEY_ACTIVE_ID?: string;
+  TL3_OFFLINE_SIGNING_PRIVATE_KEY?: string;
+  TL3_OFFLINE_SIGNING_PUBLIC_KEY?: string;
   TL_SECRET?: string;
   UNSPLASH_ACCESS_KEY?: string;
   KAKAO_REST_API_KEY?: string;
