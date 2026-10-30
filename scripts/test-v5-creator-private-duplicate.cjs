@@ -60,7 +60,7 @@ async function main(){
  const response=await api.discovery.request(new Request('https://fixture.invalid/',{headers:{Authorization:'Bearer '+owner}}),{},env);
  const list=await response.json();
  assert.equal(response.status,200);
- assert.equal(list.registrations.length,1,'review list must not reveal another user's claim');
+ assert.equal(list.registrations.length,1,'review list must exclude the other account claim');
  assert.equal(list.registrations[0].user_id,undefined,'list must not expose private raw asset path or material');
  assert.equal(list.registrations[0].storage_key,undefined,'never disclose encrypted storage key');
  assert.equal(list.registrations[0].sha256,undefined,'no raw audio fingerprint in public registration response');
