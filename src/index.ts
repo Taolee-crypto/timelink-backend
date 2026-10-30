@@ -476,7 +476,7 @@ async function registerWithEmail(c:any,providedBody?:any) {
       email TEXT NOT NULL, code TEXT NOT NULL,
       expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
     )`).run().catch(()=>{});
-    const lastCode=await c.env.DB.prepare('SELECT created_at FROM email_verifications WHERE email=? ORDER BY id DESC LIMIT 1').bind(email).first<{created_at:string}>();
+    const lastCode=await c.env.DB.prepare('SELECT created_at FROM email_verifications WHERE email=? ORDER BY id DESC LIMIT 1').bind(email).first() as {created_at:string}|null;
     if(emailCodeCooldown(lastCode?.created_at))return c.json({error:'인증 코드 재전송은 1분 후 가능합니다.',code:'VERIFY_CODE_RATE_LIMIT'},429);
     await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
     await c.env.DB.prepare(
@@ -4599,7 +4599,7 @@ app.post('/api/auth/send-code', async (c) => {
       email TEXT NOT NULL, code TEXT NOT NULL,
       expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))
     )`).run().catch(()=>{});
-    const lastCode=await c.env.DB.prepare('SELECT created_at FROM email_verifications WHERE email=? ORDER BY id DESC LIMIT 1').bind(email).first<{created_at:string}>();
+    const lastCode=await c.env.DB.prepare('SELECT created_at FROM email_verifications WHERE email=? ORDER BY id DESC LIMIT 1').bind(email).first() as {created_at:string}|null;
     if(emailCodeCooldown(lastCode?.created_at))return c.json({error:'인증 코드 재전송은 1분 후 가능합니다.',code:'VERIFY_CODE_RATE_LIMIT'},429);
     await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
     await c.env.DB.prepare(
@@ -4626,7 +4626,7 @@ app.post('/api/auth/resend', async (c) => {
     if (!email) return c.json({ error: 'email 필요' }, 400);
     const code = secureEmailVerificationCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    const lastCode=await c.env.DB.prepare('SELECT created_at FROM email_verifications WHERE email=? ORDER BY id DESC LIMIT 1').bind(email).first<{created_at:string}>();
+    const lastCode=await c.env.DB.prepare('SELECT created_at FROM email_verifications WHERE email=? ORDER BY id DESC LIMIT 1').bind(email).first() as {created_at:string}|null;
     if(emailCodeCooldown(lastCode?.created_at))return c.json({error:'인증 코드 재전송은 1분 후 가능합니다.',code:'VERIFY_CODE_RATE_LIMIT'},429);
     await c.env.DB.prepare('DELETE FROM email_verifications WHERE email=?').bind(email).run();
     await c.env.DB.prepare(
