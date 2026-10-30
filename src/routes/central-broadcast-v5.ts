@@ -45,15 +45,27 @@ router.get('/inventory', async c => {
   } catch(e:any){return c.json({ok:false,error:'BROADCAST_INVENTORY_UNAVAILABLE'},503)}
 });
 /** Read-only calculation: never accepts a browser event as proof of airtime. */
-router.get('/settlement-preview', c => {
+router.get('/settlement-preview', async c => {
   const raw=c.req.query('played_ms')||'';
   if(!/^\d{1,12}$/.test(raw))return c.json({ok:false,error:'Invalid played_ms'},400);
   const ms=BigInt(raw);
   if(ms>86400000n)return c.json({ok:false,error:'Preview limited to 24 hours'},400);
-  const r=calculateCentralBroadcastAtoms(ms);
-  return c.json({ok:true,played_ms:Number(ms),weight:0.3,creator_share:0.7,platform_share:0.3,
-    total_atoms:Number(r.totalAtoms),creator_atoms:Number(r.creatorAtoms),
-    platform_atoms:Number(r.platformAtoms),atoms_per_tl:10000,posted:false});
+  try {
+    const policy=await c.env.DB.prepare('SELECT coefficient_bps,revision FROM tilo_broadcast_discount_policy WHERE id=1')
+      .first<{coefficient_bps:number;revision:number}>();
+    const coefficient=policy?.coefficient_bps??3000;
+    if(!Number.isSafeInteger(coefficient)||coefficient<0||coefficient>10000)
+      return c.json({ok:false,error:'INVALID_DISCOUNT_CONFIGURATION'},503);
+    const r=calculateCentralBroadcastAtoms(ms,BigInt(coefficient));
+    return c.json({ok:true,played_ms:Number(ms),discount_coefficient:coefficient/10000,
+      discount_coefficient_bps:coefficient,discount_revision:policy?.revision??0,
+      creator_share:0.7,platform_share:0.3,total_atoms:Number(r.totalAtoms),
+      creator_atoms:Number(r.creatorAtoms),platform_atoms:Number(r.platformAtoms),
+      atoms_per_tl:10000,posted:false});
+  } catch(error) {
+    console.error('[TILO_SETTLEMENT_PREVIEW]',error);
+    return c.json({ok:false,error:'DISCOUNT_POLICY_UNAVAILABLE'},503);
+  }
 });
 
 /** Read-only verified local-day settlement reconciliation; no wallet credit. */
