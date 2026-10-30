@@ -4,12 +4,18 @@ on:
     paths:
       - 'src/routes/music-discovery.ts'
       - 'scripts/test-v5-creator-private-duplicate.cjs'
+      - 'scripts/test-creator-contributors.cjs'
+      - 'scripts/test-creator-payout-report.cjs'
+      - 'scripts/test-v5-music-gate-worker.cjs'
       - '.github/workflows/v5-creator-existing-duplicate.yml'
   push:
     branches: [main]
     paths:
       - 'src/routes/music-discovery.ts'
       - 'scripts/test-v5-creator-private-duplicate.cjs'
+      - 'scripts/test-creator-contributors.cjs'
+      - 'scripts/test-creator-payout-report.cjs'
+      - 'scripts/test-v5-music-gate-worker.cjs'
       - '.github/workflows/v5-creator-existing-duplicate.yml'
 permissions:
   contents: read
@@ -26,5 +32,11 @@ jobs:
       - run: npm ci
       - name: Run actual Hono/D1 private recording and duplicate guard
         run: node scripts/test-v5-creator-private-duplicate.cjs
+      - name: Verify source-linked audio review and audit immutability
+        run: node scripts/test-v5-music-gate-worker.cjs
+      - name: Verify multi-rights ownership, escrow and creator shares
+        run: node scripts/test-creator-contributors.cjs
+      - name: Verify read-only creator payout and historical ledger audits
+        run: node scripts/test-creator-payout-report.cjs
       - name: Validate TypeScript
         run: npx --no-install tsc --noEmit
