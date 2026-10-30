@@ -1,0 +1,10 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs');
+const source=fs.readFileSync('src/v5-offline-ledger-reservation.ts','utf8');
+assert.match(source,/const previous=await db.prepare/);
+assert.match(source,/previous.transaction_type!=='offline_v5_reserve'/);
+assert.match(source,/metadata.share_id!==shareId/);
+assert.match(source,/metadata.reserved_seconds!==seconds/);
+assert.match(source,/total!==amountAtoms/);
+assert.ok(source.indexOf('const previous=await db.prepare')<source.indexOf('const balances=await getTrackPoolBalances'),'replay check must precede balance check');
+console.log('PASS V5 offline replay guard ordering and fingerprint checks');

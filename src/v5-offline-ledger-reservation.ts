@@ -17,6 +17,29 @@ export async function reserveOfflineV5TrackTl(db:D1Database,input:{
   await assertTLAtomScale(db);
   const amountAtoms=seconds*TL_ATOMS_PER_TL;
   if(!Number.isSafeInteger(amountAtoms))throw Error('OFFLINE_V5_RESERVATION_OVERFLOW');
+  // A retry must not re-read already-reserved spendable balances and fail.
+  // Verify the original ledger fingerprint inputs before returning it.
+  const previous=await db.prepare(
+    'SELECT id,transaction_type,source,reference_type,reference_id,actor_user_id,metadata_json FROM v3_economy_transactions WHERE idempotency_key=?'
+  ).bind('offline-v5-reserve:'+entitlementId).first<any>();
+  if(previous){
+    let metadata:any;
+    try{metadata=JSON.parse(String(previous.metadata_json||'{}'));}catch{throw Error('OFFLINE_V5_RESERVATION_REPLAY_CONFLICT');}
+    const allocation=metadata.source_atoms;
+    const total=allocation&&['paid','bonus','ad'].every(k=>Number.isSafeInteger(allocation[k])&&allocation[k]>=0)
+      ?allocation.paid+allocation.bonus+allocation.ad:-1;
+    if(previous.transaction_type!=='offline_v5_reserve'||
+       previous.source!=='tl3_offline_reservation'||
+       previous.reference_type!=='offline_entitlement'||
+       String(previous.reference_id)!==entitlementId||
+       String(previous.actor_user_id)!==String(userId)||
+       metadata.share_id!==shareId||
+       metadata.reserved_seconds!==seconds||
+       metadata.amount_atoms!==amountAtoms||total!==amountAtoms)
+      throw Error('OFFLINE_V5_RESERVATION_REPLAY_CONFLICT');
+    const escrowId=await ensureLedgerAccount(db,'escrow',entitlementId,'TL','offline_v5_reserved');
+    return {entitlementId,seconds,amountAtoms,sourceAtoms:allocation,escrowAccountId:escrowId,ledgerTransactionId:String(previous.id),replayed:true};
+  }
   const balances=await getTrackPoolBalances(db,userId,shareId);
   const sources=['paid','bonus','ad'] as const;
   let remaining=amountAtoms;
