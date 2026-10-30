@@ -9,6 +9,7 @@ import { permittedStationTracks } from '../tilo-station';
  * V4/Spine files and routes remain unchanged.
  */
 import { Hono } from 'hono';
+import {issueOfflineV5,settleOfflineV5} from '../v5-offline-operations';
 import { getTrackPoolBalances, atomsToTl } from '../economy-ledger';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
@@ -525,6 +526,40 @@ router.get('/offline/quote/:sha256', async (c) => {
     console.error('[TL3_V5_OFFLINE_QUOTE]',error);
     return c.json({ok:false,error:'오프라인 TL 잔액 확인에 실패했습니다.'},503);
   }
+});
+
+router.post('/offline/issue/:sha256',async(c)=>{
+ try{
+  const userId=await userFromRequest(c);
+  if(!userId)return c.json({ok:false,error:'오프라인 이용권 준비에는 최초 로그인이 필요합니다.'},401);
+  await ensureV5Tables(c.env.DB);
+  const sha=String(c.req.param('sha256')||'').toLowerCase();
+  const data=await c.req.json<any>();
+  const result=await issueOfflineV5(c.env,{userId,playerId:String(data?.player_id||''),containerSha256:sha,requestId:String(data?.request_id||''),seconds:Number(data?.seconds)});
+  return c.json(result);
+ }catch(e:any){
+  const code=String(e?.message||'OFFLINE_ISSUE_FAILED');
+  if(/INVALID_INPUT|REPLAY_CONFLICT|NOT_FOUND|INSUFFICIENT/.test(code))
+    return c.json({ok:false,code,error:'오프라인 이용권 발급 조건을 확인해 주세요.'},/INSUFFICIENT/.test(code)?402:409);
+  console.error('[TL3_OFFLINE_ISSUE]',code);
+  return c.json({ok:false,code,error:'서버 오프라인 이용권 발급 준비가 완료되지 않았습니다.'},503);
+ }
+});
+router.post('/offline/settle',async(c)=>{
+ try{
+  const userId=await userFromRequest(c);
+  if(!userId)return c.json({ok:false,error:'청취 내역 정산을 위해 로그인해 주세요.'},401);
+  const input=await c.req.json<any>();
+  return c.json(await settleOfflineV5(c.env,{
+    userId,entitlementId:String(input?.entitlement_id||''),receipts:input?.receipts,signature:String(input?.signature||'')
+  }));
+ }catch(e:any){
+  const code=String(e?.message||'OFFLINE_SETTLEMENT_FAILED');
+  if(/INVALID|NOT_FOUND|REPLAY|EXCEEDED|CONFLICT/.test(code))
+    return c.json({ok:false,code,error:'오프라인 청취 기록을 확인할 수 없습니다.'},409);
+  console.error('[TL3_OFFLINE_SETTLEMENT]',code);
+  return c.json({ok:false,code,error:'오프라인 정산에 실패했습니다. 기록은 보관하고 다시 시도해 주세요.'},503);
+ }
 });
 
 router.post('/session-license/:id', async (c) => {
