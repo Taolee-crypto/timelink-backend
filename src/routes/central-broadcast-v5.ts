@@ -190,8 +190,10 @@ router.post('/airtime/record', async c => {
       return c.json({ok:false,error:'BROADCAST_RIGHTS_NOT_GRANTED'},403);
     // Snapshot the effective administrator discount at evidence ingestion.
     // A future edit must never reprice already recorded broadcast intervals.
+    // Fail closed when policy storage is unavailable: never silently apply
+    // the default rate after an administrator has configured another rate.
     const policy=await c.env.DB.prepare(`SELECT coefficient_bps,revision
-      FROM tilo_broadcast_discount_policy WHERE id=1`).first<{coefficient_bps:number;revision:number}>().catch(()=>null);
+      FROM tilo_broadcast_discount_policy WHERE id=1`).first<{coefficient_bps:number;revision:number}>();
     const coefficientBps=policy?.coefficient_bps??3000;
     if(!Number.isSafeInteger(coefficientBps)||coefficientBps<0||coefficientBps>10000)
       return c.json({ok:false,error:'INVALID_DISCOUNT_CONFIGURATION'},503);
