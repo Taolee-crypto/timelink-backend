@@ -1,9 +1,17 @@
 import { permittedStationTracks } from './tilo-station';
 import { planTiloBroadcast } from './tilo-v5-scheduler';
+import { tiloLocalSchedule, TILO_COUNTRY_ZONES, type TiloCountryCode } from './tilo-country-clock';
 
 /** Payment changes priority only. Both pools come from the same public,
- * rights-declared V5 inventory. The day/country seed keeps receivers in sync. */
+ * rights-declared V5 inventory. A COUNTRY-LOCAL calendar-day seed keeps
+ * receivers in sync through UTC midnight and US daylight-saving changes. */
+export function tiloStationBroadcastDayKey(country:string, now:Date):string {
+  if(!Object.prototype.hasOwnProperty.call(TILO_COUNTRY_ZONES,country)||
+     !Number.isFinite(now.getTime()))throw new RangeError('Invalid station country or clock');
+  return country+':'+tiloLocalSchedule(country as TiloCountryCode,now).localDate;
+}
 export async function scheduledStationTracks(db:D1Database,country:string,now:Date) {
+  const dayKey=tiloStationBroadcastDayKey(country,now);
   const tracks=await permittedStationTracks(db,country);
   if(!tracks.length)return tracks;
   let orders: {file_id:number}[]=[];
@@ -21,7 +29,7 @@ export async function scheduledStationTracks(db:D1Database,country:string,now:Da
   }
   const promoted=new Set(orders.map(o=>Number(o.file_id)));
   let seed=2166136261;
-  for(const c of country+now.toISOString().slice(0,10))seed=Math.imul(seed^c.charCodeAt(0),16777619)>>>0;
+  for(const c of dayKey)seed=Math.imul(seed^c.charCodeAt(0),16777619)>>>0;
   const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
   const plan=planTiloBroadcast(tracks.map(t=>({fileId:t.file_id,artist:t.artist,
     durationMs:t.duration_ms,eligiblePromotion:promoted.has(t.file_id),campaignId:promoted.has(t.file_id)?t.file_id:null})),
