@@ -64,7 +64,7 @@ router.get('/settlement/local-day-preview',async c=>{
   const country=String(c.req.query('country')||'').toUpperCase();
   const day=String(c.req.query('local_day')||'');
   if(!['KR','JP','US','CN','TH','VN'].includes(country)||
-     !/^\\d{4}-\\d{2}-\\d{2}$/.test(day))return c.json({ok:false,error:'INVALID_LOCAL_DAY'},400);
+     !/^\d{4}-\d{2}-\d{2}$/.test(day))return c.json({ok:false,error:'INVALID_LOCAL_DAY'},400);
   const zones:Record<string,string>={KR:'Asia/Seoul',JP:'Asia/Tokyo',US:'America/New_York',CN:'Asia/Shanghai',TH:'Asia/Bangkok',VN:'Asia/Ho_Chi_Minh'};
   const localDay=(iso:string)=>{
     const parts=new Intl.DateTimeFormat('en-US',{timeZone:zones[country],year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(iso));
