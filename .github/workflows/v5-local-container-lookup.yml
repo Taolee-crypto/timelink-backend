@@ -1,0 +1,28 @@
+name: V5 local encrypted container identity
+on:
+  pull_request:
+    paths:
+      - 'src/routes/tl3-v5.ts'
+      - 'scripts/test-v5-local-container-lookup.cjs'
+      - '.github/workflows/v5-local-container-lookup.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/routes/tl3-v5.ts'
+      - 'scripts/test-v5-local-container-lookup.cjs'
+      - '.github/workflows/v5-local-container-lookup.yml'
+permissions:
+  contents: read
+jobs:
+  hash-map:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node scripts/test-v5-local-container-lookup.cjs
+      - run: npx --no-install tsc --noEmit
