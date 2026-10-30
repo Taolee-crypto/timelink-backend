@@ -492,6 +492,41 @@ async function authorizedTiloBroadcast(db:D1Database,userId:number,fileId:number
   return (await permittedStationTracks(db,country)).some(track=>track.file_id===fileId);
 }
 
+// Safe eligibility quote only. Does NOT reserve TL, issue a key or promise offline playback.
+// The production grant/settlement transaction must be atomic before being enabled.
+router.get('/offline/quote/:sha256', async (c) => {
+  try{
+    const userId=await userFromRequest(c);
+    if(!userId)return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const sha=String(c.req.param('sha256')||'').toLowerCase();
+    if(!/^[a-f0-9]{64}$/.test(sha))return c.json({ok:false,error:'TL3 파일 확인값이 올바르지 않습니다.'},400);
+    await ensureV5Tables(c.env.DB);
+    const row=await c.env.DB.prepare(`SELECT v.file_id,v.share_id,v.duration_ms
+      FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id
+      WHERE v.container_sha256=? AND v.status='sealed'
+        AND f.shared=1 AND LOWER(f.file_type)='audio/tl3'
+        AND COALESCE(f.revenue_held,0)=0
+        AND EXISTS(SELECT 1 FROM tl_creator_metadata m
+          WHERE m.file_id=v.file_id AND m.user_id=v.user_id
+            AND m.rights_declared=1 AND m.rights_role IN ('owner','authorized_agent','licensee')
+            AND m.rights_scope IN ('master_recording','distribution_license','delegated_scope')
+            AND m.declaration_status IN ('declared','verified','approved'))
+      LIMIT 1`).bind(sha).first<any>();
+    if(!row)return c.json({ok:false,error:'권리 확인된 TL3 V5 음원을 찾지 못했습니다.'},404);
+    const pools=await getTrackPoolBalances(c.env.DB,userId,String(row.share_id));
+    const atoms=Number(pools.paid||0)+Number(pools.bonus||0)+Number(pools.ad||0);
+    if(!Number.isSafeInteger(atoms)||atoms<0)throw Error('INVALID_OFFLINE_QUOTE_BALANCE');
+    const maxSeconds=Math.min(86400,Math.floor(atoms/10000));
+    return c.json({ok:true,file_id:Number(row.file_id),share_id:String(row.share_id),
+      max_reservable_seconds:maxSeconds,can_reserve:maxSeconds>0,
+      reservation_created:false,license_issued:false,
+      note:'현재 잔액 안내입니다. 실제 오프라인 이용권은 아직 발급되지 않습니다.'});
+  }catch(error){
+    console.error('[TL3_V5_OFFLINE_QUOTE]',error);
+    return c.json({ok:false,error:'오프라인 TL 잔액 확인에 실패했습니다.'},503);
+  }
+});
+
 router.post('/session-license/:id', async (c) => {
   try {
     const userId = await userFromRequest(c);
