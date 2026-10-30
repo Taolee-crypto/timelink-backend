@@ -2731,26 +2731,9 @@ app.post('/api/v1/tl3/offline/start', async (c) => {
 
 // GET /api/v1/tl3/offline/lic/:session_id — lic 반환 (세션당 1회)
 app.get('/api/v1/tl3/offline/lic/:session_id', async (c) => {
-  try {
-    const auth = c.req.header('Authorization')?.replace('Bearer ','').trim() || '';
-    const payload = auth ? await verifyToken(auth, c.env.JWT_SECRET) : null;
-    if (!payload) return c.json({ok:false,error:'로그인이 필요합니다.'},401);
-    const u = await c.env.DB.prepare('SELECT * FROM users WHERE id=? AND is_active=1').bind(Number(payload.sub)).first<any>();
-    if (!u) return c.json({ok:false,error:'사용자를 찾을 수 없습니다.'},401);
-
-    const sid = String(c.req.param('session_id') || '');
-    const ss = await c.env.DB.prepare('SELECT * FROM tl3_offline_sessions WHERE id=? AND user_id=?').bind(sid,u.id).first<any>();
-    if (!ss) return c.json({ok:false,error:'세션을 찾을 수 없습니다.'},404);
-    if (ss.status !== 'active') return c.json({ok:false,error:'활성 세션이 아닙니다.',status:ss.status},409);
-    if (Number(ss.lic_delivered) === 1) return c.json({ok:false,error:'이미 lic이 전달된 세션입니다.'},409);
-    if (new Date(ss.expires_at).getTime() < Date.now()) return c.json({ok:false,error:'세션이 만료되었습니다.'},410);
-
-    const masterSecret = c.env.TL3_MASTER_SECRET;
-    if (!masterSecret) return c.json({ ok: false, error: 'TL3_MASTER_SECRET is not configured' }, 503);
-    const lic = await deriveLicenseBytes(masterSecret, ss.share_id);
-    await c.env.DB.prepare("UPDATE tl3_offline_sessions SET lic_delivered=1,updated_at=datetime('now') WHERE id=?").bind(sid).run();
-    return c.json({ok:true, lic:hex(lic), share_id:ss.share_id, total_segments:Number(ss.total_segments)});
-  } catch(e:any) { return c.json({ok:false,error:e.message||'offline lic error'},500); }
+  // V3 offline sessions are retired; never expose derived license bytes
+  // independently from a verified V5 entitlement and reserved ledger debit.
+  return c.json({ok:false,code:'V3_OFFLINE_LEDGER_PENDING',error:'구형 오프라인 라이선스 발급은 중단되었습니다. V5 정산형 청취권을 사용해야 합니다.'},410);
 });
 
 app.post('/api/v1/tl3/offline/settle', async (c) => {
