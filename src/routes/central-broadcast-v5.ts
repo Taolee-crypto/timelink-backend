@@ -92,9 +92,13 @@ router.get('/settlement/local-day-preview',async c=>{
       totals.set(id,prev);
     }
     const allocations=[...totals.values()].sort((a,b)=>a.creator_id-b.creator_id);
+    const totalCreatorAtoms=allocations.reduce((n,r)=>n+r.creator_atoms,0);
+    const totalPlatformAtoms=allocations.reduce((n,r)=>n+r.platform_atoms,0);
+    if(!Number.isSafeInteger(totalCreatorAtoms)||!Number.isSafeInteger(totalPlatformAtoms))
+      return c.json({ok:false,error:'SETTLEMENT_OVERFLOW'},409);
     return c.json({ok:true,country,local_day:day,allocations,posted:false,
-      total_creator_atoms:allocations.reduce((n,r)=>n+r.creator_atoms,0),
-      total_platform_atoms:allocations.reduce((n,r)=>n+r.platform_atoms,0),
+      total_creator_atoms:totalCreatorAtoms,
+      total_platform_atoms:totalPlatformAtoms,
       note:'Read-only reconciliation. No ledger entries or wallet credits are posted.'});
   }catch{return c.json({ok:false,error:'SETTLEMENT_PREVIEW_UNAVAILABLE'},503)}
 });
