@@ -8,7 +8,7 @@ const bundle=path.join(temp,'creator.cjs');
 buildSync({stdin:{contents:"export {default as discovery,ensureDiscovery} from './src/routes/music-discovery';export {makeAccessToken} from './src/auth';",resolveDir:process.cwd(),loader:'ts'},outfile:bundle,format:'cjs',platform:'node',bundle:true,logLevel:'silent'});
 const api=require(bundle),sql=new DatabaseSync(':memory:');
 sql.exec("CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT,is_active INTEGER DEFAULT 1,account_forfeited INTEGER DEFAULT 0);INSERT INTO users(id,email) VALUES(7,'owner@example.test'),(8,'other@example.test')");
-const db={prepare(query){let args=[];const statement={bind(...p){args=p;return statement},async first(){return sql.prepare(query).get(...args)||null},async all(){return {results:sql.prepare(query).all(...args)}},async run(){return sql.prepare(query).run(...args)}};return statement;}};
+const db={async exec(statement){sql.exec(statement);return {count:0,duration:0}},prepare(query){let args=[];const statement={bind(...p){args=p;return statement},async first(){return sql.prepare(query).get(...args)||null},async all(){return {results:sql.prepare(query).all(...args)}},async run(){return sql.prepare(query).run(...args)}};return statement;},async batch(items){sql.exec('BEGIN IMMEDIATE');try{const results=[];for(const x of items)results.push(await x.run());sql.exec('COMMIT');return results}catch(e){sql.exec('ROLLBACK');throw e}}};
 const stored=new Map(),writes=[];
 const r2={
  async put(key,body,options){stored.set(key,new Uint8Array(body));writes.push({action:'put',key,contentType:options?.httpMetadata?.contentType});},
