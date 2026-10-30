@@ -1,0 +1,10 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const ts=fs.readFileSync('src/v5-offline-settlement-contract.ts','utf8');
+assert.match(ts,/fileSpentTl:fromFile/);
+assert.match(ts,/personalSpentTl:used-fromFile/);
+assert.match(ts,/OFFLINE_V5_RESERVATION_EXCEEDED/);
+assert.match(ts,/OFFLINE_V5_RECEIPT_REPLAY_OR_SEQUENCE/);
+assert.match(ts,/Number\.isSafeInteger\(total\)/);
+console.log('PASS V5 offline settlement source guards');
