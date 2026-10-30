@@ -7,6 +7,7 @@ import {assertTLAtomScale,ensureLedgerAccount,getTrackPoolBalances,postLedgerTra
  */
 export async function reserveOfflineV5TrackTl(db:D1Database,input:{
   userId:number;shareId:string;entitlementId:string;seconds:number;
+  atomicStatements?:D1PreparedStatement[];
 }){
   const {userId,shareId,entitlementId,seconds}=input;
   if(!Number.isSafeInteger(userId)||userId<=0||
@@ -65,7 +66,7 @@ export async function reserveOfflineV5TrackTl(db:D1Database,input:{
     referenceType:'offline_entitlement',referenceId:entitlementId,
     actorUserId:String(userId),description:'V5 오프라인 청취 예약 — 곡별 기보유 TL만 에스크로 이동',
     metadata:{share_id:shareId,reserved_seconds:seconds,amount_atoms:amountAtoms,source_atoms:used},
-    lines
+    lines,atomicStatements:input.atomicStatements
   });
   return {entitlementId,seconds,amountAtoms,sourceAtoms:used,escrowAccountId:escrow,ledgerTransactionId:posted.id,replayed:posted.replayed};
 }
