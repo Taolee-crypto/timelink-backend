@@ -113,6 +113,17 @@ async function ownedStore(db:Env['DB'],userId:number,channelId:string){
  const store=await db.prepare("SELECT channel_id FROM cafe_channels WHERE channel_id=? AND owner_id=? AND status='active'").bind(channelId,userId).first();
  return !!store;
 }
+async function settleStoreReferralIfAny(db:Env['DB'],userId:number){
+ try{
+   const claim=await db.prepare('SELECT referrer_user_id FROM v5_member_referral_claims WHERE referred_user_id=?')
+     .bind(userId).first<any>();
+   if(!claim?.referrer_user_id)return null;
+   return await settleVerifiedReferral(db,Number(claim.referrer_user_id),userId,'store_first_paid');
+ }catch(error){
+   console.warn('[STORE_REFERRAL_RETRY_PENDING]',String(error));
+   return null;
+ }
+}
 payment.post('/v5/commercial-time/toss/prepare',async c=>{
  const uid=await authUserId(c);if(!uid)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
  const b=await c.req.json<any>().catch(()=>null),p=validatedStoreAirtime(b),channelId=String(b?.channel_id||'');
@@ -143,7 +154,8 @@ payment.post('/v5/commercial-time/toss/confirm',async c=>{
    // Never repair a missing grant here: replay must not reset consumed airtime.
    const grant=await c.env.DB.prepare("SELECT granted_seconds FROM v5_store_airtime_grants WHERE order_id=? AND user_id=? AND channel_id=? AND granted_seconds=?").bind(orderId,Number(uid),o.channel_id,Number(o.seconds)).first<any>();
    if(!grant)return c.json({ok:false,error:'ENTITLEMENT_NOT_GRANTED'},503);
-   return c.json({ok:true,alreadyCompleted:true,seconds:Number(grant.granted_seconds),amount,channelId:o.channel_id,mode:'test',entitlementType:'store_airtime',tlBCredited:false});
+   const referralReward=await settleStoreReferralIfAny(c.env.DB,Number(uid));
+   return c.json({ok:true,alreadyCompleted:true,seconds:Number(grant.granted_seconds),amount,channelId:o.channel_id,mode:'test',entitlementType:'store_airtime',tlBCredited:false,referralReward});
   }
   if(o.status!=='pending')return c.json({ok:false,error:'ORDER_NOT_PENDING'},409);
   const secret=String(c.env.TOSS_SECRET_KEY||'');
@@ -169,14 +181,9 @@ payment.post('/v5/commercial-time/toss/confirm',async c=>{
   if(!grant)return c.json({ok:false,error:'ENTITLEMENT_NOT_GRANTED'},503);
   // First sandbox store payment is already confirmed by Toss and the
   // airtime entitlement. Referral reward failure cannot undo the paid order;
-  // its unique milestone can be retried independently without double credit.
-  try{
-    const claim=await c.env.DB.prepare('SELECT referrer_user_id FROM v5_member_referral_claims WHERE referred_user_id=?')
-      .bind(Number(uid)).first<any>();
-    if(claim?.referrer_user_id)
-      await settleVerifiedReferral(c.env.DB,Number(claim.referrer_user_id),Number(uid),'store_first_paid');
-  }catch(error){console.warn('[STORE_REFERRAL_RETRY_PENDING]',String(error));}
-  return c.json({ok:true,seconds:Number(grant.granted_seconds),amount,channelId:o.channel_id,mode:'test',entitlementType:'store_airtime',tlBCredited:false});
+  // a replay of this same confirmed order retries the idempotent referral milestone.
+  const referralReward=await settleStoreReferralIfAny(c.env.DB,Number(uid));
+  return c.json({ok:true,seconds:Number(grant.granted_seconds),amount,channelId:o.channel_id,mode:'test',entitlementType:'store_airtime',tlBCredited:false,referralReward});
  }catch(e){console.error('[STORE_AIRTIME_CONFIRM]',e);return c.json({ok:false,error:'STORE_CONFIRM_UNAVAILABLE'},503);}
 });
 payment.get('/v5/commercial-time/balance',async c=>{
