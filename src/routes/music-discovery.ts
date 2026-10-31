@@ -32,7 +32,7 @@ export async function ensureDiscovery(db:D1Database){
 async function requireAdmin(c:any):Promise<number>{
   const id=Number(c.get('user')?.id||0);
   if(!Number.isSafeInteger(id)||id<=0)return 0;
-  const row=await c.env.DB.prepare('SELECT role FROM users WHERE id=? LIMIT 1').bind(id).first<any>().catch(()=>null);
+  const row=await c.env.DB.prepare('SELECT role FROM users WHERE id=? LIMIT 1').bind(id).first().catch(()=>null) as any;
   return ['admin','super_admin'].includes(String(row?.role||'').toLowerCase())?id:0;
 }
 router.get('/',async c=>{
@@ -57,7 +57,7 @@ router.post('/',async c=>{
   let metadataObject:any;
   try{metadataObject=JSON.parse(metadata);}catch{return c.json({error:'INVALID_METADATA'},400);}
   if(!metadataObject||typeof metadataObject!=='object'||Array.isArray(metadataObject)||
-     metadataObject.source!=='creator-existing-recording-review'||
+     (metadataObject.source!=null&&metadataObject.source!==''&&metadataObject.source!=='creator-existing-recording-review')||
      !['recording_owner','composition_owner','authorized_agent'].includes(String(metadataObject.rights_role||''))||
      metadataObject.acknowledgement!=='pending_manual_verification')
     return c.json({error:'RIGHTS_REVIEW_DECLARATION_REQUIRED'},400);
