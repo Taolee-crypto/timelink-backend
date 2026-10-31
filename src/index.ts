@@ -17,7 +17,9 @@ import { planTiloBroadcast } from './tilo-v5-scheduler';
 import { bodyLimit } from 'hono/body-limit';
 import { buildCertTL3 } from './cert3';  // CERT3_ROUTE_V1
 import { buildTL3SpineV4, verifyTL3SpineV4Container } from './tl3spine';
-import tl3V5Router from './routes/tl3-v5';
+import tl3V5Router,{resolveMasterKeyring,unwrapAssetKey} from './routes/tl3-v5';
+import {reserveOfflineV5TrackTl} from './v5-offline-ledger-reservation';
+import {buildPortableCapsule,appendPortableCapsule} from './v5-portable-tl3';
 import centralBroadcastV5Router from './routes/central-broadcast-v5';
 import tiloV5ApprovalsRouter from './routes/tilo-v5-approvals';
 import v5MusicGateAdminRouter from './routes/v5-music-gate-admin';
@@ -2210,12 +2212,14 @@ app.get('/api/v1/tl3/file/:shareId', async (c) => {
     // V5 uses its own sealed release table and D1 object key. Do not fall
     // through to legacy V3/V4 tables for a V5 asset.
     const v5Release = await c.env.DB.prepare(
-      "SELECT file_id,object_key,container_bytes FROM tl3_v5_releases WHERE file_id=? AND status='sealed'"
+      "SELECT file_id,share_id,object_key,container_bytes,container_sha256,wrapped_content_key,COALESCE(key_id,'legacy') AS key_id FROM tl3_v5_releases WHERE file_id=? AND status='sealed'"
     ).bind(fileId).first<any>().catch(()=>null);
     if (v5Release) {
       const token=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();
       const requester=token?await verifyToken(token,c.env.JWT_SECRET):null;
       if(!requester) return c.json({ok:false,error:'TL3 다운로드는 로그인이 필요합니다.'},401);
+      const userId=Number(requester.sub||0);
+      if(!Number.isSafeInteger(userId)||userId<=0)return c.json({ok:false,error:'로그인 정보가 올바르지 않습니다.'},401);
       const cert=await c.env.DB.prepare(
         "SELECT c.cert_no FROM tl_asset_certs c JOIN tl_assets a ON a.asset_id=c.asset_id WHERE a.file_id=? AND c.status='active' ORDER BY c.id DESC LIMIT 1"
       ).bind(fileId).first<any>();
@@ -2224,14 +2228,54 @@ app.get('/api/v1/tl3/file/:shareId', async (c) => {
       if(!key) return c.json({ok:false,error:'TL3 V5 컨테이너 경로가 없습니다.'},409);
       const meta=await getD1ObjectMeta(c.env.DB,key);
       if(!meta || meta.size!==Number(v5Release.container_bytes)) return c.json({ok:false,error:'TL3 V5 컨테이너 저장 상태가 올바르지 않습니다.'},409);
-      const bytes=await readD1Range(c.env.DB,key,0,meta.size);
+      const base=await readD1Range(c.env.DB,key,0,meta.size);
+      await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tl3_v5_portable_downloads(
+        grant_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,file_id INTEGER NOT NULL,share_id TEXT NOT NULL,
+        base_sha256 TEXT NOT NULL,reserved_seconds INTEGER NOT NULL,capsule_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now'))
+      )`).run();
+      await c.env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tl3_v5_portable_user_file ON tl3_v5_portable_downloads(user_id,file_id,base_sha256,status)").run();
+      let portable=await c.env.DB.prepare(`SELECT grant_id,reserved_seconds,capsule_json,status FROM tl3_v5_portable_downloads
+        WHERE user_id=? AND file_id=? AND base_sha256=? AND status='active' ORDER BY created_at DESC LIMIT 1`)
+        .bind(userId,fileId,String(v5Release.container_sha256||'').toLowerCase()).first<any>();
+      if(!portable){
+        const pools=await getTrackPoolBalances(c.env.DB,userId,String(v5Release.share_id));
+        const atoms=Number(pools.paid||0)+Number(pools.bonus||0)+Number(pools.ad||0);
+        if(!Number.isSafeInteger(atoms)||atoms<0)throw new Error('PORTABLE_TL3_BALANCE_INVALID');
+        const seconds=Math.min(86400,Math.floor(atoms/TL_ATOMS_PER_TL));
+        if(seconds<=0)return c.json({ok:false,code:'TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 없어 휴대형 TL3를 만들 수 없습니다.'},402);
+        const grantId='ptl_'+Array.from(crypto.getRandomValues(new Uint8Array(18))).map(b=>b.toString(16).padStart(2,'0')).join('');
+        const masterKeys=resolveMasterKeyring(c.env);
+        const masterKey=masterKeys.keys[String(v5Release.key_id||'legacy')];
+        if(!masterKey)return c.json({ok:false,code:'TL3_MASTER_KEY_MISSING',error:'이 자산의 마스터 키를 찾을 수 없습니다.'},503);
+        const contentKey=await unwrapAssetKey(masterKey,fileId,String(v5Release.share_id),String(v5Release.wrapped_content_key));
+        const capsule=await buildPortableCapsule(base,contentKey,{grantId,fileId,shareId:String(v5Release.share_id),reservedSeconds:seconds});
+        contentKey.fill(0);
+        const capsuleJson=JSON.stringify(capsule);
+        await c.env.DB.prepare(`INSERT INTO tl3_v5_portable_downloads
+          (grant_id,user_id,file_id,share_id,base_sha256,reserved_seconds,capsule_json,status)
+          VALUES(?,?,?,?,?,?,?,'pending')`).bind(grantId,userId,fileId,String(v5Release.share_id),
+            String(v5Release.container_sha256||'').toLowerCase(),seconds,capsuleJson).run();
+        try{
+          await reserveOfflineV5TrackTl(c.env.DB,{userId,shareId:String(v5Release.share_id),entitlementId:grantId,seconds});
+          await c.env.DB.prepare("UPDATE tl3_v5_portable_downloads SET status='active',updated_at=datetime('now') WHERE grant_id=?")
+            .bind(grantId).run();
+        }catch(error){
+          await c.env.DB.prepare("DELETE FROM tl3_v5_portable_downloads WHERE grant_id=? AND status='pending'").bind(grantId).run().catch(()=>{});
+          throw error;
+        }
+        portable={grant_id:grantId,reserved_seconds:seconds,capsule_json:capsuleJson,status:'active'};
+      }
+      const capsule=JSON.parse(String(portable.capsule_json||'{}'));
+      const bytes=appendPortableCapsule(base,capsule);
       const file=await c.env.DB.prepare('SELECT title FROM tl_files WHERE id=?').bind(fileId).first<any>();
       const safeTitle=String(file?.title||shareId).replace(/[\\/:*?"<>|]/g,'_').slice(0,80);
       const encodedTitle=encodeURIComponent(safeTitle)+'.tl3';
       return new Response(bytes,{status:200,headers:{
         'Content-Type':'application/octet-stream','Content-Length':String(bytes.byteLength),
         'Content-Disposition':"attachment; filename=\"track.tl3\"; filename*=UTF-8''"+encodedTitle,
-        'Cache-Control':'private, no-store','X-TL3-Version':'5','Access-Control-Allow-Origin':'*'
+        'Cache-Control':'private, no-store','X-TL3-Version':'5','X-TL3-Portable-Seconds':String(portable.reserved_seconds),
+        'Access-Control-Allow-Origin':'*','Access-Control-Expose-Headers':'Content-Disposition, Content-Length, X-TL3-Portable-Seconds'
       }});
     }
     // Spine V4 stores its sealed container under the per-release object_key.
