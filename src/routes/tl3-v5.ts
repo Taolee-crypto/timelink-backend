@@ -14,6 +14,7 @@ import { getTrackPoolBalances, atomsToTl } from '../economy-ledger';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 import { ensureD1Storage, putD1Object, getD1ObjectMeta, readD1Range } from '../d1-storage';
+import {findRegisteredRecordingDuplicate,normalizeIsrc,recordRecordingIdentity} from '../v5-recording-identity';
 
 const router = new Hono<{ Bindings: Env }>();
 const te = new TextEncoder();
@@ -261,16 +262,25 @@ router.post('/manufacture', async (c) => {
     await ensureD1Storage(c.env.DB);
 
     const sourceHash = hex(await sha256(raw));
-    // AI screening is advisory only. Authentication, source hashing, MP3 validation
-    // and rights declarations remain enforced independently of AI availability/results.
-    // Rights evidence is embedded inside the encrypted V5 manifest.
-    // Imported catalogue metadata is informational, never proof of ownership.
+    // Registration identity is track-scoped: membership never grants a whole
+    // catalogue, and an already registered recording cannot be manufactured again.
     const spotifyReference=await c.env.DB.prepare('SELECT metadata_json FROM tl_creator_spotify_metadata WHERE file_id=? AND user_id=?')
       .bind(fileId,userId).first<{metadata_json:string}>().catch((e:unknown)=>{
         if(/no such table.*tl_creator_spotify_metadata/i.test(String(e)))return null;
         throw e;
       });
     const externalCatalogue=spotifyReference?JSON.parse(spotifyReference.metadata_json):null;
+    const canonicalIsrc=normalizeIsrc(metadata.isrc||externalCatalogue?.isrc||'');
+    const duplicate=await findRegisteredRecordingDuplicate(c.env.DB,{
+      sourceSha256:sourceHash,isrc:canonicalIsrc,excludeFileId:fileId
+    });
+    if(duplicate)return c.json({ok:false,code:'TRACK_ALREADY_REGISTERED',
+      duplicate_by:duplicate.matched_by,file_id:duplicate.file_id,share_id:duplicate.share_id,
+      error:'이미 TimeLink에 등록된 음원과 일치합니다. 기존 곡의 권리 관계 또는 공유 기능을 확인하세요.'},409);
+    // AI screening is advisory only. Authentication, source hashing, MP3 validation
+    // and rights declarations remain enforced independently of AI availability/results.
+    // Rights evidence is embedded inside the encrypted V5 manifest.
+    // Imported catalogue metadata is informational, never proof of ownership.
     const contributorSplit=await readCreatorSplit(c.env.DB,fileId);
     const rightsKind=metadata.rights_kind==='ai_creation'?'ai_creation':'copyright';
     const rightsEvidence={
@@ -346,6 +356,10 @@ router.post('/manufacture', async (c) => {
         container_sha256=excluded.container_sha256,wrapped_content_key=excluded.wrapped_content_key,
         key_id=excluded.key_id,container_bytes=excluded.container_bytes,status='sealed',updated_at=datetime('now')
     `).bind(fileId,userId,shareId,objectKey,durationMs,sourceHash,containerHash,wrappedKey,masterKeys.activeId,container.byteLength).run();
+    await recordRecordingIdentity(c.env.DB,{
+      fileId,userId,shareId,sourceSha256:sourceHash,isrc:canonicalIsrc,
+      title:metadata.title||file.title||'',artist:metadata.artist||file.artist||''
+    });
     await c.env.DB.prepare(
       "UPDATE tl_files SET file_type='audio/tl3',stream_url=?,shared=1,shared_to_shareplace=1,updated_at=datetime('now') WHERE id=? AND user_id=?"
     ).bind('https://api.timelink.digital/api/v1/tl3/v5/resolve/' + fileId,fileId,userId).run();
