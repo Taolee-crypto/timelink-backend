@@ -1,7 +1,7 @@
 name: V5 economy renewal validation
 on:
   pull_request:
-    paths: ['src/**', 'scripts/test-v5-economy-renewal.cjs', 'scripts/test-v5-tlc-gold-stages.cjs', 'scripts/test-v5-tlc-issuance-audit.cjs', 'scripts/test-v5-daily-free.mjs', 'scripts/test-v5-subscription-meter.cjs', 'scripts/test-v5-subscription-playback.cjs', 'scripts/test-v5-subscription-review.cjs', 'scripts/test-time-free.cjs', 'scripts/test-v5-music-orders.cjs', 'scripts/test-v5-display-metadata.cjs', 'scripts/test-v5-social-track-resolver.cjs', '.github/workflows/v5-economy-renewal.yml']
+    paths: ['src/**', 'scripts/test-v5-economy-renewal.cjs', 'scripts/test-member-referrals-v5.cjs', 'scripts/test-v5-referral-store-e2e.cjs', 'scripts/test-v5-tlc-gold-stages.cjs', 'scripts/test-v5-tlc-issuance-audit.cjs', 'scripts/test-v5-daily-free.mjs', 'scripts/test-v5-subscription-meter.cjs', 'scripts/test-v5-subscription-playback.cjs', 'scripts/test-v5-subscription-review.cjs', 'scripts/test-time-free.cjs', 'scripts/test-v5-music-orders.cjs', 'scripts/test-v5-display-metadata.cjs', 'scripts/test-v5-social-track-resolver.cjs', '.github/workflows/v5-economy-renewal.yml']
   push:
     branches: [main]
     paths: ['src/**', 'scripts/test-time-free.cjs', 'scripts/test-v5-music-orders.cjs', 'scripts/test-v5-subscription-meter.cjs', 'scripts/test-v5-subscription-playback.cjs', 'scripts/test-v5-subscription-review.cjs', '.github/workflows/v5-economy-renewal.yml']
@@ -23,6 +23,8 @@ jobs:
       - run: node scripts/test-v5-subscription-review.cjs
       - run: node scripts/test-v5-music-orders.cjs
       - run: node scripts/test-v5-economy-renewal.cjs
+      - run: node scripts/test-member-referrals-v5.cjs
+      - run: node scripts/test-v5-referral-store-e2e.cjs
       - run: node scripts/test-v5-tlc-gold-stages.cjs
       - run: node scripts/test-v5-my-shares-dashboard.cjs
       - run: node scripts/test-v5-share-delete-ownership.cjs
