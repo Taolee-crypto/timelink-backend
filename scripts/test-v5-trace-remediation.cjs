@@ -134,4 +134,6 @@ async function main(){
 
 
 }
+// Include structural retirement and four-category weights in existing V5 CI suite.
+require('./test-v5-retired-reward-rules.cjs');
 main().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>{sqlite.close();fs.rmSync(temp,{recursive:true,force:true})});
