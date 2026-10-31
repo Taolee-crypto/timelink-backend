@@ -316,9 +316,14 @@ router.post('/manufacture', async (c) => {
     const plain = concat(u32(manifestBytes.byteLength), manifestBytes, raw);
     const contentKey = crypto.getRandomValues(new Uint8Array(32));
     const nonce = crypto.getRandomValues(new Uint8Array(12));
+    // LOVE CODE is recognition, not listening authorization. Every TL3 carries
+    // a public file-side signal so any official TimeLink Player can recognize it
+    // and combine it with a fresh per-entry Player code. No TL balance, user,
+    // device or listening right is embedded in this signal.
     const bootstrap = {
       profile:'TL3-V5', algorithm:'AES-256-GCM', nonce:b64u(nonce),
-      ciphertext_bytes:plain.byteLength + 16
+      ciphertext_bytes:plain.byteLength + 16,
+      love_code:{version:1,file_signal:randomId(24)}
     };
     const bootstrapBytes = te.encode(JSON.stringify(bootstrap));
     const prefix = concat(MAGIC, new Uint8Array([5]), u32(bootstrapBytes.byteLength), bootstrapBytes);
