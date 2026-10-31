@@ -6,6 +6,12 @@ import type { Env } from '../types';
 import { verifyToken } from '../auth';
 
 const router = new Hono<{ Bindings: Env }>();
+// Retired human DJ broadcasting: historic GET records remain readable;
+// POST/PUT/PATCH/DELETE cannot open new sessions, bonuses or bill stores.
+router.use('*',async(c,next)=>{
+ if(['GET','HEAD','OPTIONS'].includes(c.req.method))return next();
+ return c.json({ok:false,error:'RETIRED_DJ_BROADCAST',message:'DJ 방송 서비스는 종료되었습니다.'},410);
+});
 
 // ── 인증 헬퍼 ──
 async function authUser(c: Context<{ Bindings: Env }>): Promise<{id: number, user: any} | null> {
@@ -682,34 +688,8 @@ router.get('/my-bonuses', async (c) => {
 });
 
 // ── 보너스 지급 헬퍼 ──
-async function grantBonus(env: { DB: D1Database }, djId: number, sessionId: number, bonusType: string, amount: number, metadata: any): Promise<any> {
-  try {
-    const now = Date.now();
-
-    // 중복 체크 (같은 세션 + 같은 타입)
-    const existing = await env.DB.prepare(
-      'SELECT id FROM dj_bonus_logs WHERE dj_id=? AND session_id=? AND bonus_type=?'
-    ).bind(djId, sessionId, bonusType).first<any>();
-    if (existing) return null;
-
-    // 보너스 로그 기록
-    await env.DB.prepare(
-      'INSERT INTO dj_bonus_logs (dj_id, session_id, bonus_type, bonus_amount, metadata, created_at) VALUES (?,?,?,?,?,?)'
-    ).bind(djId, sessionId, bonusType, amount, JSON.stringify(metadata || {}), now).run();
-
-    // DJ 유저에게 TL_B 지급
-    const dj = await env.DB.prepare('SELECT user_id FROM dj_profiles WHERE id=?').bind(djId).first<any>();
-    if (dj && dj.user_id) {
-      await env.DB.prepare(
-        'UPDATE users SET tl_b = COALESCE(tl_b,0) + ?, tl = COALESCE(tl,0) + ? WHERE id=?'
-      ).bind(amount, amount, dj.user_id).run();
-    }
-
-    return { type: bonusType, amount, metadata };
-  } catch(e: any) {
-    console.error('[grantBonus]', e?.message);
-    return null;
-  }
+async function grantBonus(_env:{DB:D1Database},_djId:number,_sessionId:number,_bonusType:string,_amount:number,_metadata:any):Promise<any>{
+ return null; // Retired: never create DJ TL_B rewards or balance mutations.
 }
 
 // ── GET /api/dj-cafe/bonus-config — 보너스 설정 조회 (공개) ──
