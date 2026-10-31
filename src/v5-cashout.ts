@@ -38,7 +38,8 @@ export async function listenerCashoutEligibility(db:D1Database,userId:number){
   if(livePurchasedWalletAtoms>Number(paidAccountSnapshot?.available_atoms||0))throw Error('PURCHASED_PRINCIPAL_ATTRIBUTION_MISMATCH');
   return {livePurchasedWalletAtoms,paidAccountSnapshot,purchasedAtoms:purchased,grantedAtoms:granted,
     principalRemainingAtoms:Math.max(0,purchased-Number(reservations?.atoms||0)),
-    purchaseRatio:granted>0?purchased/granted:0,eligible:granted>0&&purchased*2>=granted,
+    purchaseRatio:granted>0?purchased/granted:0,ratioEligible:granted>0&&purchased*2>=granted,
+    eligible:granted>0&&purchased*2>=granted&&livePurchasedWalletAtoms>0,
     policyVersion:'listener-purchased-history-50pct-v5',
     // Imported legacy balances require evidence reconciliation before cashout.
     legacy_purchase_history_included:false};
@@ -53,7 +54,7 @@ export async function requestListenerCashout(db:D1Database,input:{userId:number;
   if(prior){const m=JSON.parse(prior.metadata_json);if(m.amount_atoms!==tlToAtoms(amountTL))throw new Error('IDEMPOTENCY_CONFLICT');return {ok:true,replayed:true,request_id:requestKey,fee_tl:m.fee_tl,net_tl:m.net_tl};}
   if(amountTL<policy.rules.exchange_min)throw new Error('MINIMUM_CASHOUT_AMOUNT');
   const eligibility=await listenerCashoutEligibility(db,userId);
-  if(!eligibility.eligible)throw new Error('PURCHASE_HISTORY_BELOW_50_PERCENT');
+  if(!eligibility.ratioEligible)throw new Error('PURCHASE_HISTORY_BELOW_50_PERCENT');
   const atoms=tlToAtoms(amountTL);
   if(atoms>eligibility.principalRemainingAtoms)throw new Error('PURCHASED_PRINCIPAL_LIMIT');
   if(atoms>eligibility.livePurchasedWalletAtoms)throw new Error('VERIFIED_LIVE_PURCHASE_BALANCE_REQUIRED');
