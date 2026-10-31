@@ -19,6 +19,14 @@ export async function ensureReferralRewardSchema(db:D1Database){
     UNIQUE(referred_user_id,milestone)
   )`).run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_v5_ref_rewards_referrer ON v5_referral_reward_receipts(referrer_user_id,status,created_at)').run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS v5_referral_store_refunds (
+    order_id TEXT PRIMARY KEY,
+    referred_user_id INTEGER NOT NULL,
+    refund_reference TEXT NOT NULL UNIQUE,
+    verified_by_admin INTEGER NOT NULL,
+    refunded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_v5_referral_store_refunds_user ON v5_referral_store_refunds(referred_user_id,refunded_at)').run();
 }
 export type ReferralMilestone = 'signup_verified'|'store_first_paid';
 function positiveInt(value:unknown):number{
@@ -57,6 +65,7 @@ export async function settleVerifiedReferral(db:D1Database,referrerIdInput:numbe
     JOIN v5_store_airtime_grants g ON g.order_id=o.order_id AND g.user_id=o.user_id
     WHERE o.user_id=? AND o.paid_at>=? AND o.status='paid' AND o.payment_key IS NOT NULL
       AND o.amount_krw>0 AND c.status='active'
+      AND NOT EXISTS(SELECT 1 FROM v5_referral_store_refunds rf WHERE rf.order_id=o.order_id)
     ORDER BY o.paid_at,o.order_id LIMIT 1`).bind(referredId,claim.created_at).first<any>().catch(()=>null);
   if(!paid)throw Error('VERIFIED_STORE_PAYMENT_REQUIRED');
   sourceReference='sandbox_store_payment:'+String(paid.order_id);
@@ -144,9 +153,47 @@ export async function reverseReferralReward(db:D1Database,actorId:number,milesto
 /** The active PoC estimator reads only immutable, server-created receipt facts. */
 export async function readReferralPocBonus(db:D1Database,userId:string,monthStart:string):Promise<number>{
  await ensureReferralRewardSchema(db);
- const row=await db.prepare(`SELECT COALESCE(SUM(poc_points),0) AS total
-    FROM v5_referral_reward_receipts
-    WHERE referrer_user_id=? AND status='posted' AND created_at>=?`)
+ const row=await db.prepare(`SELECT COALESCE(SUM(r.poc_points),0) AS total
+    FROM v5_referral_reward_receipts r
+    WHERE r.referrer_user_id=? AND r.status='posted' AND r.created_at>=?
+      AND NOT (r.milestone='store_first_paid' AND EXISTS(
+        SELECT 1 FROM v5_referral_store_refunds rf
+        WHERE r.source_reference='sandbox_store_payment:'||rf.order_id
+      ))`)
    .bind(Number(userId),monthStart).first<any>();
  return Math.max(0,Number(row?.total||0));
+}
+
+/** Record administrator-verified store refund evidence and reverse only the
+ * referral reward whose immutable source is that exact paid order. A refund of
+ * a later order must never reverse an earlier first-payment reward. */
+export async function reverseStoreReferralForRefund(db:D1Database,actorId:number,orderId:string,proofRef:string){
+ positiveInt(actorId);
+ if(!/^v5store_[a-f0-9]{32}$/.test(orderId)||typeof proofRef!=='string'||proofRef.length<8||proofRef.length>200)
+   throw Error('INVALID_STORE_REFERRAL_REFUND');
+ await ensureReferralRewardSchema(db);
+ const order=await db.prepare(`SELECT o.order_id,o.user_id,o.status,o.payment_key,g.order_id AS grant_order
+   FROM v5_store_airtime_orders o
+   JOIN v5_store_airtime_grants g ON g.order_id=o.order_id AND g.user_id=o.user_id
+   WHERE o.order_id=?`).bind(orderId).first<any>();
+ if(!order||order.status!=='paid'||!order.payment_key||!order.grant_order)
+   throw Error('VERIFIED_STORE_PAYMENT_REQUIRED');
+ const existing=await db.prepare('SELECT refund_reference FROM v5_referral_store_refunds WHERE order_id=?').bind(orderId).first<any>();
+ if(existing&&String(existing.refund_reference)!==proofRef)throw Error('REFUND_REFERENCE_CONFLICT');
+ if(!existing){
+   try{
+     await db.prepare('INSERT INTO v5_referral_store_refunds(order_id,referred_user_id,refund_reference,verified_by_admin) VALUES(?,?,?,?)')
+       .bind(orderId,Number(order.user_id),proofRef,actorId).run();
+   }catch(error){
+     const repeat=await db.prepare('SELECT order_id,refund_reference FROM v5_referral_store_refunds WHERE order_id=?').bind(orderId).first<any>();
+     if(!repeat||String(repeat.refund_reference)!==proofRef)throw error;
+   }
+ }
+ const source='sandbox_store_payment:'+orderId;
+ const receipt=await db.prepare(`SELECT milestone_key,status FROM v5_referral_reward_receipts
+   WHERE referred_user_id=? AND milestone='store_first_paid' AND source_reference=? LIMIT 1`)
+   .bind(Number(order.user_id),source).first<any>();
+ if(!receipt)return {ok:true,refund_recorded:true,reward_affected:false,already_reversed:false};
+ const reversed=await reverseReferralReward(db,actorId,String(receipt.milestone_key),proofRef);
+ return {ok:true,refund_recorded:true,reward_affected:true,...reversed};
 }
