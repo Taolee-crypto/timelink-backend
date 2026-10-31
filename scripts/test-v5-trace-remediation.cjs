@@ -53,17 +53,14 @@ async function main(){
  assert.equal((await readV5Wallet(db,1)).tl_balance,10500);
  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM tl_payments WHERE pg_id='pay-fail'").get().n,0);
  console.log('PASS verified payments: paid/bonus split, replay/conflict, atomic rollback');
- const session=await startAdReward(db,1,'ad-1');
- await assert.rejects(completeAdReward(db,1,'ad-1',session.session_id),/AD_SESSION_NOT_READY/);
+ // Deleted ads must never grant new TL_A while historical ledgers stay intact.
+ await assert.rejects(startAdReward(db,1,'ad-1'),/AD_REWARD_RETIRED/);
+ await assert.rejects(completeAdReward(db,1,'ad-1','old-session'),/AD_REWARD_RETIRED/);
  assert.equal((await readV5Wallet(db,1)).tl_a,0);
- sqlite.prepare('UPDATE v5_ad_reward_sessions SET started_at=unixepoch()-20 WHERE id=?').run(session.session_id);
- const awarded=await completeAdReward(db,1,'ad-1',session.session_id);
- assert.equal(awarded.tl_a_rewarded,300);
- assert.equal((await completeAdReward(db,1,'ad-1',session.session_id)).tl_a_rewarded,0);
- assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM ad_views').get().n,1);
- await assert.rejects(startAdReward(db,2,'ad-1'),/AD_BUDGET_EXHAUSTED/);
- assert.equal((await readV5Wallet(db,1)).tl_a,300);
- console.log('PASS ad rewards: elapsed session, exact-once ledger/view/budget, exhausted budget');
+ assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM ad_views').get().n,0);
+ assert.equal(sqlite.prepare("SELECT spent_tl FROM tl_ads WHERE id='ad-1'").get().spent_tl,0);
+ console.log('PASS retired ad rewards: no session, no TL_A and no budget spend');
+
  assert.equal((await permittedStationTracks(db,'KR')).length,0,'Undeclared V5 rights must never air');
  sqlite.exec('UPDATE tl_creator_metadata SET rights_declared=1');
  assert.equal((await permittedStationTracks(db,'KR')).length,1,'Public declared track is ordinary broadcast eligible without a second admin grant');
