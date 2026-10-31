@@ -359,7 +359,7 @@ eco.post('/consume', async (c) => {
       creatorEarnA = Number((consumedA * CREATOR_SHARE_RATE).toFixed(6));
       platformEarnA = Number((consumedA * PLATFORM_SHARE_RATE).toFixed(6));
 
-      // TL_B 소비도 공통 7:3 정책 적용: 창작자 70%는 출처 제한을 보존해 TL_A로 지급
+      // TL_B 유래 창작자 70%는 비환금성 TL_B로 지급한다 (광고 TL_A로 재분류 금지)
       creatorEarnB = Number((consumedB * CREATOR_SHARE_RATE).toFixed(6));
       platformEarnB = Number((consumedB * PLATFORM_SHARE_RATE).toFixed(6));
 
@@ -369,11 +369,12 @@ eco.post('/consume', async (c) => {
             tl_p = tl_p + ?,
             tl = tl + ?,
             tl_a = tl_a + ?,
+            tl_b = tl_b + ?,
             total_tl_earned = total_tl_earned + ?
           WHERE id=?
         `).bind(
           creatorEarnP, creatorEarnP,
-          creatorEarnA + creatorEarnB,
+          creatorEarnA, creatorEarnB,
           creatorEarnP + creatorEarnA + creatorEarnB,
           share.creator_id
         ).run();
@@ -415,7 +416,7 @@ eco.post('/consume', async (c) => {
     return c.json({
       ok: true,
       consumed: { tl_p: consumedP, tl_a: consumedA, tl_b: consumedB, total: actualConsumed },
-      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA + creatorEarnB },
+      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA, tl_b: creatorEarnB },
       platform: { tl_p: platformEarnP, tl_a: platformEarnA, tl_b: platformEarnB },
       wallet: {
         tl_p: updated?.tl_p ?? updated?.tl ?? 0,
@@ -484,14 +485,12 @@ async function calculateServerPoc(db:D1Database,userId:string){
       WHERE user_id=? AND mode='listen' AND created_at >= ?
     `).bind(userId, monthStart).first() as any;
 
-    // MP3와 TL3 업로드 수 분리 집계 (MP3 = 1, TL3 = 3 가중치)
+    // Only protected TL3 shares are eligible; raw MP3 inputs are not public works.
     const uploadStats = await db.prepare(`
-      SELECT 
-        COALESCE(SUM(CASE WHEN content_kind='mp3' OR release_mode LIKE 'free_mp3%' THEN 1 ELSE 0 END), 0) as mp3_count,
-        COALESCE(SUM(CASE WHEN content_kind='tl3' OR release_mode='tl3' THEN 1 ELSE 0 END), 0) as tl3_count
-      FROM tl_shares
+      SELECT COUNT(*) as tl3_count FROM tl_shares
       WHERE user_id=? AND created_at >= ?
-    `).bind(userId, monthStart + ' 00:00:00').first().catch(() => ({ mp3_count: 0, tl3_count: 0 })) as any;
+        AND (content_kind='tl3' OR release_mode='tl3')
+    `).bind(userId, monthStart + ' 00:00:00').first().catch(() => ({ tl3_count: 0 })) as any;
 
 
     // ── POC 신 알고리즘 ──
@@ -499,10 +498,8 @@ async function calculateServerPoc(db:D1Database,userId:string){
     const monthlyTlP   = Math.max(0,Number(monthlyStats?.monthly_tl_p || 0));
     const monthlyPlays = Number(shareStats?.play_count || 0);
     const monthlyHours = Math.max(0,Number(monthlyStats?.total_seconds || 0)) / 3600;
-    // MP3 = 1점, TL3 = 3점 (가중치)
-    const mp3Count = Number(uploadStats?.mp3_count || 0);
     const tl3Count = Number(uploadStats?.tl3_count || 0);
-    const uploads  = mp3Count * policy.upload_mp3_weight + tl3Count * policy.upload_tl3_weight;
+    const uploads = tl3Count * policy.upload_tl3_weight;
 
     // 각 요소 점수 (0 ~ 최대값)
     const contentScore = Math.min(policy.content_cap,monthlyPlays/policy.content_target);        // 500회 = 만점
