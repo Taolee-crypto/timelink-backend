@@ -450,6 +450,95 @@ router.post('/central-broadcast/stations/:country/grants', async c => {
   }catch(e:any){return c.json({ok:false,error:/no such table/i.test(String(e?.message))?'BROADCAST_SCHEMA_NOT_READY':'BROADCAST_GRANT_FAILED'},500)}
 });
 
+/**
+ * Explicit administrator authorization of a bounded selection of OWN sealed
+ * V5 recordings for ONE country. Never licenses a third party, and never
+ * silently overrides an expired/revoked country or service grant.
+ *
+ * An independent grant audit is persisted with the same D1 batch as the
+ * rights/service grants. This is not an audio broadcast or an accounting event.
+ */
+router.post('/central-broadcast/stations/:country/grants/bulk',async c=>{
+  const adminId=await requireAdmin(c);
+  if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const country=String(c.req.param('country')||'').toUpperCase();
+  if(!['KR','JP','US','CN','TH','VN'].includes(country))
+    return c.json({ok:false,error:'UNSUPPORTED_COUNTRY'},400);
+  const body=await c.req.json().catch(()=>null) as {file_ids?:unknown;rights_confirmed?:unknown}|null;
+  const ids=body?.file_ids;
+  if(body?.rights_confirmed!==true||!Array.isArray(ids)||ids.length<1||ids.length>60||
+     !ids.every(x=>Number.isSafeInteger(x)&&x>0)||new Set(ids).size!==ids.length)
+    return c.json({ok:false,error:'EXPLICIT_OWNED_RIGHTS_CONFIRMATION_REQUIRED'},400);
+  const fileIds=ids as number[];
+  const serviceId='central-tilo-'+adminId;
+  const placeholders=fileIds.map(()=>'?').join(',');
+  try{
+    await ensureCentralBroadcastSchema(c.env.DB);
+    const service=await c.env.DB.prepare(`SELECT status FROM central_broadcast_service_accounts
+      WHERE service_id=? AND parent_admin_user_id=?`
+    ).bind(serviceId,adminId).first<{status:string}>();
+    if(service?.status!=='active')return c.json({ok:false,error:'TILO_SERVICE_NOT_ACTIVE'},409);
+    const allowed=await c.env.DB.prepare(`SELECT v.file_id FROM tl3_v5_releases v
+      JOIN tl_files f ON f.id=v.file_id
+      WHERE v.file_id IN (${placeholders}) AND v.user_id=? AND f.user_id=?
+        AND v.status='sealed' AND f.shared=1 AND LOWER(f.file_type)='audio/tl3'
+        AND COALESCE(f.revenue_held,0)=0
+        AND EXISTS(SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=v.file_id
+          AND cm.user_id=v.user_id AND cm.rights_declared=1
+          AND cm.rights_role IN ('owner','authorized_agent','licensee')
+          AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope')
+          AND cm.declaration_status IN ('declared','verified','approved'))
+        AND NOT EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
+          WHERE rg.file_id=v.file_id AND rg.creator_id=v.user_id AND rg.country=?
+            AND (rg.status<>'active' OR (rg.expires_at IS NOT NULL
+            AND rg.expires_at<=datetime('now'))))
+        AND NOT EXISTS(SELECT 1 FROM central_broadcast_service_file_grants sg
+          WHERE sg.service_id=? AND sg.file_id=v.file_id AND sg.country=?
+            AND (sg.status='revoked' OR (sg.expires_at IS NOT NULL
+            AND sg.expires_at<=datetime('now'))))`
+    ).bind(...fileIds,adminId,adminId,country,serviceId,country).all<{file_id:number}>();
+    if((allowed.results||[]).length!==fileIds.length)
+      return c.json({ok:false,error:'OWNER_OR_BROADCAST_RIGHTS_NOT_VERIFIED'},403);
+    await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS tilo_v5_country_grant_audit(
+      event_id TEXT PRIMARY KEY,actor_user_id INTEGER NOT NULL,
+      service_id TEXT NOT NULL,country TEXT NOT NULL,file_ids_json TEXT NOT NULL,
+      verified_count INTEGER NOT NULL,created_at TEXT NOT NULL DEFAULT (datetime('now')))`).run();
+    // Check for withdrawals again INSIDE the atomic batch before inserting any grants.
+    const guard=c.env.DB.prepare(`SELECT CASE WHEN
+      (SELECT COUNT(*) FROM central_broadcast_rights_grants
+       WHERE country=? AND file_id IN (${placeholders})
+         AND (status<>'active' OR (expires_at IS NOT NULL AND expires_at<=datetime('now'))))=0
+      AND (SELECT COUNT(*) FROM central_broadcast_service_file_grants
+       WHERE service_id=? AND country=? AND file_id IN (${placeholders})
+         AND (status='revoked' OR (expires_at IS NOT NULL AND expires_at<=datetime('now'))))=0
+      THEN 1 ELSE json_extract('invalid',char(36)) END`)
+      .bind(country,...fileIds,serviceId,country,...fileIds);
+    const statements:D1PreparedStatement[]=[guard];
+    for(const fileId of fileIds){
+      statements.push(c.env.DB.prepare(`INSERT OR IGNORE INTO central_broadcast_rights_grants
+        (grant_id,file_id,creator_id,country,status) VALUES(?,?,?,?,'active')`)
+        .bind('creator-admin:'+adminId+':'+fileId+':'+country,fileId,adminId,country));
+      statements.push(c.env.DB.prepare(`INSERT INTO central_broadcast_service_file_grants
+        (service_id,file_id,country,permission,status,granted_by_admin_user_id)
+        VALUES(?,?,?,'stream','active',?)
+        ON CONFLICT(service_id,file_id,country) DO UPDATE SET status='active',
+          granted_by_admin_user_id=excluded.granted_by_admin_user_id`)
+        .bind(serviceId,fileId,country,adminId));
+    }
+    const eventId=crypto.randomUUID();
+    statements.push(c.env.DB.prepare(`INSERT INTO tilo_v5_country_grant_audit
+      (event_id,actor_user_id,service_id,country,file_ids_json,verified_count)
+      VALUES (?,?,?,?,?,?)`).bind(eventId,adminId,serviceId,country,
+        JSON.stringify(fileIds),fileIds.length));
+    await c.env.DB.batch(statements);
+    return c.json({ok:true,country,service_id:serviceId,authorized:fileIds.length,
+      file_ids:fileIds,audit_event_id:eventId,settlement_posted:false});
+  }catch(error){
+    console.error('[TILO_COUNTRY_BULK_GRANT]',error);
+    return c.json({ok:false,error:'BROADCAST_BULK_GRANT_FAILED'},503);
+  }
+});
+
 /** Read-only candidate audit: reports why published SharePlace V5 files are excluded. */
 router.get('/central-broadcast/stations/:country/audit', async c => {
   const adminId=await requireAdmin(c);
