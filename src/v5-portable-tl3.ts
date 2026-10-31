@@ -1,5 +1,3 @@
-import type { Env } from './types';
-
 const te=new TextEncoder();
 const MAGIC=te.encode('TLP5CAP1');
 
