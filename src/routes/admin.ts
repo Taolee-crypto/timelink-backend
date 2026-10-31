@@ -102,6 +102,8 @@ router.get('/central-broadcast/operations',async c=>{
       'SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?'
     ).bind(serviceId,adminId).first<{status:string}>();
     const enabled=service?.status==='active';
+    // Check credential PRESENCE only. Never expose or log its value.
+    const broadcasterCredentialConfigured=Boolean(c.env.CENTRAL_BROADCAST_WORKER_SECRET);
     const countries=await Promise.all((Object.keys(TILO_ZONES) as TiloCountry[]).map(async country=>{
       const [tracks,rights,airtime,settlements]=await Promise.all([
         enabled?permittedStationTracks(c.env.DB,country,adminId):Promise.resolve([]),
@@ -133,12 +135,24 @@ router.get('/central-broadcast/operations',async c=>{
           FROM tilo_v5_settlement_approvals WHERE country=?`
         ).bind(country).first<{pending:number|null;approved:number|null;posted:number|null}>()
       ]);
-      const licensedTracks=Number(rights?.n||0);
+      // A "license" count must match the same strictly validated pool
+      // used by the public station and the actual broadcaster evidence gate.
+      // Raw grants (which may include a separately revoked row) are not enough.
       const receiverTracks=tracks.length;
+      const licensedTracks=receiverTracks;
       const last=airtime?.last_ended_at||null;
       const condition=classifyTiloStationOperation({
         serviceEnabled:enabled,receiverTracks,licensedTracks,lastVerifiedEndAt:last,nowMs:now.getTime()
       });
+      const blockers:string[]=[];
+      if(!enabled)blockers.push('SERVICE_DISABLED');
+      if(!broadcasterCredentialConfigured)blockers.push('BROADCAST_SERVICE_CREDENTIAL_MISSING');
+      if(licensedTracks===0)blockers.push('NO_APPROVED_COUNTRY_BROADCAST_TRACKS');
+      if(condition==='NO_VERIFIED_AIRTIME'||condition==='VERIFIED_AIRTIME_STALE')
+        blockers.push('NO_RECENT_VERIFIED_AIRTIME');
+      // There is no continuously running broadcaster deployed by this Worker.
+      // Neither a listener's browser nor a stateless schedule is stream proof.
+      blockers.push('INDEPENDENT_AUDIO_PLAYOUT_NOT_VERIFIED');
       return {
         country,time_zone:TILO_ZONES[country],local_show:tiloLocalShow(country,now),
         service_enabled:enabled,receiver_candidate_tracks:receiverTracks,
@@ -150,11 +164,14 @@ router.get('/central-broadcast/operations',async c=>{
         pending_settlements:Number(settlements?.pending||0),
         approved_unposted_settlements:Number(settlements?.approved||0),
         posted_settlements:Number(settlements?.posted||0),
-        condition,server_audio_stream:false,server_playout_verified:false,
+        condition,operational_blockers:blockers,server_audio_stream:false,
+        server_playout_verified:false,broadcaster_credential_configured:broadcasterCredentialConfigured,
       };
     }));
     return c.json({ok:true,service_id:serviceId,server_time:now.toISOString(),
-      actual_server_audio_stream:false,source:'production_d1',countries,
+      actual_server_audio_stream:false,
+      broadcaster_credential_configured:broadcasterCredentialConfigured,
+      broadcast_runtime_ready:false,source:'production_d1',countries,
       note:'Authorized browser playback and shared playlist clocks do not prove 24-hour server playout. Only verified broadcaster evidence may enter settlement.'});
   }catch(error){
     console.error('[TILO_OPERATIONS]',error);
