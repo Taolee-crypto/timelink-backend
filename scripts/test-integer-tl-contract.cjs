@@ -1,0 +1,13 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const ledger=fs.readFileSync('src/economy-ledger.ts','utf8');
+const economics=fs.readFileSync('src/economics.ts','utf8');
+assert.match(ledger,/export function assertWholeTL\(value:number\)/);
+assert.match(ledger,/Number\.isSafeInteger\(value\)/);
+assert.match(ledger,/export function assertWholeTLAtoms\(atoms:number\)/);
+assert.match(ledger,/atoms%TL_ATOMS_PER_TL!==0/);
+assert.match(ledger,/export function wholeTlToAtoms\(value:number\)/);
+assert.match(economics,/wholeTlToAtoms\(promotionAmount\)/);
+assert.doesNotMatch(economics,/tlToAtoms\(promotionAmount\)/);
+console.log('PASS integer TL producer contract (static; not runtime E2E)');
