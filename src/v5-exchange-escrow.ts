@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { verifyToken } from './auth';
 import type { Env } from './types';
 const router=new Hono<{Bindings:Env}>();
-async function owner(c:any){const raw=(c.req.header('Authorization')||'').replace(/^Bearer\\s+/,'').trim();if(!raw)return null;const session=await verifyToken(raw,c.env.JWT_SECRET);const id=Number(session?.sub||0);return Number.isSafeInteger(id)&&id>0?id:null;}
+async function owner(c:any){const raw=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();if(!raw)return null;const session=await verifyToken(raw,c.env.JWT_SECRET);const id=Number(session?.sub||0);return Number.isSafeInteger(id)&&id>0?id:null;}
 router.get('/status',async c=>{
  const userId=await owner(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
  try{
