@@ -11,6 +11,7 @@ export {permittedStationTracks} from './src/tilo-station';
 export {default as admin} from './src/routes/admin';
 export {makeAccessToken} from './src/auth';
 export {requestListenerCashout,listenerCashoutEligibility} from './src/v5-cashout';
+export {readPurchasedTlAttribution} from './src/v5-purchased-tl-attribution';
 export {default as community} from './src/routes/community';
 export {default as discovery} from './src/routes/music-discovery';
 export {default as incar} from './src/routes/incar';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'api.cjs'),logLevel:'silent'});
@@ -42,7 +43,7 @@ INSERT INTO tl3_releases VALUES(7,'released',1);
 INSERT INTO tl_files VALUES(7,'Fixture','Artist',1,'audio/tl3',0);`);
 const db={prepare(sql){let args=[];const stmt={bind(...a){args=a;return stmt},async first(){return sqlite.prepare(sql).get(...args)||null},async all(){return {results:sqlite.prepare(sql).all(...args)}},async run(){const r=sqlite.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}}}};return stmt},async exec(sql){sqlite.exec(sql)},async batch(stmts){sqlite.exec('BEGIN IMMEDIATE');try{const results=[];for(const s of stmts)results.push(await s.run());sqlite.exec('COMMIT');return results}catch(e){sqlite.exec('ROLLBACK');throw e}}};
 async function main(){
- const payment={userId:'1',method:'fixture',paymentId:'pay-1',orderId:'order-1',paidTL:10000,bonusTL:500};
+ const payment={userId:'1',method:'fixture',paymentId:'pay-1',orderId:'order-1',paidTL:10000,bonusTL:500,paymentMode:'live'};
  await creditVerifiedPayment(db,payment);
  assert.deepEqual([(await readV5Wallet(db,1)).tl_p,(await readV5Wallet(db,1)).tl_b],[10000,500]);
  assert.equal((await creditVerifiedPayment(db,payment)).replayed,true);
@@ -87,9 +88,17 @@ async function main(){
  assert.equal((await requestListenerCashout(db,cashout)).replayed,true);
  await assert.rejects(requestListenerCashout(db,{...cashout,amountTL:1100}),/CONFLICT/);
  assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM tl_exchanges').get().n,1);
- await creditVerifiedPayment(db,{userId:'2',method:'fixture',paymentId:'pay-ratio',orderId:'order-ratio',paidTL:10000,bonusTL:30000});
+ await creditVerifiedPayment(db,{userId:'2',method:'fixture',paymentId:'pay-ratio',orderId:'order-ratio',paidTL:10000,bonusTL:30000,paymentMode:'live'});
  await assert.rejects(requestListenerCashout(db,{userId:2,amountTL:1000,requestKey:'cashout-low-ratio',plan:'A'}),/BELOW_50_PERCENT/);
  assert.equal((await readV5Wallet(db,2)).tl_p,10000);
+ await creditVerifiedPayment(db,{userId:'2',method:'fixture',paymentId:'pay-unknown',orderId:'order-unknown',paidTL:5000,bonusTL:0,paymentMode:'unknown'});
+ // Purchase attribution must exclude unknown/test receipts even with paid balance.
+ const {readPurchasedTlAttribution}=require(path.join(temp,'api.cjs'));
+ const projected=await readPurchasedTlAttribution(db,'2');
+ assert.equal(projected.lots.find(x=>x.paymentKey==='v5-payment:fixture:pay-unknown').walletAtoms,50000000);
+ const {listenerCashoutEligibility}=require(path.join(temp,'api.cjs'));
+ const eligible=await listenerCashoutEligibility(db,2);
+ assert.ok(eligible.livePurchasedWalletAtoms<=100000000,'Only live purchased credit can fund cashout');
  console.log('PASS listener cashout: purchased provenance, 50% threshold, escrow, fees and request replay');
  const headers={Authorization:'Bearer '+userToken,'Content-Type':'application/json'};
  const post=(app,url,body,token=userToken)=>app.request(url,{method:'POST',headers:{...headers,Authorization:'Bearer '+token},body:JSON.stringify(body)},env);
