@@ -511,7 +511,35 @@ router.post('/central-broadcast/stations/:country/grants/bulk',async c=>{
       AND (SELECT COUNT(*) FROM central_broadcast_service_file_grants
        WHERE service_id=? AND country=? AND file_id IN (${placeholders})
          AND (status='revoked' OR (expires_at IS NOT NULL AND expires_at<=datetime('now'))))=0
-      THEN 1 ELSE json_extract('invalid','
+      THEN 1 ELSE json_extract('invalid',char(36)) END`)
+      .bind(country,...fileIds,serviceId,country,...fileIds);
+    const statements:D1PreparedStatement[]=[guard];
+    for(const fileId of fileIds){
+      statements.push(c.env.DB.prepare(`INSERT OR IGNORE INTO central_broadcast_rights_grants
+        (grant_id,file_id,creator_id,country,status) VALUES(?,?,?,?,'active')`)
+        .bind('creator-admin:'+adminId+':'+fileId+':'+country,fileId,adminId,country));
+      statements.push(c.env.DB.prepare(`INSERT INTO central_broadcast_service_file_grants
+        (service_id,file_id,country,permission,status,granted_by_admin_user_id)
+        VALUES(?,?,?,'stream','active',?)
+        ON CONFLICT(service_id,file_id,country) DO UPDATE SET status='active',
+          granted_by_admin_user_id=excluded.granted_by_admin_user_id`)
+        .bind(serviceId,fileId,country,adminId));
+    }
+    const eventId=crypto.randomUUID();
+    statements.push(c.env.DB.prepare(`INSERT INTO tilo_v5_country_grant_audit
+      (event_id,actor_user_id,service_id,country,file_ids_json,verified_count)
+      VALUES (?,?,?,?,?,?)`).bind(eventId,adminId,serviceId,country,
+        JSON.stringify(fileIds),fileIds.length));
+    await c.env.DB.batch(statements);
+    return c.json({ok:true,country,service_id:serviceId,authorized:fileIds.length,
+      file_ids:fileIds,audit_event_id:eventId,settlement_posted:false});
+  }catch(error){
+    console.error('[TILO_COUNTRY_BULK_GRANT]',error);
+    return c.json({ok:false,error:'BROADCAST_BULK_GRANT_FAILED'},503);
+  }
+});
+
+/** Read-only candidate audit: reports why published SharePlace V5 files are excluded. */
 router.get('/central-broadcast/stations/:country/audit', async c => {
   const adminId=await requireAdmin(c);
   if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
