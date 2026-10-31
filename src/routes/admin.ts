@@ -8,6 +8,7 @@ import {readCreatorPayoutReport} from '../creator-payout-report';
 import { permittedStationTracks } from '../tilo-station';
 import { REWARD_RULES,readRewardPolicy,validateRewardRules } from '../v5-reward-policy';
 import { currentTiloSlot,tiloLocalShow,TILO_ZONES,type TiloCountry } from '../tilo-server-timeline';
+import { classifyTiloStationOperation } from '../tilo-v5-station-operations';
 import { ensureCentralBroadcastSchema } from '../central-broadcast-schema';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -85,6 +86,82 @@ router.put('/central-broadcast/discount',async c=>{
     return c.json({ok:true,discount_coefficient_bps:body.coefficient_bps,revision:next,settlement_integration:'pending'});
   }catch{return c.json({ok:false,error:'DISCOUNT_POLICY_SAVE_FAILED'},503)}
 });
+/**
+ * Central TILO operational truth, restricted to authenticated administrators.
+ * Listener eligibility, explicit country rights, verified broadcast evidence and
+ * financial approval are deliberately distinct. A timetable is never "on air".
+ * Does not create grants, sessions, airtime or ledger entries.
+ */
+router.get('/central-broadcast/operations',async c=>{
+  const adminId=await requireAdmin(c);
+  if(!adminId)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const serviceId='central-tilo-'+adminId;
+  const now=new Date();
+  try{
+    const service=await c.env.DB.prepare(
+      'SELECT status FROM central_broadcast_service_accounts WHERE service_id=? AND parent_admin_user_id=?'
+    ).bind(serviceId,adminId).first<{status:string}>();
+    const enabled=service?.status==='active';
+    const countries=await Promise.all((Object.keys(TILO_ZONES) as TiloCountry[]).map(async country=>{
+      const [tracks,rights,airtime,settlements]=await Promise.all([
+        enabled?permittedStationTracks(c.env.DB,country,adminId):Promise.resolve([]),
+        c.env.DB.prepare(`SELECT COUNT(DISTINCT v.file_id) AS n
+          FROM central_broadcast_service_file_grants sg
+          JOIN central_broadcast_rights_grants rg
+            ON rg.file_id=sg.file_id AND rg.country=sg.country
+            AND rg.status='active'
+            AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now'))
+          JOIN tl3_v5_releases v ON v.file_id=sg.file_id
+            AND v.user_id=rg.creator_id AND v.status='sealed'
+          JOIN tl_files f ON f.id=v.file_id AND f.shared=1
+            AND LOWER(f.file_type)='audio/tl3' AND COALESCE(f.revenue_held,0)=0
+          WHERE sg.service_id=? AND sg.country=? AND sg.status='active'
+            AND (sg.expires_at IS NULL OR sg.expires_at>datetime('now'))
+            AND EXISTS(SELECT 1 FROM tl_creator_metadata cm
+              WHERE cm.file_id=v.file_id AND cm.user_id=v.user_id
+                AND cm.rights_declared=1
+                AND cm.declaration_status IN ('declared','verified','approved'))`
+        ).bind(serviceId,country).first<{n:number}>(),
+        c.env.DB.prepare(`SELECT MAX(ended_at) AS last_ended_at,
+          COUNT(*) AS event_count, COALESCE(SUM(audible_ms),0) AS audible_ms
+          FROM tilo_v5_verified_airtime WHERE service_id=? AND country=?`
+        ).bind(serviceId,country).first<{last_ended_at:string|null;event_count:number;audible_ms:number}>(),
+        c.env.DB.prepare(`SELECT
+          SUM(CASE WHEN state='pending' THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN state='approved' THEN 1 ELSE 0 END) AS approved,
+          SUM(CASE WHEN state='posted' THEN 1 ELSE 0 END) AS posted
+          FROM tilo_v5_settlement_approvals WHERE country=?`
+        ).bind(country).first<{pending:number|null;approved:number|null;posted:number|null}>()
+      ]);
+      const licensedTracks=Number(rights?.n||0);
+      const receiverTracks=tracks.length;
+      const last=airtime?.last_ended_at||null;
+      const condition=classifyTiloStationOperation({
+        serviceEnabled:enabled,receiverTracks,licensedTracks,lastVerifiedEndAt:last,nowMs:now.getTime()
+      });
+      return {
+        country,time_zone:TILO_ZONES[country],local_show:tiloLocalShow(country,now),
+        service_enabled:enabled,receiver_candidate_tracks:receiverTracks,
+        explicit_country_licensed_tracks:licensedTracks,
+        receiver_clock_slot:enabled?currentTiloSlot(tracks,now.getTime(),Date.UTC(2026,0,1)):null,
+        verified_airtime_events:Number(airtime?.event_count||0),
+        verified_audible_ms:Number(airtime?.audible_ms||0),
+        last_verified_airtime_end_at:last,
+        pending_settlements:Number(settlements?.pending||0),
+        approved_unposted_settlements:Number(settlements?.approved||0),
+        posted_settlements:Number(settlements?.posted||0),
+        condition,server_audio_stream:false,server_playout_verified:false,
+      };
+    }));
+    return c.json({ok:true,service_id:serviceId,server_time:now.toISOString(),
+      actual_server_audio_stream:false,source:'production_d1',countries,
+      note:'Authorized browser playback and shared playlist clocks do not prove 24-hour server playout. Only verified broadcaster evidence may enter settlement.'});
+  }catch(error){
+    console.error('[TILO_OPERATIONS]',error);
+    return c.json({ok:false,error:'TILO_OPERATIONS_UNAVAILABLE'},503);
+  }
+});
+
 router.get('/cafe/channels',async c=>{
   try {
     const rows=await c.env.DB.prepare('SELECT channel_id,name,status FROM cafe_channels ORDER BY channel_id DESC LIMIT 500').all();
