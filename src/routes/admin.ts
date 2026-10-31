@@ -71,6 +71,15 @@ router.put('/central-broadcast/discount',async c=>{
       c.env.DB.prepare('INSERT INTO tilo_broadcast_discount_audit(id,revision,coefficient_bps,actor,reason,created_at) VALUES(?,?,?,?,?,?)')
         .bind(id,next,body.coefficient_bps,actor,body.reason.trim(),now)
     ];
+    // D1 batch commits both the revision update and audit entry atomically.
+    // The revision was checked before the batch; a concurrent update may
+    // invalidate that check. Use a conditional audit insert tied to the
+    // committed revision to prevent orphaned audit records.
+    statements[1]=c.env.DB.prepare(`INSERT INTO tilo_broadcast_discount_audit
+      (id,revision,coefficient_bps,actor,reason,created_at)
+      SELECT ?,?,?,?,?,? WHERE EXISTS
+      (SELECT 1 FROM tilo_broadcast_discount_policy WHERE id=1 AND revision=?)`)
+      .bind(id,next,body.coefficient_bps,actor,body.reason.trim(),now,next);
     const results=await c.env.DB.batch(statements);
     if(!results[0].meta?.changes) return c.json({ok:false,error:'REVISION_CONFLICT'},409);
     return c.json({ok:true,discount_coefficient_bps:body.coefficient_bps,revision:next,settlement_integration:'pending'});
