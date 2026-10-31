@@ -2,15 +2,19 @@
 const fs=require('node:fs');
 const assert=require('node:assert/strict');
 const {spawnSync}=require('node:child_process');
-const source=fs.readFileSync('src/tilo-station.ts','utf8');
-const match=source.match(/db\.prepare\(`([\s\S]*?)`\)/);
-assert.ok(match,'read production station SQL');
+const station=fs.readFileSync('src/tilo-station.ts','utf8');
+const match=station.match(/db\.prepare\(`([\s\S]*?)`\)/);
+assert.ok(match,'must use production station inventory SQL');
 const sql=match[1];
-assert.match(sql,/EXISTS\(SELECT 1 FROM central_broadcast_rights_grants rg/);
-assert.match(sql,/EXISTS\(SELECT 1 FROM central_broadcast_service_file_grants sg/);
+assert.match(sql,/JOIN tl3_v5_releases v ON v.status='sealed'/);
+assert.match(sql,/tl_creator_metadata cm/);
+assert.match(sql,/NOT EXISTS\(SELECT 1 FROM central_broadcast_rights_grants/);
+assert.match(sql,/NOT EXISTS\(SELECT 1 FROM central_broadcast_service_file_grants/);
+assert.doesNotMatch(sql,/AND EXISTS\(SELECT 1 FROM central_broadcast_rights_grants rg/,'the station must not require a second grant before honoring creator promotion');
+assert.doesNotMatch(sql,/AND EXISTS\(SELECT 1 FROM central_broadcast_service_file_grants sg/,'optional admin service grants are not prerequisites for an ordinary rights-declared track');
 const test=String.raw`
-import sqlite3,sys,json
-q=json.loads(sys.stdin.read())
+import sqlite3,json,sys
+sql=json.loads(sys.stdin.read())
 db=sqlite3.connect(':memory:')
 db.executescript("""
 CREATE TABLE central_broadcast_service_accounts(service_id TEXT,parent_admin_user_id INTEGER,status TEXT);
@@ -20,23 +24,22 @@ CREATE TABLE tl3_v5_releases(file_id INTEGER,user_id INTEGER,status TEXT,duratio
 CREATE TABLE tl_files(id INTEGER,title TEXT,artist TEXT,shared INTEGER,file_type TEXT,revenue_held INTEGER);
 CREATE TABLE tl_creator_metadata(file_id INTEGER,user_id INTEGER,rights_declared INTEGER,rights_role TEXT,rights_scope TEXT,declaration_status TEXT);
 INSERT INTO central_broadcast_service_accounts VALUES('central-tilo-33',33,'active');
-INSERT INTO tl3_v5_releases VALUES(147,33,'sealed',302360);
-INSERT INTO tl_files VALUES(147,'Track','Artist',1,'audio/tl3',0);
-INSERT INTO tl_creator_metadata VALUES(147,33,1,'owner','master_recording','declared');
+INSERT INTO tl3_v5_releases VALUES(147,33,'sealed',302360),(148,34,'sealed',180000);
+INSERT INTO tl_files VALUES(147,'TILO promoter','Artist A',1,'audio/tl3',0),(148,'Ordinary creator','Artist B',1,'audio/tl3',0);
+INSERT INTO tl_creator_metadata VALUES(147,33,1,'owner','master_recording','declared'),(148,34,1,'owner','master_recording','declared');
 """)
-def rows(country='KR',admin=None):
- return db.execute(q,[admin,admin,country,country,country,country]).fetchall()
-assert rows()==[],'A published track without broadcaster grant MUST NOT be on air'
-db.execute("INSERT INTO central_broadcast_rights_grants VALUES(147,33,'KR','active',NULL)")
-assert rows()==[],'Creator license alone does not grant a station access'
-db.execute("INSERT INTO central_broadcast_service_file_grants VALUES('central-tilo-33',147,'KR','active','stream',NULL)")
-assert len(rows())==1,'Both country and service rights authorize V5 station listing'
-assert not rows('JP'),'KR broadcast rights must NOT authorize JP (or any other country)'
-assert not rows(admin=34),'A different administrator must not reuse the service identity'
-db.execute("INSERT INTO central_broadcast_rights_grants VALUES(147,33,'JP','active',NULL)")
-assert not rows('JP'),'JP creator permission alone is insufficient'
-db.execute("INSERT INTO central_broadcast_service_file_grants VALUES('central-tilo-33',147,'JP','active','stream',NULL)")
-assert len(rows('JP'))==1,'Full JP license and service grant allow JP'
+def rows(country='KR',admin=33):
+ return db.execute(sql,[admin,admin,country,country]).fetchall()
+assert [r[0] for r in rows()]==[147,148],'Promotion candidate and ordinary V5 creator inventory MUST survive with no redundant country grants'
+assert [r[0] for r in rows('JP')]==[147,148],'No invented country restrictions; explicit withdrawal still overrides'
+assert rows(admin=34)==[],'No other administrator service'
+db.execute("INSERT INTO central_broadcast_rights_grants VALUES(147,33,'KR','revoked',NULL)")
+assert [r[0] for r in rows()]==[148],'Explicit territorial revocation blocks the affected song'
+assert [r[0] for r in rows('JP')]==[147,148],'KR withdrawal must not restrict JP'
+db.execute("DELETE FROM central_broadcast_rights_grants")
+db.execute("INSERT INTO central_broadcast_service_file_grants VALUES('central-tilo-33',148,'KR','revoked','stream',NULL)")
+assert [r[0] for r in rows()]==[147],'Explicit service revocation blocks only its song'
+db.execute("DELETE FROM central_broadcast_service_file_grants")
 for table,condition,assignment in [
  ('tl_files','id=147','shared=0'),
  ('tl_files','id=147','revenue_held=1'),
@@ -44,32 +47,19 @@ for table,condition,assignment in [
  ('tl3_v5_releases','file_id=147',"status='revoked'"),
  ('tl3_v5_releases','file_id=147','duration_ms=0'),
  ('tl_creator_metadata','file_id=147',"declaration_status='rejected'"),
- ('tl_creator_metadata','file_id=147','user_id=34'),
- ('central_broadcast_service_accounts',"service_id='central-tilo-33'","status='disabled'"),
- ('central_broadcast_service_file_grants',"country='KR'","expires_at='2000-01-01'"),
- ('central_broadcast_service_file_grants',"country='KR'","status='revoked'"),
- ('central_broadcast_service_file_grants',"country='KR'","permission='download'"),
- ('central_broadcast_rights_grants',"country='KR'","expires_at='2000-01-01'"),
- ('central_broadcast_rights_grants',"country='KR'","status='revoked'")
+ ('tl_creator_metadata','file_id=147','rights_declared=0'),
+ ('central_broadcast_service_accounts',"service_id='central-tilo-33'","status='disabled'")
 ]:
  db.execute('SAVEPOINT scenario')
  db.execute('UPDATE '+table+' SET '+assignment+' WHERE '+condition)
- assert not rows(),(table,assignment,'must fail closed')
+ assert not any(r[0]==147 for r in rows()),(table,assignment,'must not pass')
  db.execute('ROLLBACK TO scenario')
  db.execute('RELEASE scenario')
-db.execute("INSERT INTO central_broadcast_rights_grants VALUES(147,33,'KR','revoked',NULL)")
-assert not rows(),'Any revocation must deny even with a separate active grant'
-db.execute("DELETE FROM central_broadcast_rights_grants WHERE country='KR' AND status='revoked'")
-db.execute("INSERT INTO central_broadcast_service_accounts VALUES('central-tilo-34',34,'active')")
-db.execute("INSERT INTO tl3_v5_releases VALUES(148,34,'sealed',300000)")
-db.execute("INSERT INTO tl_files VALUES(148,'Other Track','Other',1,'audio/tl3',0)")
-db.execute("INSERT INTO tl_creator_metadata VALUES(148,34,1,'owner','master_recording','approved')")
-db.execute("INSERT INTO central_broadcast_rights_grants VALUES(148,34,'KR','active',NULL)")
-assert not any(r[0]==148 for r in rows(admin=33)),'No unrelated creator enters admin 33 station without service grant'
-assert len(rows(admin=33))==1
-print('PASS TILO territorial station licensing: explicit grants, owner scoping, revocations and independent country gates')
+db.execute("INSERT INTO central_broadcast_rights_grants VALUES(147,33,'KR','active','2000-01-01')")
+assert [r[0] for r in rows()]==[148],'Expired rights explicitly registered must fail closed'
+print('PASS TILO promotion-first mixed eligible pool restored; revoked/expired/held V5 blocked; local service scoped')
 `;
 const p=spawnSync('python3',['-c',test],{input:JSON.stringify(sql),encoding:'utf8'});
-process.stdout.write(p.stdout);
-process.stderr.write(p.stderr);
-if(p.status)process.exit(p.status||1);
+process.stdout.write(p.stdout||'');
+process.stderr.write(p.stderr||'');
+if(p.status!==0)process.exit(p.status||1);
