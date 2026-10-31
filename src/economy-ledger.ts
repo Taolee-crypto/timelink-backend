@@ -247,6 +247,7 @@ export async function chargeTrackPool(
 ) {
   await assertTLAtomScale(db);
   if(!Number.isSafeInteger(amountAtoms)||amountAtoms<=0) throw new Error('Invalid track charge amount');
+  assertWholeTLAtoms(amountAtoms);
   const prior=await db.prepare(`
     SELECT id,transaction_type,source,reference_type,reference_id,actor_user_id,metadata_json
     FROM v3_economy_transactions WHERE idempotency_key=? LIMIT 1
