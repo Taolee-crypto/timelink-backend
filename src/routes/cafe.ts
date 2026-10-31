@@ -93,9 +93,8 @@ async function verifyBizRegNum(c: Context<{ Bindings: Env }>, country: string, b
     enabled = String(row?.value || '').toLowerCase() === 'true';
   } catch(_) {}
   if (!enabled) return { ok: true, verified: false };
-  // TODO: 국가별 API 연동
-  // KR: 국세청 홈택스 / US: IRS TIN / JP: 国税庁 / CN: 国家企业信用 / GB: HMRC VIES
-  return { ok: true, verified: false };
+  // No trusted provider: fail closed if the operator requires official validation.
+  return {ok:false,verified:false,error:'공식 사업자 실재 확인 서비스가 준비되지 않아 매장을 개설할 수 없습니다.'};
 }
 
 // ── 테이블 보장 ──
@@ -186,7 +185,7 @@ router.get('/my-channels', async (c) => {
     await ensureCafeTables(c.env.DB);
     await ensureCafePublicProfiles(c.env.DB);
     const { results } = await c.env.DB.prepare(
-      `SELECT c.channel_id,c.name,c.owner_id,c.country,c.addr,c.description,c.images,c.playlist,c.schedules,c.plan,c.status,c.expires_at,c.created_at,
+      `SELECT c.channel_id,c.name,c.owner_id,c.country,c.addr,c.description,c.images,c.playlist,c.schedules,c.plan,c.status,c.expires_at,c.created_at,c.biz_verified,
           COALESCE(p.profile_json,'{}') profile_json
        FROM cafe_channels c LEFT JOIN cafe_public_profiles p ON p.channel_id=c.channel_id
        WHERE c.owner_id=? ORDER BY c.created_at DESC`
@@ -233,6 +232,8 @@ router.post('/channels', async (c) => {
   if (!name) return c.json({ ok: false, error: '카페 이름은 필수입니다.' }, 400);
   if (!SUPPORTED_COUNTRIES.includes(country)) return c.json({ ok: false, error: '지원하지 않는 국가입니다.' }, 400);
   if (!bizNo) return c.json({ ok: false, error: '사업자등록번호는 필수입니다.' }, 400);
+  if(body.business_owner_attested!==true)
+    return c.json({ok:false,code:'BUSINESS_ATTESTATION_REQUIRED',error:'본인이 해당 매장의 사업자 또는 정당한 개설 권한자임을 확인해 주세요.'},400);
   if (!['individual','corporate','other'].includes(bizType)) return c.json({ ok: false, error: '사업자 유형이 올바르지 않습니다.' }, 400);
 
   const bizCheck = await verifyBizRegNum(c, country, bizNo);
