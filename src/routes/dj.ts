@@ -271,9 +271,9 @@ router.post('/tilo/daily-context/:country', async (c) => {
     if(!liveWeather){
     const city=tiloWeatherCities[country];
     const response=await fetch('https://api.open-meteo.com/v1/forecast?latitude='+city.lat+'&longitude='+city.lon+
-      '&current=temperature_2m,precipitation,weather_code&timezone=auto',{signal:AbortSignal.timeout(3500)});
+      '&current=temperature_2m,precipitation,weather_code&timezone=UTC',{signal:AbortSignal.timeout(3500)});
     if(response.ok){const result:any=await response.json();if(Number.isFinite(result.current?.temperature_2m))
-      liveWeather={description:city.city+': '+result.current.temperature_2m+'°C, precipitation '+result.current.precipitation+' mm, WMO code '+result.current.weather_code,source:'Open-Meteo',weather_code:result.current.weather_code,observed_at:result.current.time};}
+      liveWeather={description:city.city+': '+result.current.temperature_2m+'°C, precipitation '+result.current.precipitation+' mm, WMO code '+result.current.weather_code,source:'Open-Meteo',weather_code:result.current.weather_code,observed_at:String(result.current.time||'')+'Z'};}
     }
   }catch(_){/* Continue with no weather. */}
   const weather=liveWeather;
