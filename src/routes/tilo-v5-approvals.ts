@@ -3,6 +3,7 @@ import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
 import { planTiloV5LedgerPosting } from '../tilo-v5-ledger-posting-plan';
+import { auditPersistedTiloAirtime } from '../tilo-v5-airtime-audit';
 const router=new Hono<{Bindings:Env}>();
 async function adminId(c:Context<{Bindings:Env}>):Promise<number|null>{
  const token=String(c.req.header('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
@@ -87,7 +88,7 @@ router.post('/settlements/prepare',async c=>{
  if(localDate>=today)return c.json({ok:false,error:'LOCAL_DAY_NOT_CLOSED'},409);
  try{
   const rows=await c.env.DB.prepare(`SELECT event_id,started_at,ended_at,audible_ms,
-   creator_atoms,platform_atoms,evidence_digest FROM tilo_v5_verified_airtime
+   creator_atoms,platform_atoms,evidence_digest,discount_coefficient_bps,discount_revision FROM tilo_v5_verified_airtime
    WHERE country=? AND creator_id=? AND local_month=? ORDER BY event_id LIMIT 10001`)
    .bind(country,creatorId,localDate.slice(0,7)).all<any>();
   const events=(rows.results||[]).filter((e:any)=>{
@@ -100,11 +101,10 @@ router.post('/settlements/prepare',async c=>{
   let creator=0n,platform=0n;
   const parts:string[]=[];
   for(const e of events){
-   const ms=BigInt(e.audible_ms);
-   const total=ms*3n,creatorPart=total*7n/10n,platformPart=total-creatorPart;
-   if(BigInt(e.creator_atoms)!==creatorPart||BigInt(e.platform_atoms)!==platformPart)
-     return c.json({ok:false,error:'AIRTIME_AMOUNT_MISMATCH'},409);
-   creator+=creatorPart;platform+=platformPart;
+   let amounts:ReturnType<typeof auditPersistedTiloAirtime>;
+   try{amounts=auditPersistedTiloAirtime(e);}
+   catch{return c.json({ok:false,error:'AIRTIME_AMOUNT_MISMATCH'},409);}
+   creator+=amounts.creatorAtoms;platform+=amounts.platformAtoms;
    parts.push([e.event_id,e.started_at,e.ended_at,e.audible_ms,e.evidence_digest].join('|'));
   }
   const encoded=new TextEncoder().encode(parts.join('\\n'));
@@ -221,11 +221,12 @@ router.get('/settlements/:id/posting-readiness',async c=>{
    return v('year')+'-'+v('month')+'-'+v('day');
   };
   const evidence=await c.env.DB.prepare(`SELECT event_id,started_at,ended_at,audible_ms,
-   creator_atoms,platform_atoms,evidence_digest FROM tilo_v5_verified_airtime
+   creator_atoms,platform_atoms,evidence_digest,discount_coefficient_bps,discount_revision FROM tilo_v5_verified_airtime
    WHERE country=? AND creator_id=? AND local_month=? ORDER BY event_id LIMIT 10001`)
    .bind(scope.country,scope.creator_id,scope.local_date.slice(0,7)).all<{
     event_id:string;started_at:string;ended_at:string;audible_ms:number;
     creator_atoms:number;platform_atoms:number;evidence_digest:string;
+    discount_coefficient_bps:number|null;discount_revision:number|null;
    }>();
   let count=0,gross=0n,platform=0n;
   const pieces:string[]=[];
@@ -240,12 +241,10 @@ router.get('/settlements/:id/posting-readiness',async c=>{
    if(startDay!==scope.local_date||endDay!==scope.local_date){
     blockers.push('CROSSES_LOCAL_DAY');break;
    }
-   const ms=BigInt(e.audible_ms);
-   const total=ms*3n,creatorPart=total*7n/10n,platformPart=total-creatorPart;
-   if(BigInt(e.creator_atoms)!==creatorPart||BigInt(e.platform_atoms)!==platformPart){
-    blockers.push('AIRTIME_AMOUNT_MISMATCH');break;
-   }
-   count++;gross+=creatorPart;platform+=platformPart;
+   let amounts:ReturnType<typeof auditPersistedTiloAirtime>;
+   try{amounts=auditPersistedTiloAirtime(e);}
+   catch{blockers.push('AIRTIME_AMOUNT_MISMATCH');break;}
+   count++;gross+=amounts.creatorAtoms;platform+=amounts.platformAtoms;
    pieces.push([e.event_id,e.started_at,e.ended_at,e.audible_ms,e.evidence_digest].join('|'));
   }
   const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
