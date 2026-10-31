@@ -337,25 +337,8 @@ ads.get('/stream/:adId', async (c) => {
   }
 });
 
-// ── 광고 시청 tick (초당 예산 차감 + 뷰어 TL_A 적립) ──
-// POST /api/ads/stream/:adId/tick
-ads.post('/stream/:adId/tick', async (c) => {
-  const adId  = c.req.param('adId');
-  const token = (c.req.header('Authorization')||'').replace('Bearer ','');
-  const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
-  if (!userId) return c.json({error:'로그인 필요'},401);
-
-  try {
-    await ensureTables(c.env.DB);
-    const body = await c.req.json<any>();
-    // Legacy client-reported ticks cannot mint rewards. A completed server
-    // session shares the same daily idempotency key as /complete and eco.
-    if(body.completed!==true)return c.json({ok:true,reward:0,note:'Complete the verified ad session to collect TL_A.'});
-    return c.json(await completeAdReward(c.env.DB,Number(userId),adId,String(body.session_id||'')));
-  } catch(e:any) {
-    return c.json({ok:false, error:e.message}, 500);
-  }
-});
+// Retired: client ticks are never allowed to trigger TL_A issuance.
+ads.post('/stream/:adId/tick', c => c.json({ok:false,code:'AD_REWARD_RETIRED',error:'광고 보상이 종료되었습니다.'},410));
 
 ads.options('/stream/:adId', async (c) => new Response(null,{status:204,headers:{
   'Access-Control-Allow-Origin':'*',
