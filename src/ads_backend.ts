@@ -4,8 +4,6 @@
 //   app.route('/api/ads', adsRouter);
 
 import { Hono } from 'hono';
-import { completeAdReward } from './v5-ad-reward';
-import { readRewardPolicy } from './v5-reward-policy';
 import { bodyLimit } from 'hono/body-limit';
 import type { Env } from './types';
 import { verifyToken } from './auth';
@@ -112,48 +110,9 @@ async function buildAdTLFile(adId: string, header: Record<string,any>, rawData: 
 }
 
 // ── 광고 목록 (유저용: 시청 가능한 광고) ──
-ads.get('/available', async (c) => {
-  try {
-    await ensureTables(c.env.DB);
-    const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
-
-    const result = await c.env.DB.prepare(`
-      SELECT a.*,
-        COALESCE(
-          (SELECT COUNT(*) FROM ad_views v WHERE v.ad_id=a.id AND v.user_id=? AND DATE(v.viewed_at)=DATE('now')),
-          0
-        ) as viewed_today
-      FROM tl_ads a
-      WHERE a.status='active'
-        AND a.budget_tl>0 AND a.spent_tl<a.budget_tl
-      ORDER BY a.tl_reward DESC, a.created_at DESC
-      LIMIT 20
-    `).bind(userId || 0).all();
-
-    const {rules}=await readRewardPolicy(c.env.DB);
-    return c.json({ ads: (result.results||[]).map((ad:any)=>({...ad,tl_reward:Math.min(rules.ad_max,Math.max(rules.ad_min,Number(ad.tl_reward)||rules.ad_default))})) });
-  } catch (e: any) {
-    return c.json({ ads: [], error: e.message });
-  }
-});
-
-// ── 광고 시청 완료 → TL 지급 ──
-ads.post('/:id/complete', async (c) => {
-  try {
-    await ensureTables(c.env.DB);
-    const adId = c.req.param('id');
-    const token = (c.req.header('Authorization') || '').replace('Bearer ', '');
-    const userId = await parseUserId(token,c.env.DB,c.env.JWT_SECRET);
-    if (!userId) return c.json({ error: '로그인 필요' }, 401);
-
-    const body = await c.req.json<any>().catch(() => ({}));
-
-    return c.json(await completeAdReward(c.env.DB,Number(userId),adId,String(body.session_id||'')));
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
+// Discontinued ads: no catalog or reward issuance for any client.
+ads.get('/available', c => c.json({ ads: [], retired: true }));
+ads.post('/:id/complete', c => c.json({ ok:false, code:'AD_REWARD_RETIRED', error:'광고 시청 보상이 종료되었습니다.' },410));
 
 // ── 광고 클릭 기록 ──
 ads.post('/:id/click', async (c) => {
