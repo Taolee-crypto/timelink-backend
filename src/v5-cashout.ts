@@ -1,4 +1,5 @@
 import { readRewardPolicy } from './v5-reward-policy';
+import { readPurchasedTlAttribution } from './v5-purchased-tl-attribution';
 import { assertTLAtomScale,ensureLedgerAccount,postLedgerTransaction,tlToAtoms,atomsToTl } from './economy-ledger';
 /** Purchased principal only. Creator royalties have a separate contribution-
  * based redemption policy and must not enter this listener eligibility test. */
@@ -19,7 +20,34 @@ export async function listenerCashoutEligibility(db:D1Database,userId:number){
     FROM v3_economy_transactions WHERE actor_user_id=? AND transaction_type='listener_cashout_request'`)
     .bind(String(userId)).first<any>();
   const purchased=Number(row?.purchased_atoms||0),granted=Number(credits?.granted_atoms||0);
-  return {purchasedAtoms:purchased,grantedAtoms:granted,
+  // The paid wallet can also hold creator royalties. Only verified LIVE
+  // purchase lots actually remaining in wallet_paid may fund a listener cashout.
+  // Unknown/test receipts, active disputes and legally reviewed expired lots
+  // must not be borrowed from creator settlements or already spent purchases.
+  const attribution=await readPurchasedTlAttribution(db,String(userId));
+  const lotRows=await db.prepare(
+    'SELECT payment_key,payment_mode,refund_dispute_pending,refund_deadline_ms,'+
+    'consumer_rights_cleared,legal_review_approved FROM v5_purchased_tl_lots WHERE user_id=?'
+  ).bind(String(userId)).all<{
+    payment_key:string;payment_mode:string;refund_dispute_pending:number;
+    refund_deadline_ms:number|null;consumer_rights_cleared:number;legal_review_approved:number;
+  }>();
+  const byKey=new Map((lotRows.results||[]).map(l=>[l.payment_key,l]));
+  const now=Date.now();
+  let livePurchasedWalletAtoms=0;
+  for(const lot of attribution.lots){
+    const saved=byKey.get(lot.paymentKey);
+    if(!saved || saved.payment_mode!=='live' || saved.refund_dispute_pending===1)continue;
+    if(saved.legal_review_approved===1 && saved.consumer_rights_cleared===1 &&
+       Number.isSafeInteger(saved.refund_deadline_ms) && now>=Number(saved.refund_deadline_ms))continue;
+    livePurchasedWalletAtoms+=lot.walletAtoms;
+    if(!Number.isSafeInteger(livePurchasedWalletAtoms))throw Error('PURCHASED_PRINCIPAL_OVERFLOW');
+  }
+  const paidAccount=attribution.accounts.find(a=>a.bucket==='wallet_paid');
+  if(livePurchasedWalletAtoms>Number(paidAccount?.available_atoms||0))
+    throw Error('PURCHASED_PRINCIPAL_ATTRIBUTION_MISMATCH');
+  return {livePurchasedWalletAtoms,paidAccountSnapshot:paidAccount||null,
+    purchasedAtoms:purchased,grantedAtoms:granted,
     principalRemainingAtoms:Math.max(0,purchased-Number(reservations?.atoms||0)),
     purchaseRatio:granted>0?purchased/granted:0,eligible:granted>0&&purchased*2>=granted,
     policyVersion:'listener-purchased-history-50pct-v5',
@@ -39,6 +67,10 @@ export async function requestListenerCashout(db:D1Database,input:{userId:number;
   if(!eligibility.eligible)throw new Error('PURCHASE_HISTORY_BELOW_50_PERCENT');
   const atoms=tlToAtoms(amountTL);
   if(atoms>eligibility.principalRemainingAtoms)throw new Error('PURCHASED_PRINCIPAL_LIMIT');
+  if(atoms>eligibility.livePurchasedWalletAtoms)throw new Error('VERIFIED_LIVE_PURCHASE_BALANCE_REQUIRED');
+  const paidSnapshot=eligibility.paidAccountSnapshot;
+  if(!paidSnapshot||paidSnapshot.held_atoms!==0||paidSnapshot.available_atoms<atoms)
+    throw new Error('PURCHASED_PRINCIPAL_WALLET_LOCKED');
   const feePct=input.plan==='B'?policy.rules.fee_b:policy.rules.fee_a,feeTL=Math.ceil(amountTL*feePct),netTL=amountTL-feeTL;
   const paid=await ensureLedgerAccount(db,'user',userId,'TL','wallet_paid');
   const pending=await ensureLedgerAccount(db,'escrow',userId,'TL','listener_cashout_pending');
@@ -65,7 +97,21 @@ export async function requestListenerCashout(db:D1Database,input:{userId:number;
     description:'일반 회원 구매 TL 환전 신청·심사 대기 보관',
     metadata:{amount_atoms:atoms,fee_tl:feeTL,net_tl:netTL,policy_version:eligibility.policyVersion,reward_policy_version:policy.version},
     lines:[{accountId:paid,assetCode:'TL',amountAtoms:-atoms},{accountId:pending,assetCode:'TL',amountAtoms:atoms}],
-    atomicStatements:[db.prepare(`INSERT INTO v5_listener_cashout_requests(user_id,request_key,amount_atoms,principal_limit_atoms,fee_tl,net_tl) VALUES(?,?,?,?,?,?)`)
+    atomicStatements:[
+      // The account has just been debited by this same atomic D1 batch.
+      // Reject competing concurrent wallet writes instead of withdrawing royalties.
+      db.prepare("SELECT CASE WHEN (SELECT version FROM v3_economy_balances WHERE account_id=?)=? "+
+        "AND (SELECT available_atoms FROM v3_economy_balances WHERE account_id=?)=? "+
+        "THEN 1 ELSE json_extract('invalid','
+      .bind(userId,requestKey,atoms,eligibility.purchasedAtoms,feeTL,netTL),
+      db.prepare("INSERT INTO tl_exchanges(user_id,tl_amount,fee_pct,fee_tl,net_tl,status) VALUES(?,?,?,?,?,'pending')").bind(userId,amountTL,feePct,feeTL,netTL)]
+  });
+  return {ok:true,replayed:posted.replayed,request_id:requestKey,tl_requested:amountTL,fee_tl:feeTL,net_tl:netTL,fee_pct:feePct*100,
+    note:'환전 심사 대기 중입니다. 현금 지급 완료를 의미하지 않습니다.'};
+}
+) END")
+        .bind(paidSnapshot.id,paidSnapshot.version+1,paidSnapshot.id,paidSnapshot.available_atoms-atoms),
+      db.prepare(`INSERT INTO v5_listener_cashout_requests(user_id,request_key,amount_atoms,principal_limit_atoms,fee_tl,net_tl) VALUES(?,?,?,?,?,?)`)
       .bind(userId,requestKey,atoms,eligibility.purchasedAtoms,feeTL,netTL),
       db.prepare("INSERT INTO tl_exchanges(user_id,tl_amount,fee_pct,fee_tl,net_tl,status) VALUES(?,?,?,?,?,'pending')").bind(userId,amountTL,feePct,feeTL,netTL)]
   });
