@@ -5,6 +5,9 @@ on:
       - 'src/economy-ledger.ts'
       - 'src/economics.ts'
       - 'scripts/test-integer-tl-contract.cjs'
+      - 'src/v5-tl-carry.ts'
+      - 'src/v5-tl-carry-store.ts'
+      - 'scripts/test-tl-carry-contract.cjs'
       - '.github/workflows/integer-tl-contracts.yml'
   pull_request:
     paths:
@@ -21,3 +24,4 @@ jobs:
         with:
           node-version: '22'
       - run: node scripts/test-integer-tl-contract.cjs
+      - run: node scripts/test-tl-carry-contract.cjs
