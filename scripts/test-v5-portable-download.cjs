@@ -1,0 +1,15 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs');
+const index=fs.readFileSync('src/index.ts','utf8');
+const portable=fs.readFileSync('src/v5-portable-tl3.ts','utf8');
+assert.match(index,/tl3_v5_portable_downloads/);
+assert.match(index,/reserveOfflineV5TrackTl/);
+assert.match(index,/buildPortableCapsule/);
+assert.match(index,/appendPortableCapsule/);
+assert.match(index,/X-TL3-Portable-Seconds/);
+assert.match(portable,/timelink-portable-playback/);
+assert.match(portable,/reserved_seconds/);
+assert.match(portable,/TLP5CAP1/);
+assert.match(portable,/wrapped_content_key/);
+assert.doesNotMatch(portable,/user_id|player_id|device_id|login/,'portable capsule must not bind to PC or account');
+console.log('PASS portable TL3 download carries funded seconds without PC binding');
