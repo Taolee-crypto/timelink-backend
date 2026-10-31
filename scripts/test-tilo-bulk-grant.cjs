@@ -13,7 +13,7 @@ for(const re of [/requireAdmin\(c\)/,/body\?\.rights_confirmed!==true/,/ids\.len
 assert.doesNotMatch(section,/postLedgerTransaction|TL_BALANCE|creator_reward|mineTlc/i);
 const match=section.match(/const allowed=await c\.env\.DB\.prepare\(`([\s\S]*?)`/);
 assert.ok(match);
-const sql=match[1].replace(/$\{placeholders\}/g,'?,?,?');
+const sql=match[1].replaceAll('${placeholders}','?,?,?');
 const py=String.raw`
 import sqlite3,sys
 db=sqlite3.connect(':memory:')
