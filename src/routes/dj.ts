@@ -279,7 +279,7 @@ router.post('/tilo/daily-context/:country', async (c) => {
   const weather=liveWeather;
   // A source-qualified observation is available even when optional AI
   // commentary is unavailable. No user-supplied weather can override it.
-  const voiceContext=weather&&Number.isInteger(Number(weather.weather_code))?{
+  const voiceContext=weather&&weather.weather_code!=null&&Number.isInteger(Number(weather.weather_code))?{
     weather_code:Number(weather.weather_code),source:weather.source,
     observed_at:weather.observed_at||null
   }:null;
