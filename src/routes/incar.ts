@@ -215,4 +215,49 @@ router.post('/channel', async (c) => {
   return c.json({ ok: true, channel_id: channelId, fee });
 });
 
+
+/** 차량 기여도 정책: 테스트는 정산 원장에 쓰지 않는다. */
+async function ensureCarContributionPolicy(db:D1Database){
+  await db.prepare(`CREATE TABLE IF NOT EXISTS v5_car_contribution_policy(
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    multiplier REAL NOT NULL DEFAULT 2.5,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_by INTEGER,
+    updated_at TEXT
+  )`).run();
+  await db.prepare('INSERT OR IGNORE INTO v5_car_contribution_policy(id,multiplier,enabled) VALUES(1,2.5,0)').run();
+}
+router.get('/contribution-policy',async c=>{
+  const auth=await authUser(c);if(!auth)return c.json({ok:false,error:'LOGIN_REQUIRED'},401);
+  await ensureCarContributionPolicy(c.env.DB);
+  const policy=await c.env.DB.prepare('SELECT multiplier,enabled,updated_at FROM v5_car_contribution_policy WHERE id=1').first<any>();
+  return c.json({ok:true,policy,car_attestation_available:false,live_reward_enabled:false});
+});
+router.post('/contribution-simulate',async c=>{
+  const auth=await authUser(c);if(!auth)return c.json({ok:false,error:'LOGIN_REQUIRED'},401);
+  await ensureCarContributionPolicy(c.env.DB);
+  const b=await c.req.json().catch(()=>null) as any;
+  if(!b||!Number.isSafeInteger(b.seconds)||b.seconds<1||b.seconds>86400)
+    return c.json({ok:false,error:'INVALID_SECONDS'},400);
+  const policy=await c.env.DB.prepare('SELECT multiplier,enabled FROM v5_car_contribution_policy WHERE id=1').first<any>();
+  const multiplier=Number(policy?.multiplier||2.5);
+  return c.json({ok:true,simulation:true,ledger_written:false,tlc_mined:0,
+    assumed_vehicle_registered:true,assumed_bluetooth_connected:true,assumed_playback_verified:true,
+    seconds:b.seconds,base_contribution:b.seconds,vehicle_multiplier:multiplier,
+    weighted_contribution:Number((b.seconds*multiplier).toFixed(4)),
+    live_reward_enabled:false});
+});
+router.put('/admin/contribution-policy',async c=>{
+  const auth=await authUser(c);if(!auth)return c.json({ok:false,error:'LOGIN_REQUIRED'},401);
+  const admin=await c.env.DB.prepare('SELECT role FROM users WHERE id=?').bind(auth.id).first<any>();
+  if(String(admin?.role||'').toLowerCase()!=='admin')return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+  const b=await c.req.json().catch(()=>null) as any;
+  if(!b||typeof b.enabled!=='boolean'||typeof b.multiplier!=='number'||!Number.isFinite(b.multiplier)||b.multiplier<1||b.multiplier>5)
+    return c.json({ok:false,error:'INVALID_POLICY'},400);
+  await ensureCarContributionPolicy(c.env.DB);
+  await c.env.DB.prepare('UPDATE v5_car_contribution_policy SET multiplier=?,enabled=?,updated_by=?,updated_at=? WHERE id=1')
+    .bind(b.multiplier,b.enabled?1:0,auth.id,new Date().toISOString()).run();
+  return c.json({ok:true,policy:{multiplier:b.multiplier,enabled:b.enabled},live_reward_enabled:false});
+});
+
 export default router;
