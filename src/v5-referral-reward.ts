@@ -56,6 +56,17 @@ export async function settleVerifiedReferral(db:D1Database,referrerIdInput:numbe
  const claimTime=Date.parse(String(claim.created_at||'').replace(' ','T')+'Z');
  if(!Number.isFinite(accountTime)||!Number.isFinite(claimTime)||
     claimTime<accountTime-60000||claimTime>accountTime+14*86400000)throw Error('REFERRAL_SIGNUP_WINDOW_EXPIRED');
+ const key='referral:'+milestone+':'+referredId;
+ const prior=await db.prepare('SELECT status,credited_tl_b,poc_points,ledger_transaction_id FROM v5_referral_reward_receipts WHERE milestone_key=?')
+  .bind(key).first<any>();
+ if(prior){
+   let transactionId=prior.ledger_transaction_id||null;
+   if(transactionId===key){
+     const tx=await db.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>();
+     transactionId=tx?.id||transactionId;
+   }
+   return {status:String(prior.status),milestone,tl_b:Number(prior.credited_tl_b),poc_points:Number(prior.poc_points),ledger_transaction_id:transactionId};
+ }
  let sourceReference='member:'+referredId;
  if(milestone==='store_first_paid'){
   // This is the provider-confirmed *sandbox* commercial time ledger. Never
@@ -69,17 +80,6 @@ export async function settleVerifiedReferral(db:D1Database,referrerIdInput:numbe
     ORDER BY o.paid_at,o.order_id LIMIT 1`).bind(referredId,claim.created_at).first<any>().catch(()=>null);
   if(!paid)throw Error('VERIFIED_STORE_PAYMENT_REQUIRED');
   sourceReference='sandbox_store_payment:'+String(paid.order_id);
- }
- const key='referral:'+milestone+':'+referredId;
- const prior=await db.prepare('SELECT status,credited_tl_b,poc_points,ledger_transaction_id FROM v5_referral_reward_receipts WHERE milestone_key=?')
-  .bind(key).first<any>();
- if(prior){
-   let transactionId=prior.ledger_transaction_id||null;
-   if(transactionId===key){
-     const tx=await db.prepare('SELECT id FROM v3_economy_transactions WHERE idempotency_key=?').bind(key).first<any>();
-     transactionId=tx?.id||transactionId;
-   }
-   return {status:String(prior.status),milestone,tl_b:Number(prior.credited_tl_b),poc_points:Number(prior.poc_points),ledger_transaction_id:transactionId};
  }
  const reward=await readRewardPolicy(db);
  const isSignup=milestone==='signup_verified';
