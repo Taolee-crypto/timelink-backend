@@ -9,7 +9,7 @@ import {assertTlcAssetScale,splitMinedTlcAtoms,TLC_RESERVE_OWNER,TLC_RESERVE_BUC
 import { completeAdReward, startAdReward } from './v5-ad-reward';
 import { verifyToken } from './auth';
 import type { Env } from './types';
-import { getLedgerWallet, atomsToTl, ensureLedgerAccount, postLedgerTransaction, tlToAtoms } from './economy-ledger';
+import { getLedgerWallet, atomsToTl, ensureLedgerAccount, postLedgerTransaction, wholeTlToAtoms } from './economy-ledger';
 import { CREATOR_SHARE_RATE, PLATFORM_SHARE_RATE } from './economy-policy';
 
 const eco = new Hono<{ Bindings: Env }>();
@@ -189,10 +189,10 @@ export async function reconcilePristineSignupBonus(db: D1Database, user: any, pr
     metadata:{non_redeemable:true,legacy_signup_reconciliation:true},
     issuanceStatements:[db.prepare(
       "UPDATE v3_economy_balances SET available_atoms=available_atoms+?,version=version+1 WHERE account_id=?"
-    ).bind(tlToAtoms(promotionAmount),source)],
+    ).bind(wholeTlToAtoms(promotionAmount),source)],
     lines:[
-      {accountId:source,assetCode:'TL',amountAtoms:-tlToAtoms(promotionAmount)},
-      {accountId:destination,assetCode:'TL',amountAtoms:tlToAtoms(promotionAmount)}
+      {accountId:source,assetCode:'TL',amountAtoms:-wholeTlToAtoms(promotionAmount)},
+      {accountId:destination,assetCode:'TL',amountAtoms:wholeTlToAtoms(promotionAmount)}
     ]
   });
 }
