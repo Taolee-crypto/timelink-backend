@@ -459,22 +459,42 @@ router.get('/central-broadcast/stations/:country/audit', async c => {
   try{
     await ensureCentralBroadcastSchema(c.env.DB);
     const rows=await c.env.DB.prepare(`SELECT f.id AS file_id,f.title,f.file_type,f.shared,
+      f.user_id AS owner_user_id,COALESCE(f.revenue_held,0) AS revenue_held,
       v.status AS v5_status,v.duration_ms,
       CASE WHEN EXISTS (SELECT 1 FROM tl_creator_metadata cm WHERE cm.file_id=f.id AND cm.user_id=f.user_id AND cm.rights_declared=1 AND cm.rights_role IN ('owner','authorized_agent','licensee') AND cm.rights_scope IN ('master_recording','distribution_license','delegated_scope') AND cm.declaration_status IN ('declared','verified','approved')) THEN 1 ELSE 0 END AS release_rights,
       CASE WHEN EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
         WHERE rg.file_id=f.id AND rg.creator_id=f.user_id AND rg.country=?
           AND rg.status='active' AND (rg.expires_at IS NULL OR rg.expires_at>datetime('now')))
-        THEN 1 ELSE 0 END AS country_broadcast_rights
+        THEN 1 ELSE 0 END AS country_broadcast_rights,
+      CASE WHEN EXISTS(SELECT 1 FROM central_broadcast_service_file_grants sg
+        WHERE sg.service_id=? AND sg.file_id=f.id AND sg.country=?
+          AND sg.status='active' AND (sg.expires_at IS NULL OR sg.expires_at>datetime('now')))
+        THEN 1 ELSE 0 END AS service_granted,
+      CASE WHEN EXISTS(SELECT 1 FROM central_broadcast_rights_grants rg
+        WHERE rg.file_id=f.id AND rg.creator_id=f.user_id AND rg.country=?
+          AND (rg.status<>'active' OR (rg.expires_at IS NOT NULL
+            AND rg.expires_at<=datetime('now'))))
+        THEN 1 ELSE 0 END AS rights_blocked
       FROM tl_files f LEFT JOIN tl3_v5_releases v ON v.file_id=f.id
-      WHERE f.shared=1 ORDER BY f.id DESC LIMIT 100`).bind(country).all<any>();
+      WHERE f.shared=1 ORDER BY f.id DESC LIMIT 100`)
+      .bind(country,'central-tilo-'+adminId,country,country).all<any>();
     const tracks=(rows.results||[]).map(r=>{
       const reasons:string[]=[];
       if(!r.v5_status)reasons.push('NO_V5_RELEASE');
       else if(r.v5_status!=='sealed')reasons.push('V5_NOT_SEALED');
       if(!r.release_rights)reasons.push('SHAREPLACE_RELEASE_RIGHTS_MISSING');
       if(!r.country_broadcast_rights)reasons.push('COUNTRY_BROADCAST_RIGHTS_MISSING');
+      if(!r.service_granted)reasons.push('COUNTRY_SERVICE_GRANT_MISSING');
+      if(r.rights_blocked)reasons.push('BROADCAST_RIGHTS_BLOCKED');
+      if(Number(r.revenue_held||0)!==0)reasons.push('REVENUE_HOLD');
       if(String(r.file_type||'').toLowerCase()!=='audio/tl3')reasons.push('FILE_TYPE_NOT_TL3');
-      return {file_id:r.file_id,title:r.title,reasons,eligible:reasons.length===0};
+      const canGrant=Number(r.owner_user_id)===adminId &&
+        r.v5_status==='sealed'&&Number(r.release_rights)===1&&
+        Number(r.revenue_held||0)===0&&!r.rights_blocked &&
+        String(r.file_type||'').toLowerCase()==='audio/tl3'&&
+        reasons.some(x=>x==='COUNTRY_BROADCAST_RIGHTS_MISSING'||x==='COUNTRY_SERVICE_GRANT_MISSING');
+      return {file_id:r.file_id,title:r.title,reasons,eligible:reasons.length===0,
+        can_grant:!!canGrant,owner_is_admin:Number(r.owner_user_id)===adminId};
     });
     return c.json({ok:true,country,total:tracks.length,eligible:tracks.filter(x=>x.eligible).length,tracks});
   }catch(e:any){
