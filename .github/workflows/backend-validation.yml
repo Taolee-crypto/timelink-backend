@@ -29,5 +29,7 @@ jobs:
         run: node scripts/test-v5-score-retired.cjs
       - name: Verify numeric TRACK references resolve to V5 file IDs
         run: node scripts/test-v5-numeric-resolve.cjs
+      - name: Verify TILO administrator discount evidence and settlement safety
+        run: node scripts/test-tilo-flexible-discount.cjs
       - name: Validate Worker bundle (dry run only)
         run: npx wrangler deploy --dry-run --outdir .wrangler-dist
