@@ -109,7 +109,7 @@ async function main(){
  console.log('PASS channel community: real persistence, idempotent likes, reporting and admin moderation');
  const objects=new Map();env.STORAGE_ENCRYPTION_KEY='fixture-encryption-key';
  env.R2={async put(k,data){objects.set(k,new Uint8Array(data))},async get(k){const bytes=objects.get(k);return bytes?{body:new Blob([bytes]).stream()}:null},async delete(k){objects.delete(k)}};
- async function uploadDiscovery(name,content,batch){const form=new FormData();form.append('file',new File([content],name,{type:'audio/mpeg'}));form.append('batch_id',batch);form.append('title',name);return discovery.request('/',{method:'POST',headers:{Authorization:'Bearer '+userToken},body:form},env);}
+ async function uploadDiscovery(name,content,batch){const form=new FormData();form.append('file',new File([content],name,{type:'audio/mpeg'}));form.append('batch_id',batch);form.append('title',name);form.append('metadata',JSON.stringify({rights_role:'recording_owner',acknowledgement:'pending_manual_verification'}));return discovery.request('/',{method:'POST',headers:{Authorization:'Bearer '+userToken},body:form},env);}
  assert.equal((await discovery.request('/',{},env)).status,401);
  for(let i=0;i<10;i++)assert.equal((await uploadDiscovery('fixture-'+i+'.mp3','fixture audio '+i,'batch-fixture-1')).status,201);
  response=await uploadDiscovery('fixture-0.mp3','fixture audio 0','batch-fixture-1');assert.equal((await response.json()).replayed,true);
