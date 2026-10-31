@@ -30,8 +30,8 @@ export async function recordFractionalTlAccrual(db:D1Database,input:CarryAccrual
   if(paid>0)throw Error('CARRY_PAYOUT_LEDGER_REQUIRED');
   const results=await db.batch([
     db.prepare('UPDATE v5_tl_fractional_carry SET carry_atoms=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE carry_key=? AND version=?').bind(after,input.carryKey,version),
-    db.prepare('INSERT INTO v5_tl_fractional_carry_events(event_key,carry_key,earned_atoms,paid_whole_tl,carry_before_atoms,carry_after_atoms) VALUES (?,?,?,?,?,?)').bind(input.eventKey,input.carryKey,input.earnedAtoms,paid,before,after)
+    db.prepare('INSERT INTO v5_tl_fractional_carry_events(event_key,carry_key,earned_atoms,paid_whole_tl,carry_before_atoms,carry_after_atoms) SELECT ?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM v5_tl_fractional_carry WHERE carry_key=? AND version=? AND carry_atoms=?)').bind(input.eventKey,input.carryKey,input.earnedAtoms,paid,before,after,input.carryKey,version+1,after)
   ]);
-  if(Number(results[0]?.meta?.changes)!==1)throw Error('CARRY_VERSION_CONFLICT');
+  if(Number(results[0]?.meta?.changes)!==1||Number(results[1]?.meta?.changes)!==1)throw Error('CARRY_VERSION_CONFLICT');
   return {replayed:false,paidWholeTl:paid,carryAtoms:after};
 }
