@@ -28,7 +28,7 @@ CREATE TABLE tl_ads(id TEXT PRIMARY KEY,status TEXT,tl_reward INTEGER,budget_tl 
 INSERT INTO tl_ads VALUES('ad-1','active',300,500,0,'image',0,NULL);
 CREATE TABLE ad_views(id INTEGER PRIMARY KEY,ad_id TEXT,user_id INTEGER,completed INTEGER,tl_rewarded INTEGER,duration_watched INTEGER);
 CREATE TABLE central_broadcast_service_accounts(service_id TEXT PRIMARY KEY,parent_admin_user_id INTEGER,status TEXT);
-CREATE TABLE central_broadcast_service_file_grants(service_id TEXT,file_id INTEGER,country TEXT,status TEXT,expires_at TEXT);
+CREATE TABLE central_broadcast_service_file_grants(service_id TEXT,file_id INTEGER,country TEXT,status TEXT,permission TEXT,expires_at TEXT);
 CREATE TABLE central_broadcast_rights_grants(file_id INTEGER,creator_id INTEGER,country TEXT,status TEXT,expires_at TEXT);
 CREATE TABLE tl3_v5_releases(file_id INTEGER,user_id INTEGER,duration_ms INTEGER,status TEXT);
 CREATE TABLE tl3_releases(file_id INTEGER,status TEXT,rights_confirmed INTEGER);
@@ -36,7 +36,7 @@ CREATE TABLE tl_creator_metadata(file_id INTEGER,user_id INTEGER,rights_declared
 INSERT INTO tl_creator_metadata VALUES(7,1,0,'owner','master_recording','declared');
 CREATE TABLE tl_files(id INTEGER PRIMARY KEY,title TEXT,artist TEXT,shared INTEGER,file_type TEXT,revenue_held INTEGER);
 INSERT INTO central_broadcast_service_accounts VALUES('central-tilo-2',2,'active');
-INSERT INTO central_broadcast_service_file_grants VALUES('central-tilo-2',7,'KR','active',NULL);
+INSERT INTO central_broadcast_service_file_grants VALUES('central-tilo-2',7,'KR','active','stream',NULL);
 INSERT INTO tl3_v5_releases VALUES(7,1,180000,'sealed');
 INSERT INTO tl3_releases VALUES(7,'released',1);
 INSERT INTO tl_files VALUES(7,'Fixture','Artist',1,'audio/tl3',0);`);
@@ -67,12 +67,16 @@ async function main(){
  assert.equal((await permittedStationTracks(db,'KR')).length,0);
  sqlite.exec("UPDATE tl_creator_metadata SET rights_declared=1; INSERT INTO central_broadcast_rights_grants VALUES(7,1,'KR','active',NULL)");
  assert.equal((await permittedStationTracks(db,'KR')).length,1);
+ assert.equal((await permittedStationTracks(db,'JP')).length,0,'KR right must never authorize JP station');
+ sqlite.exec("INSERT INTO central_broadcast_rights_grants VALUES(7,1,'JP','active',NULL)");
+ assert.equal((await permittedStationTracks(db,'JP')).length,0,'JP also requires a service grant');
+ sqlite.exec("INSERT INTO central_broadcast_service_file_grants VALUES('central-tilo-2',7,'JP','active','stream',NULL)");
  assert.equal((await permittedStationTracks(db,'JP')).length,1);
  sqlite.exec("INSERT INTO central_broadcast_rights_grants VALUES(7,1,'JP','revoked',NULL)");
- assert.equal((await permittedStationTracks(db,'JP')).length,0);
+ assert.equal((await permittedStationTracks(db,'JP')).length,0,'Revocation must win over active JP grant');
  sqlite.exec("UPDATE central_broadcast_rights_grants SET expires_at='2000-01-01T00:00:00Z'");
  assert.equal((await permittedStationTracks(db,'KR')).length,0);
- console.log('PASS station rights: public V5 declarations, ordinary eligibility, country revocation and expiry');
+ console.log('PASS station rights: explicit country + service grants, no cross-border leakage, revocation and expiry');
  const env={DB:db,JWT_SECRET:'isolated-fixture-key'};
  const userToken=await makeAccessToken(1,env.JWT_SECRET),adminToken=await makeAccessToken(2,env.JWT_SECRET);
  const req=(method,token,body)=>admin.request('/v5-work-ledger',{method,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})},env);
