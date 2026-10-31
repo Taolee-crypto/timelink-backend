@@ -12,6 +12,7 @@ export {default as admin} from './src/routes/admin';
 export {makeAccessToken} from './src/auth';
 export {requestListenerCashout,listenerCashoutEligibility} from './src/v5-cashout';
 export {readPurchasedTlAttribution} from './src/v5-purchased-tl-attribution';
+export {ensureLedgerAccount,postLedgerTransaction,tlToAtoms} from './src/economy-ledger';
 export {default as community} from './src/routes/community';
 export {default as discovery} from './src/routes/music-discovery';
 export {default as incar} from './src/routes/incar';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'api.cjs'),logLevel:'silent'});
@@ -99,6 +100,24 @@ async function main(){
  const {listenerCashoutEligibility}=require(path.join(temp,'api.cjs'));
  const eligible=await listenerCashoutEligibility(db,2);
  assert.ok(eligible.livePurchasedWalletAtoms<=100000000,'Only live purchased credit can fund cashout');
+ // Unverified purchase credits cannot be paid out as verified cash principal.
+ sqlite.prepare("INSERT INTO users(id,role) VALUES(3,'user'),(4,'user')").run();
+ await creditVerifiedPayment(db,{userId:'3',method:'fixture',paymentId:'pay-unknown-3',orderId:'order-unknown-3',paidTL:10000,bonusTL:0,paymentMode:'unknown'});
+ await assert.rejects(requestListenerCashout(db,{userId:3,amountTL:2000,requestKey:'cashout-unknown-3',plan:'A'}),/VERIFIED_LIVE_PURCHASE_BALANCE_REQUIRED/);
+ assert.equal((await readV5Wallet(db,3)).tl_p,10000);
+ // Creator royalties in wallet_paid must never substitute for spent purchase principal.
+ await creditVerifiedPayment(db,{userId:'4',method:'fixture',paymentId:'pay-live-4',orderId:'order-live-4',paidTL:10000,bonusTL:0,paymentMode:'live'});
+ const {ensureLedgerAccount,postLedgerTransaction,tlToAtoms}=require(path.join(temp,'api.cjs'));
+ const wallet4=await ensureLedgerAccount(db,'user',4,'TL','wallet_paid');
+ const platform4=await ensureLedgerAccount(db,'platform','fixture','TL','fixture_paid');
+ await postLedgerTransaction(db,{idempotencyKey:'fixture-use-4',transactionType:'verified_payment_use',source:'fixture',actorUserId:'4',lines:[
+  {accountId:wallet4,assetCode:'TL',amountAtoms:-tlToAtoms(9000)},{accountId:platform4,assetCode:'TL',amountAtoms:tlToAtoms(9000)}]});
+ await postLedgerTransaction(db,{idempotencyKey:'fixture-royalty-4',transactionType:'verified_creator_royalty',source:'fixture',actorUserId:'4',lines:[
+  {accountId:platform4,assetCode:'TL',amountAtoms:-tlToAtoms(9000)},{accountId:wallet4,assetCode:'TL',amountAtoms:tlToAtoms(9000)}]});
+ assert.equal((await readV5Wallet(db,4)).tl_p,10000);
+ await assert.rejects(requestListenerCashout(db,{userId:4,amountTL:2000,requestKey:'cashout-royalty-4',plan:'A'}),/VERIFIED_LIVE_PURCHASE_BALANCE_REQUIRED/);
+ assert.equal((await readV5Wallet(db,4)).tl_p,10000);
+ console.log('PASS listener cashout: unverified funds and creator-paid royalties cannot replace spent purchase TL_P');
  console.log('PASS listener cashout: purchased provenance, 50% threshold, escrow, fees and request replay');
  const headers={Authorization:'Bearer '+userToken,'Content-Type':'application/json'};
  const post=(app,url,body,token=userToken)=>app.request(url,{method:'POST',headers:{...headers,Authorization:'Bearer '+token},body:JSON.stringify(body)},env);
