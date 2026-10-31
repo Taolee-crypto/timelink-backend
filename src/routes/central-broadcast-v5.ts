@@ -14,8 +14,11 @@ router.get('/stations/:country',async c=>{
   try{
     const now=new Date();
     const tracks=await scheduledStationTracks(c.env.DB,country,now);
+    const promotedCount=tracks.filter(t=>t.is_promoted===true).length;
     return c.json({ok:true,country,service_enabled:tracks.length>0,
       granted_file_ids:tracks.map(t=>t.file_id),tracks,
+      promoted_count:promotedCount,ordinary_count:tracks.length-promotedCount,
+      requires_separate_admin_country_grant:false,
       slot:currentTiloSlot(tracks,now.getTime(),Date.UTC(2026,0,1)),serverTime:now.toISOString(),
       show:tiloLocalShow(country as TiloCountry,now),
       scheduling_policy:'promotion_first_random_fallback',
