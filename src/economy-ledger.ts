@@ -10,6 +10,19 @@ export function tlToAtoms(value:number):number {
 export function atomsToTl(value:number):number {
   return Number((Number(value||0)/TL_ATOMS_PER_TL).toFixed(4));
 }
+/** Strict user-facing TL amounts. Legacy fractional atoms remain readable for reconciliation. */
+export function assertWholeTL(value:number):number {
+  if(!Number.isSafeInteger(value)||value<0) throw new Error('TL_WHOLE_UNIT_REQUIRED');
+  return value;
+}
+export function assertWholeTLAtoms(atoms:number):number {
+  if(!Number.isSafeInteger(atoms)||atoms%TL_ATOMS_PER_TL!==0) throw new Error('TL_WHOLE_UNIT_REQUIRED');
+  return atoms;
+}
+export function wholeTlToAtoms(value:number):number {
+  return assertWholeTL(value)*TL_ATOMS_PER_TL;
+}
+
 
 export async function assertTLAtomScale(db:D1Database):Promise<void>{
   const row=await db.prepare("SELECT decimals FROM v3_economy_assets WHERE asset_code='TL'").first<any>();
