@@ -11,6 +11,7 @@ import creatorEarningsRouter from './routes/creator-earnings';
 import {readCreatorSplit} from './creator-split-policy';
 import creatorContributorsRouter from './routes/creator-contributors';
 import { searchSpotifyCatalogue,spotifyCatalogueDetails,storeCreatorSpotifyReference,SpotifyCatalogueError } from './spotify-catalogue';
+import v5ExchangeEscrowRouter from './v5-exchange-escrow';
 import { Hono } from 'hono';
 import { refreshTiloCountryClocks, tiloLocalSchedule, TILO_COUNTRY_ZONES, type TiloCountryCode } from './tilo-country-clock';
 import { planTiloBroadcast } from './tilo-v5-scheduler';
@@ -105,6 +106,7 @@ app.options('*', () => new Response(null, { status: 204 }));
 
 // Player-session routes are mounted after the global CORS middleware.
 app.route('/api/v1/tl3/player', tl3PlayerSessionRouter);
+app.route('/api/v5/exchange',v5ExchangeEscrowRouter);
 
 // ══════════════════════════════════════════════════════════
 
