@@ -35,5 +35,7 @@ jobs:
         run: node scripts/test-tilo-v5-operations.cjs
       - name: Verify country rights grant reviewer owner and revocation guards
         run: node scripts/test-tilo-country-grant-audit.cjs
+      - name: Test TILO bulk country grant ownership and audited atomicity
+        run: node scripts/test-tilo-bulk-grant.cjs
       - name: Validate Worker bundle (dry run only)
         run: npx wrangler deploy --dry-run --outdir .wrangler-dist
