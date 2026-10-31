@@ -96,7 +96,7 @@ router.get('/settlement/local-day-preview',async c=>{
       .bind(country,from,to).all<any>();
     // Never present a partial D1 result page as a complete financial reconciliation.
     if(!Array.isArray(rows.results))return c.json({ok:false,error:'SETTLEMENT_QUERY_FAILED'},503);
-    if(rows.meta?.has_more_pages||rows.meta?.hasMorePages)
+    if((rows.meta as Record<string,unknown> | undefined)?.has_more_pages)
       return c.json({ok:false,error:'SETTLEMENT_RESULT_INCOMPLETE'},409);
     const totals=new Map<number,{creator_id:number;events:number;audible_ms:number;creator_atoms:number;platform_atoms:number}>();
     for(const row of rows.results||[]){
