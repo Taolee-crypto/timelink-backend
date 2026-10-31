@@ -2,6 +2,7 @@
 import { Hono } from 'hono';
 import { verifyToken } from './auth';
 import { runEscrowSimulation } from './v5-exchange-simulator';
+import { parseWholeTL, calculateTLCAtoms } from './v5-exchange-validation';
 import type { Env } from './types';
 const router=new Hono<{Bindings:Env}>();
 async function owner(c:any){const raw=(c.req.header('Authorization')||'').replace(/^Bearer\s+/,'').trim();if(!raw)return null;const session=await verifyToken(raw,c.env.JWT_SECRET);const id=Number(session?.sub||0);return Number.isSafeInteger(id)&&id>0?id:null;}
@@ -12,6 +13,18 @@ router.get('/status',async c=>{
   const policy=await c.env.DB.prepare('SELECT enabled,tlc_jetton_master,quote_tlc_atoms_per_tl,min_tl,max_tl,daily_tl_limit,liquidity_tlc_atoms FROM v5_exchange_policy WHERE policy_id=1').first<any>();
   return c.json({ok:true,trading_enabled:false,policy_configured:!!(policy?.enabled&&policy.tlc_jetton_master&&policy.quote_tlc_atoms_per_tl),reason:'ATOMIC_LEDGER_AND_TON_PAYOUT_NOT_VERIFIED',direction:'TL_TO_TLC_ONLY',tl_integer_only:true,tlc_decimals:9});
  }catch(_){return c.json({ok:true,trading_enabled:false,policy_configured:false,reason:'ESCROW_MIGRATION_NOT_APPLIED',direction:'TL_TO_TLC_ONLY',tl_integer_only:true,tlc_decimals:9});}
+});
+router.post('/quote-preview',async c=>{
+ const userId=await owner(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
+ let amount:number;try{const body=await c.req.json();amount=parseWholeTL(body?.tl_amount);}catch{return c.json({ok:false,error:'INVALID_WHOLE_TL'},400);}
+ try{
+  const policy=await c.env.DB.prepare('SELECT enabled,quote_tlc_atoms_per_tl,min_tl,max_tl,liquidity_tlc_atoms FROM v5_exchange_policy WHERE policy_id=1').first<any>();
+  if(!policy||!Number.isSafeInteger(policy.quote_tlc_atoms_per_tl)||policy.quote_tlc_atoms_per_tl<=0)return c.json({ok:false,error:'EXCHANGE_RATE_NOT_CONFIGURED',trading_enabled:false},409);
+  if(amount<policy.min_tl||amount>policy.max_tl)return c.json({ok:false,error:'AMOUNT_OUT_OF_POLICY_RANGE'},400);
+  const atoms=calculateTLCAtoms(amount,policy.quote_tlc_atoms_per_tl);
+  if(atoms>policy.liquidity_tlc_atoms)return c.json({ok:false,error:'INSUFFICIENT_POOL_LIQUIDITY'},409);
+  return c.json({ok:true,tl_amount:amount,tlc_atoms:String(atoms),trading_enabled:false,preview_only:true,expires_at:new Date(Date.now()+120000).toISOString()});
+ }catch{return c.json({ok:false,error:'QUOTE_PREVIEW_UNAVAILABLE'},503);}
 });
 router.get('/orders',async c=>{
  const userId=await owner(c);if(!userId)return c.json({ok:false,error:'AUTH_REQUIRED'},401);
