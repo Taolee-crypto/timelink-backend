@@ -1,0 +1,24 @@
+name: V5 escrow isolated transaction verification
+on:
+  push:
+    paths:
+      - 'src/v5-exchange-simulator.ts'
+      - 'src/v5-exchange-validation.ts'
+      - 'tests/v5-exchange-self-test.mjs'
+      - '.github/workflows/v5-exchange-self-test.yml'
+  pull_request:
+    paths:
+      - 'src/v5-exchange-simulator.ts'
+      - 'src/v5-exchange-validation.ts'
+      - 'tests/v5-exchange-self-test.mjs'
+      - '.github/workflows/v5-exchange-self-test.yml'
+jobs:
+  escrow-self-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify isolated escrow transactions
+        run: node --experimental-strip-types tests/v5-exchange-self-test.mjs
