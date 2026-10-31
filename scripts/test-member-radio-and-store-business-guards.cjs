@@ -13,7 +13,6 @@ assert.match(cafe,/if \(!result\.ok\) return result|if\(!result\.ok\)return resu
 assert.match(cafe,/return \{ok:true,verified:false\}/);
 assert.doesNotMatch(cafe,/BUSINESS_ATTESTATION_REQUIRED/,'Country format alone is sufficient before official government APIs');
 assert.match(cafe,/if \(!bizNo\)/);
-assert.match(cafe,/if \(!result\.ok\) return result/);
 assert.match(cafe,/국가별 사업자번호|사업자등록번호|중국 통일사회신용코드/);
 assert.match(cafe,/biz_verified/,'Government verification must remain separately tracked');
 assert.match(store,/UPPER\(license_code\)<>'CC0'/);
@@ -24,4 +23,4 @@ assert.match(store,/STORE_OWNER_REQUIRED/);
 assert.match(store,/METER_EXCEEDS_PLAYBACK/);
 assert.match(store,/STORE_CONTAINER_CORRUPT/);
 assert.match(store,/refunded_seconds:refund/);
-console.log('PASS platform broadcast free license restricted to active admin broadcaster, signed business owners only, store media license/time/meter guards');
+console.log('PASS platform broadcast free license restricted to active admin broadcaster, country-format business registration with separate official verification status, store media license/time/meter guards');
