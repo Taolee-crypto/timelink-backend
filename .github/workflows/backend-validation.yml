@@ -33,6 +33,8 @@ jobs:
         run: node scripts/test-tilo-flexible-discount.cjs
       - name: Enforce territorial TILO station broadcaster licenses
         run: node scripts/test-tilo-station-v5.cjs
+      - name: Confirm funded promotion priority without duplicate country approvals
+        run: node scripts/test-tilo-promotion-operational-truth.cjs
       - name: Check TILO station operational evidence and rights
         run: node scripts/test-tilo-v5-operations.cjs
       - name: Verify country rights grant reviewer owner and revocation guards

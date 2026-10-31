@@ -6,6 +6,7 @@ import {readKrFinance,readKrPolicy,saveKrPolicy,saveKrProfile,postKrJournal,clos
 import {readAdminFinance} from '../admin-finance-report';
 import {readCreatorPayoutReport} from '../creator-payout-report';
 import { permittedStationTracks } from '../tilo-station';
+import { scheduledStationTracks } from '../tilo-station-schedule';
 import { REWARD_RULES,readRewardPolicy,validateRewardRules } from '../v5-reward-policy';
 import { currentTiloSlot,tiloLocalShow,TILO_ZONES,type TiloCountry } from '../tilo-server-timeline';
 import { classifyTiloStationOperation } from '../tilo-v5-station-operations';
@@ -106,7 +107,7 @@ router.get('/central-broadcast/operations',async c=>{
     const broadcasterCredentialConfigured=Boolean(c.env.CENTRAL_BROADCAST_WORKER_SECRET);
     const countries=await Promise.all((Object.keys(TILO_ZONES) as TiloCountry[]).map(async country=>{
       const [tracks,rights,airtime,settlements]=await Promise.all([
-        enabled?permittedStationTracks(c.env.DB,country,adminId):Promise.resolve([]),
+        enabled?scheduledStationTracks(c.env.DB,country,now):Promise.resolve([]),
         c.env.DB.prepare(`SELECT COUNT(DISTINCT v.file_id) AS n
           FROM central_broadcast_service_file_grants sg
           JOIN central_broadcast_rights_grants rg
@@ -135,19 +136,22 @@ router.get('/central-broadcast/operations',async c=>{
           FROM tilo_v5_settlement_approvals WHERE country=?`
         ).bind(country).first<{pending:number|null;approved:number|null;posted:number|null}>()
       ]);
-      // A "license" count must match the same strictly validated pool
-      // used by the public station and the actual broadcaster evidence gate.
-      // Raw grants (which may include a separately revoked row) are not enough.
+      // These are deliberately separate: the established TILO business model
+      // accepts creator-declared V5 ordinary music and gives actually funded
+      // promotion orders priority. Optional explicit territorial grants are
+      // not prerequisites for entering the ordinary/promotion station pool.
       const receiverTracks=tracks.length;
-      const licensedTracks=receiverTracks;
+      const licensedTracks=Number(rights?.n||0);
+      const promotedTracks=tracks.filter(t=>t.is_promoted===true).length;
+      const ordinaryTracks=receiverTracks-promotedTracks;
       const last=airtime?.last_ended_at||null;
       const condition=classifyTiloStationOperation({
-        serviceEnabled:enabled,receiverTracks,licensedTracks,lastVerifiedEndAt:last,nowMs:now.getTime()
+        serviceEnabled:enabled,receiverTracks,licensedTracks:receiverTracks,lastVerifiedEndAt:last,nowMs:now.getTime()
       });
       const blockers:string[]=[];
       if(!enabled)blockers.push('SERVICE_DISABLED');
       if(!broadcasterCredentialConfigured)blockers.push('BROADCAST_SERVICE_CREDENTIAL_MISSING');
-      if(licensedTracks===0)blockers.push('NO_APPROVED_COUNTRY_BROADCAST_TRACKS');
+      if(receiverTracks===0)blockers.push('NO_RIGHTS_DECLARED_V5_STATION_TRACKS');
       if(condition==='NO_VERIFIED_AIRTIME'||condition==='VERIFIED_AIRTIME_STALE')
         blockers.push('NO_RECENT_VERIFIED_AIRTIME');
       // There is no continuously running broadcaster deployed by this Worker.
@@ -156,7 +160,11 @@ router.get('/central-broadcast/operations',async c=>{
       return {
         country,time_zone:TILO_ZONES[country],local_show:tiloLocalShow(country,now),
         service_enabled:enabled,receiver_candidate_tracks:receiverTracks,
+        promotion_eligible_tracks:promotedTracks,
+        ordinary_fallback_tracks:ordinaryTracks,
         explicit_country_licensed_tracks:licensedTracks,
+        requires_separate_admin_country_grant:false,
+        scheduling_policy:'promotion_first_random_fallback',
         receiver_clock_slot:enabled?currentTiloSlot(tracks,now.getTime(),Date.UTC(2026,0,1)):null,
         verified_airtime_events:Number(airtime?.event_count||0),
         verified_audible_ms:Number(airtime?.audible_ms||0),
@@ -172,7 +180,7 @@ router.get('/central-broadcast/operations',async c=>{
       actual_server_audio_stream:false,
       broadcaster_credential_configured:broadcasterCredentialConfigured,
       broadcast_runtime_ready:false,source:'production_d1',countries,
-      note:'Authorized browser playback and shared playlist clocks do not prove 24-hour server playout. Only verified broadcaster evidence may enter settlement.'});
+      note:'Funded TL promotions receive playlist priority; creator-declared sealed V5 songs fill ordinary time. Separate administrator country grants are optional; actual independent server playout and payable airtime remain unverified.'});
   }catch(error){
     console.error('[TILO_OPERATIONS]',error);
     return c.json({ok:false,error:'TILO_OPERATIONS_UNAVAILABLE'},503);

@@ -155,6 +155,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/verify-tl3-secret-bindings.cjs
 
+      - name: Verify live TILO funded-promotion and ordinary station inventory without charge
+        run: node scripts/smoke-tilo-promoted-station.mjs
+
       - name: Verify Music Gate deployment without inference or charge
         run: |
           node --input-type=module <<'JS'
