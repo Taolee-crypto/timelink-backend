@@ -1,0 +1,13 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs');
+const s=fs.readFileSync('src/routes/dj-cafe.ts','utf8');
+const a=s.indexOf("router.get('/member-profile'"),b=s.indexOf("// DJ-only photo storage",a);
+assert.ok(a>0&&b>a);
+const block=s.slice(a,b);
+assert.match(block,/Cache-Control','private, no-store/);
+assert.match(block,/Vary','Authorization/);
+assert.match(block,/user_id:auth\.id/);
+assert.match(block,/Object\.keys\(body\)\.some/);
+assert.match(block,/!\['display_name','bio'\]\.includes\(k\)/);
+assert.doesNotMatch(block,/avatar_url=excluded\.avatar_url/);
+console.log('PASS member profile API: account-bound no-store read/write, field allowlist, member avatar untouched');

@@ -189,20 +189,28 @@ async function ensureMemberProfile(db: D1Database) {
 router.get('/member-profile', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ok:false,error:'인증 필요'},401);
+  c.header('Cache-Control','private, no-store');
+  c.header('Vary','Authorization');
   await ensureMemberProfile(c.env.DB);
   const row = await c.env.DB.prepare('SELECT display_name,bio,avatar_url,updated_at FROM member_profiles WHERE user_id=?').bind(auth.id).first<any>();
-  return c.json({ok:true,profile:{display_name:row?.display_name||auth.user.username||'',bio:row?.bio||'',avatar_url:row?.avatar_url||'',email:auth.user.email,updated_at:row?.updated_at||null}});
+  return c.json({ok:true,profile:{user_id:auth.id,display_name:row?.display_name||auth.user.username||'',bio:row?.bio||'',avatar_url:row?.avatar_url||'',email:auth.user.email,updated_at:row?.updated_at||null}});
 });
 router.post('/member-profile', async (c) => {
   const auth = await authUser(c);
   if (!auth) return c.json({ok:false,error:'인증 필요'},401);
+  c.header('Cache-Control','private, no-store');
+  c.header('Vary','Authorization');
   const body = await c.req.json<any>().catch(()=>({}));
+  if(!body||typeof body!=='object'||Array.isArray(body)||
+     Object.keys(body).some(k=>!['display_name','bio'].includes(k)))
+    return c.json({ok:false,error:'허용되지 않은 프로필 필드입니다.'},400);
   const name = String(body.display_name||'').trim();
   const bio = String(body.bio||'').trim();
   if(!name || name.length>80 || bio.length>1000) return c.json({ok:false,error:'이름 또는 소개 길이를 확인하세요.'},400);
   await ensureMemberProfile(c.env.DB);
-  await c.env.DB.prepare('INSERT INTO member_profiles(user_id,display_name,bio,avatar_url,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name,bio=excluded.bio,updated_at=excluded.updated_at').bind(auth.id,name,bio,'',Date.now()).run();
-  return c.json({ok:true});
+  const now=Date.now();
+  await c.env.DB.prepare('INSERT INTO member_profiles(user_id,display_name,bio,avatar_url,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name,bio=excluded.bio,updated_at=excluded.updated_at').bind(auth.id,name,bio,'',now).run();
+  return c.json({ok:true,profile:{user_id:auth.id,display_name:name,bio,email:auth.user.email,updated_at:now}});
 });
 
 // DJ-only photo storage: 256 KiB limit, MIME signature verified, not tied to member profile.
