@@ -195,5 +195,5 @@ export async function reverseStoreReferralForRefund(db:D1Database,actorId:number
    .bind(Number(order.user_id),source).first<any>();
  if(!receipt)return {ok:true,refund_recorded:true,reward_affected:false,already_reversed:false};
  const reversed=await reverseReferralReward(db,actorId,String(receipt.milestone_key),proofRef);
- return {ok:true,refund_recorded:true,reward_affected:true,...reversed};
+ return {...reversed,refund_recorded:true,reward_affected:true};
 }
