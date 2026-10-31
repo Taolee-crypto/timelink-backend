@@ -8,11 +8,13 @@ assert.match(broad,/operator\?\.role!=='admin'/,'Ordinary member must never acce
 assert.match(broad,/parent_admin_user_id=\? AND status='active'/);
 assert.match(broad,/permittedStationTracks\(db,country\)/,'Even an approved broadcaster must use eligible tracks');
 assert.match(v5,/isBroadcast && !\(await authorizedTiloBroadcast/);
-assert.match(cafe,/body\.business_owner_attested!==true/);
-assert.match(cafe,/BUSINESS_ATTESTATION_REQUIRED/);
+assert.match(cafe,/const SUPPORTED_COUNTRIES = \['KR', 'US', 'JP', 'CN', 'GB'\]/);
+assert.match(cafe,/if \(!result\.ok\) return result|if\(!result\.ok\)return result/);
+assert.match(cafe,/return \{ok:true,verified:false\}/);
+assert.doesNotMatch(cafe,/BUSINESS_ATTESTATION_REQUIRED/,'Country format alone is sufficient before official government APIs');
 assert.match(cafe,/if \(!bizNo\)/);
 assert.match(cafe,/if \(!result\.ok\) return result/);
-assert.match(cafe,/공식 사업자 실재 확인 서비스가 준비되지 않아/);
+assert.match(cafe,/국가별 사업자번호|사업자등록번호|중국 통일사회신용코드/);
 assert.match(cafe,/biz_verified/,'Government verification must remain separately tracked');
 assert.match(store,/UPPER\(license_code\)<>'CC0'/);
 assert.match(store,/status='ready'/);
