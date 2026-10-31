@@ -13,7 +13,7 @@ export function tiloStationBroadcastDayKey(country:string, now:Date):string {
 export async function scheduledStationTracks(db:D1Database,country:string,now:Date) {
   const dayKey=tiloStationBroadcastDayKey(country,now);
   const tracks=await permittedStationTracks(db,country);
-  if(!tracks.length)return tracks;
+  if(!tracks.length)return tracks.map(t=>({...t,is_promoted:false}));
   let orders: {file_id:number}[]=[];
   try {
     orders=(await db.prepare(`SELECT DISTINCT CAST(j.value AS INTEGER) AS file_id
