@@ -1,0 +1,14 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const calc = fs.readFileSync('src/v5-tl-carry.ts','utf8');
+const store = fs.readFileSync('src/v5-tl-carry-store.ts','utf8');
+const schema = fs.readFileSync('migrations/20261031_v5_tl_fractional_carry.sql','utf8');
+assert.ok(calc.includes('sum/TL_ATOMS_PER_UNIT'));
+assert.ok(calc.includes('sum%TL_ATOMS_PER_UNIT'));
+assert.ok(calc.includes('totalAtoms*70n/100n'));
+assert.ok(store.includes('CARRY_EVENT_CONFLICT'));
+assert.ok(store.includes('CARRY_PAYOUT_LEDGER_REQUIRED'));
+assert.ok(store.includes('version=? AND carry_atoms=?'));
+assert.ok(schema.includes('event_key TEXT PRIMARY KEY'));
+console.log('PASS carry safety source contract (not integration test)');
