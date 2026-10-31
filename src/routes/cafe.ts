@@ -48,20 +48,12 @@ function verifyJP(bizNo: string): VerifyResult {
 }
 
 function verifyCN(bizNo: string): VerifyResult {
-  const cleaned = bizNo.replace(/-/g, '').trim().toUpperCase();
-  if (!/^[0-9A-HJ-NPQRTUWXY]{18}$/.test(cleaned)) return { ok: false, verified: false, error: '중국 통일사회신용코드는 18자리입니다.' };
-  // 체크섬
-  const code = '0123456789ABCDEFGHJKLMNPQRTUWXY';
-  const weights = [1,3,9,27,19,26,16,17,20,29,25,13,8,24,10,30,28];
-  let sum = 0;
-  for (let i = 0; i < 17; i++) {
-    const idx = code.indexOf(cleaned[i]);
-    if (idx < 0) return { ok: false, verified: false, error: '중국 통일사회신용코드에 허용되지 않은 문자입니다.' };
-    sum += idx * weights[i];
-  }
-  const checkIdx = (31 - (sum % 31)) % 31;
-  if (code[checkIdx] !== cleaned[17]) return { ok: false, verified: false, error: '중국 통일사회신용코드 체크섬이 올바르지 않습니다.' };
-  return { ok: true, verified: false };
+  const cleaned=bizNo.replace(/[\s-]/g,'').trim().toUpperCase();
+  // Chinese unified social credit codes include digits AND letters.
+  // Before a government API integration, only validate country syntax/length.
+  if(!/^[0-9A-HJ-NPQRTUWXY]{18}$/.test(cleaned))
+    return {ok:false,verified:false,error:'중국 통일사회신용코드는 18자리 영문·숫자입니다.'};
+  return {ok:true,verified:false};
 }
 
 function verifyGB(bizNo: string): VerifyResult {
@@ -84,17 +76,10 @@ async function verifyBizRegNum(c: Context<{ Bindings: Env }>, country: string, b
     case 'GB': result = verifyGB(bizNo); break;
     default: return { ok: false, verified: false, error: '지원하지 않는 국가입니다.' };
   }
-  if (!result.ok) return result;
-  // 국세청/IRS 등 API 연동 여부 확인
-  let enabled = false;
-  try {
-    await c.env.DB.prepare("CREATE TABLE IF NOT EXISTS tl_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime('now')))").run().catch(()=>{});
-    const row = await c.env.DB.prepare("SELECT value FROM tl_settings WHERE key='biz_verify_enabled'").first<any>();
-    enabled = String(row?.value || '').toLowerCase() === 'true';
-  } catch(_) {}
-  if (!enabled) return { ok: true, verified: false };
-  // No trusted provider: fail closed if the operator requires official validation.
-  return {ok:false,verified:false,error:'공식 사업자 실재 확인 서비스가 준비되지 않아 매장을 개설할 수 없습니다.'};
+  // Before verified country APIs are connected, only number/format checks
+  // apply. Never mark country-format checks as official registration verified.
+  if(!result.ok)return result;
+  return {ok:true,verified:false};
 }
 
 // ── 테이블 보장 ──
@@ -232,8 +217,6 @@ router.post('/channels', async (c) => {
   if (!name) return c.json({ ok: false, error: '카페 이름은 필수입니다.' }, 400);
   if (!SUPPORTED_COUNTRIES.includes(country)) return c.json({ ok: false, error: '지원하지 않는 국가입니다.' }, 400);
   if (!bizNo) return c.json({ ok: false, error: '사업자등록번호는 필수입니다.' }, 400);
-  if(body.business_owner_attested!==true)
-    return c.json({ok:false,code:'BUSINESS_ATTESTATION_REQUIRED',error:'본인이 해당 매장의 사업자 또는 정당한 개설 권한자임을 확인해 주세요.'},400);
   if (!['individual','corporate','other'].includes(bizType)) return c.json({ ok: false, error: '사업자 유형이 올바르지 않습니다.' }, 400);
 
   const bizCheck = await verifyBizRegNum(c, country, bizNo);
