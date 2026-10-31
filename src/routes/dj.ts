@@ -277,6 +277,12 @@ router.post('/tilo/daily-context/:country', async (c) => {
     }
   }catch(_){/* Continue with no weather. */}
   const weather=liveWeather;
+  // A source-qualified observation is available even when optional AI
+  // commentary is unavailable. No user-supplied weather can override it.
+  const voiceContext=weather&&Number.isInteger(Number(weather.weather_code))?{
+    weather_code:Number(weather.weather_code),source:weather.source,
+    observed_at:weather.observed_at||null
+  }:null;
   const prompt=[
     'Local time: '+localTime,
     'Verified headlines: '+JSON.stringify(headlines),
@@ -295,12 +301,14 @@ router.post('/tilo/daily-context/:country', async (c) => {
     const moods=['acoustic','pop','jazz','indie','ballad','lofi','ambient','classical'];
     const dayMood=['calm','neutral','bright','solemn'].includes(plan.day_mood)?plan.day_mood:'neutral';
     return c.json({ok:true,country,locale:profile.locale,local_time:localTime,news_count:headlines.length,
-       voice_context:weather&&Number.isInteger(Number(weather.weather_code))?{weather_code:Number(weather.weather_code),source:weather.source,observed_at:weather.observed_at||null}:null,
+       voice_context:voiceContext,
       plan:{day_mood:dayMood,music_moods:(Array.isArray(plan.music_moods)?plan.music_moods:[]).filter((x:any)=>moods.includes(x)).slice(0,4),
       speak_now:plan.speak_now===true,commentary:String(plan.commentary||'').slice(0,600),
       rationale:String(plan.rationale||'').slice(0,400),confidence:['low','medium','high'].includes(plan.confidence)?plan.confidence:'low'},
       broadcast_started:false,station_approval_unchanged:true});
-  }catch(e:any){return c.json({ok:false,error:'DAILY_CONTEXT_UNAVAILABLE',detail:String(e?.message||e).slice(0,180)},503);}
+  }catch(_){return c.json({ok:true,country,locale:profile.locale,local_time:localTime,
+      news_count:headlines.length,voice_context:voiceContext,plan:null,editorial_available:false,
+      note:'Optional AI editorial unavailable. Only original, local-language DJ greetings may be used; no news headlines are invented.'});}
 });
 
 // Public read-only regional configuration. No untrusted news is treated as verified.
