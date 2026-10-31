@@ -136,10 +136,27 @@ router.post('/:id/review',async c=>{
     if(u.protocol!=='https:'||u.username||u.password||evidence.length>1200)
       return c.json({ok:false,error:'INVALID_EVIDENCE_URL'},400);
   }
-  const registration=await c.env.DB.prepare('SELECT id,status FROM v5_music_discovery WHERE id=?').bind(id).first<any>();
+  const registration=await c.env.DB.prepare('SELECT id,user_id,status,sha256,metadata_json FROM v5_music_discovery WHERE id=?').bind(id).first<any>();
   if(!registration)return c.json({ok:false,error:'NOT_FOUND'},404);
   if(!['pending_rights','rights_review','disputed'].includes(String(registration.status)))
     return c.json({ok:false,error:'REVIEW_ALREADY_DECIDED'},409);
+  if(decision==='approve'){
+    let metadata:any={};try{metadata=JSON.parse(String(registration.metadata_json||'{}'));}catch{}
+    const isrc=normalizeIsrc(metadata.isrc);
+    const registered=await findRegisteredRecordingDuplicate(c.env.DB,{sourceSha256:registration.sha256,isrc});
+    if(registered)return c.json({ok:false,error:'TRACK_ALREADY_REGISTERED',
+      duplicate_by:registered.matched_by,file_id:registered.file_id,share_id:registered.share_id},409);
+    const competingHash=await c.env.DB.prepare(`SELECT id,status FROM v5_music_discovery
+      WHERE id<>? AND sha256=? AND status IN ('pending_rights','rights_review','approved','disputed') LIMIT 1`)
+      .bind(id,String(registration.sha256)).first<any>();
+    let competingIsrc:any=null;
+    if(isrc)competingIsrc=await c.env.DB.prepare(`SELECT id,status FROM v5_music_discovery
+      WHERE id<>? AND status IN ('pending_rights','rights_review','approved','disputed')
+        AND UPPER(REPLACE(REPLACE(COALESCE(json_extract(metadata_json,'$.isrc'),''),'-',''),' ',''))=?
+      LIMIT 1`).bind(id,isrc).first<any>().catch(()=>null);
+    if(competingHash||competingIsrc)return c.json({ok:false,error:'COMPETING_RIGHTS_CLAIM',
+      conflicting_registration_id:String((competingHash||competingIsrc).id)},409);
+  }
   const status=decision==='approve'?'approved':decision==='reject'?'rejected':'disputed';
   try{
     await c.env.DB.batch([
