@@ -6,7 +6,6 @@ import { requestListenerCashout } from './v5-cashout';
 import { readRewardPolicy } from './v5-reward-policy';
 import {readReferralPocBonus} from './v5-referral-reward';
 import {assertTlcAssetScale,splitMinedTlcAtoms,TLC_RESERVE_OWNER,TLC_RESERVE_BUCKET,TLC_SPLIT_POLICY} from './v5-tlc-mining-split';
-import { completeAdReward, startAdReward } from './v5-ad-reward';
 import { verifyToken } from './auth';
 import type { Env } from './types';
 import { getLedgerWallet, atomsToTl, ensureLedgerAccount, postLedgerTransaction, wholeTlToAtoms } from './economy-ledger';
@@ -429,28 +428,9 @@ eco.post('/consume', async (c) => {
   }
 });
 
-/* ══════════════════════════════════════════════════════
-   POST /api/eco/ad-reward
-   광고 시청 완료 → TL_A 지급 (교환 불가)
-   body: { ad_id, tl_amount }
-══════════════════════════════════════════════════════ */
-eco.post('/ad-session', async c => {
-  const userId=await authId(c);
-  if(!userId)return c.json({error:'인증 필요'},401);
-  try {
-    const body=await c.req.json<any>();
-    return c.json({ok:true,...await startAdReward(c.env.DB,Number(userId),String(body.ad_id||''))});
-  } catch(e:any){return c.json({error:e.message},400);}
-});
-
-eco.post('/ad-reward', async c => {
-  const userId=await authId(c);
-  if(!userId)return c.json({error:'인증 필요'},401);
-  try {
-    const body=await c.req.json<any>();
-    return c.json(await completeAdReward(c.env.DB,Number(userId),String(body.ad_id||''),String(body.session_id||'')));
-  } catch(e:any){return c.json({error:e.message},409);}
-});
+/* Retired advertising: never create new TL_A grants. Historical ledger entries are preserved. */
+eco.post('/ad-session',c=>c.json({ok:false,code:'AD_REWARD_RETIRED',error:'광고 보상이 종료되었습니다.'},410));
+eco.post('/ad-reward',c=>c.json({ok:false,code:'AD_REWARD_RETIRED',error:'광고 보상이 종료되었습니다.'},410));
 
 /* ══════════════════════════════════════════════════════
    POST /api/eco/exchange
@@ -514,15 +494,6 @@ async function calculateServerPoc(db:D1Database,userId:string){
     `).bind(userId, monthStart + ' 00:00:00').first().catch(() => ({ mp3_count: 0, tl3_count: 0 })) as any;
 
 
-    // ★ 악보 통계 (신규) — 악보 공유/사용/보기
-    const scoreStats = await db.prepare(`
-      SELECT
-        COALESCE(SUM(CASE WHEN mode='upload_score' THEN 1 ELSE 0 END), 0) as shares,
-        COALESCE(SUM(CASE WHEN mode='score_use' THEN 1 ELSE 0 END), 0) as uses,
-        COALESCE(SUM(CASE WHEN mode='score_view' THEN 1 ELSE 0 END), 0) as views
-      FROM poc_logs
-      WHERE user_id=? AND created_at >= ?
-    `).bind(userId, monthStart).first().catch(() => ({ shares: 0, uses: 0, views: 0 })) as any;
     // ── POC 신 알고리즘 ──
     // 요소별 정규화 (각 최대값 기준)
     const monthlyTlP   = Math.max(0,Number(monthlyStats?.monthly_tl_p || 0));
@@ -539,24 +510,13 @@ async function calculateServerPoc(db:D1Database,userId:string){
     const listenScore  = Math.min(policy.listen_cap,monthlyHours/policy.listen_target);         // 30시간 = 만점
     const uploadScore  = Math.min(policy.upload_cap,uploads/policy.upload_target);               // 5개 = 만점
 
-    // ★ 악보 기여 점수 (신규)
-    const scoreShares = Number(scoreStats?.shares || 0);
-    const scoreUses   = Number(scoreStats?.uses || 0);
-    const scoreViews  = Number(scoreStats?.views || 0);
-    const scoreScore  = Math.min(policy.score_cap,
-      scoreShares * policy.score_share +        // 악보 공유 1개 = 0.3
-      scoreUses   * policy.score_use +       // 악보 사용 1회 = 0.05
-      scoreViews  * policy.score_view        // 악보 보기 1회 = 0.005
-    );
-
-    // 가중합 (5요소, 총 100%)
+    // 가중합 (폐기된 악보 영역 제외, 4요소 합계 100%)
     const verifiedReferralPoc=Math.min(policy.referral_poc_cap,await readReferralPocBonus(db,userId,monthStart));
     const rawPoc = verifiedReferralPoc +
-      contentScore * policy.weight_content +      // 40% → 35%
-      spendScore   * policy.weight_spend +      // 30% → 25%
-      listenScore  * policy.weight_listen +      // 20% → 18%
-      uploadScore  * policy.weight_upload +      // 그대로
-      scoreScore   * policy.weight_score;       // ★ 신규 12%
+      contentScore * policy.weight_content +
+      spendScore   * policy.weight_spend +
+      listenScore  * policy.weight_listen +
+      uploadScore  * policy.weight_upload;
 
     // 하드캡 5.0, 최솟값 0.1
     const pocIndex = Math.min(policy.poc_max,Math.max(policy.poc_min,rawPoc*policy.poc_scale));
@@ -596,7 +556,6 @@ async function calculateServerPoc(db:D1Database,userId:string){
         spend:   Number(spendScore.toFixed(3)),
         listen:  Number(listenScore.toFixed(3)),
         upload:  Number(uploadScore.toFixed(3)),
-        score:   Number(scoreScore.toFixed(3)),
         referral:Number(verifiedReferralPoc.toFixed(3)),
       },
       tlc_mining: {
