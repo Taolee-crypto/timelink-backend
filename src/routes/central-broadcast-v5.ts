@@ -101,6 +101,11 @@ router.get('/settlement/local-day-preview',async c=>{
     const totals=new Map<number,{creator_id:number;events:number;audible_ms:number;creator_atoms:number;platform_atoms:number}>();
     for(const row of rows.results||[]){
       if(localDay(String(row.started_at))!==day)continue;
+      if(!Number.isSafeInteger(Number(row.creator_id))||Number(row.creator_id)<=0||
+         !Number.isSafeInteger(Number(row.audible_ms))||Number(row.audible_ms)<=0||
+         !Number.isSafeInteger(Number(row.creator_atoms))||Number(row.creator_atoms)<0||
+         !Number.isSafeInteger(Number(row.platform_atoms))||Number(row.platform_atoms)<0)
+        return c.json({ok:false,error:'INVALID_STORED_AIRTIME'},409);
       const id=Number(row.creator_id),prev=totals.get(id)||{creator_id:id,events:0,audible_ms:0,creator_atoms:0,platform_atoms:0};
       prev.events++;prev.audible_ms+=Number(row.audible_ms);prev.creator_atoms+=Number(row.creator_atoms);prev.platform_atoms+=Number(row.platform_atoms);
       if(![prev.audible_ms,prev.creator_atoms,prev.platform_atoms].every(Number.isSafeInteger))
