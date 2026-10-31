@@ -45,7 +45,7 @@ assert.match(section,/if\(receiverTracks===0\)blockers\.push\('NO_RIGHTS_DECLARE
 assert.doesNotMatch(section,/if\(licensedTracks===0\)blockers/);
 assert.doesNotMatch(section,/console\.log\([^\n]*CENTRAL_BROADCAST_WORKER_SECRET/);
 const editor=fs.readFileSync(path.join(__dirname,'../src/routes/dj.ts'),'utf8');
-assert.match(editor,/const voiceContext=weather&&Number\.isInteger/);
+assert.match(editor,/const voiceContext=weather&&weather\.weather_code!=null&&Number\.isInteger/);
 assert.match(editor,/voice_context:voiceContext/);
 assert.match(editor,/editorial_available:false/);
 assert.match(editor,/weather_code:current\.weather_code,observed_at:current\.observed_at/);
