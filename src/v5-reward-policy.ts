@@ -13,7 +13,7 @@ export const REWARD_RULES={
   spend_cap:[1.5,0,5,'소비 기여 점수 상한'],spend_target:[5000,1,10000000,'소비 기여 기준 TL_P'],
   listen_cap:[1,0,5,'청취 기여 점수 상한'],listen_target:[30,1,10000,'청취 기여 기준 시간'],
   upload_cap:[0.5,0,5,'업로드 기여 점수 상한'],upload_target:[5,1,10000,'업로드 기여 기준 건수'],
-  upload_mp3_weight:[1,0,10,'일반 업로드 가중치'],upload_tl3_weight:[3,0,10,'TL3 업로드 가중치'],
+  upload_tl3_weight:[3,0,10,'TL3 업로드 가중치'],
   weight_content:[0.40,0,1,'POC 재생 비중'],weight_spend:[0.30,0,1,'POC 소비 비중'],weight_listen:[0.20,0,1,'POC 청취 비중'],weight_upload:[0.10,0,1,'POC 업로드 비중'],
   poc_scale:[10,0.1,100,'POC 환산 배수'],poc_min:[0.1,0.1,5,'POC 최솟값'],poc_max:[5,0.1,5,'POC 최댓값'],
   bonus_5000:[0,0,1000000,'5,000원 충전 TL_B'],bonus_10000:[500,0,1000000,'10,000원 충전 TL_B'],bonus_30000:[2000,0,1000000,'30,000원 충전 TL_B'],bonus_50000:[5000,0,1000000,'50,000원 충전 TL_B'],bonus_100000:[15000,0,1000000,'100,000원 충전 TL_B'],
@@ -46,7 +46,7 @@ export function validateRewardRules(input:any):RewardRules{
  */
 export const RETIRED_REWARD_RULE_KEYS = [
   'advertiser_signup_bonus','ad_min','ad_max','ad_default',
-  'score_cap','score_share','score_use','score_view','weight_score'
+  'score_cap','score_share','score_use','score_view','weight_score','upload_mp3_weight'
 ] as const;
 const retiredRewardKeys = new Set<string>(RETIRED_REWARD_RULE_KEYS);
 
