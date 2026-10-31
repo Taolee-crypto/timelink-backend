@@ -15,13 +15,14 @@ export type BroadcastAllocation = {
   platformHundredths: bigint;
 };
 /** Whole seconds only. Accumulate verified millisecond playback per event before calling. */
-export function calculateCentralBroadcastAllocation(playedSeconds: bigint): BroadcastAllocation {
+export function calculateCentralBroadcastAllocation(playedSeconds: bigint, discountCoefficientBps: bigint = CENTRAL_BROADCAST_V5.discountCoefficientBps): BroadcastAllocation {
   if (playedSeconds < 0n) throw new RangeError('playedSeconds must be nonnegative');
-  // 1 second × 0.3 TL = 30 hundredths; creator 21, platform 9.
-  const totalHundredths = playedSeconds * 30n;
-  const creatorHundredths = playedSeconds * 21n;
-  const platformHundredths = totalHundredths - creatorHundredths;
-  return { totalHundredths, creatorHundredths, platformHundredths };
+  const atoms=calculateCentralBroadcastAtoms(playedSeconds*1000n,discountCoefficientBps);
+  // Hundredths are a legacy display precision. Truncation may lose atom dust;
+  // the 10,000-atom allocation remains authoritative for actual settlement.
+  const creatorHundredths=atoms.creatorAtoms/100n;
+  const platformHundredths=atoms.platformAtoms/100n;
+  return {totalHundredths:creatorHundredths+platformHundredths,creatorHundredths,platformHundredths};
 }
 
 /**
