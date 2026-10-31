@@ -4,7 +4,7 @@ const {DatabaseSync}=require('node:sqlite'),{buildSync}=require('esbuild');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'member-store-staff-'));
 let sql;
 (async()=>{try{
- buildSync({stdin:{contents:"export {default as router} from './src/routes/cafe';export {makeAccessToken} from './src/auth';",resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'api.cjs'),logLevel:'silent'});
+ buildSync({stdin:{contents:"export {default as router} from './src/routes/cafe';export {default as sales} from './src/routes/sales-managers';export {makeAccessToken} from './src/auth';",resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'api.cjs'),logLevel:'silent'});
  const api=require(path.join(temp,'api.cjs'));
  sql=new DatabaseSync(':memory:');
  sql.exec(fs.readFileSync('migrations/0003_v3_economy_ledger.sql','utf8'));
@@ -53,7 +53,39 @@ let sql;
  assert.equal((await call(2,'/staff/access/'+channel)).data.can_operate,false);
  sql.exec('UPDATE cafe_staff_invites SET expires_at=1');
  assert.equal((await call(3,'/staff/join','POST',join)).status,400);
+
+ const design={tagline:'Independent flagship store',phone:'02-123-1234',website:'https://example.com',
+   theme:'forest',amenities:['wifi','parking'],hours:{mon:{closed:false,open:'09:00',close:'19:00'}},
+   menu:[{name:'Latte',detail:'Our fresh espresso',price:'5,500원'}]};
+ assert.equal((await call(3,base,'PUT',{profile:design})).status,403,'Another member cannot edit this store');
+ assert.equal((await call(1,base,'PUT',{profile:{...design,theme:'invalid'}})).status,400);
+ assert.equal((await call(1,base,'PUT',{profile:{...design,website:'javascript:alert(1)'}})).status,400);
+ assert.equal((await call(1,base,'PUT',{profile:{...design,phone:'<script>'}})).status,400);
+ const saved=await call(1,base,'PUT',{profile:design});assert.equal(saved.status,200);
+ const mine=await call(1,'/my-channels');
+ assert.equal(JSON.parse(mine.data.channels.find(x=>x.channel_id===channel).profile_json).theme,'forest');
+ const publicStore=await call(0,base);
+ assert.equal(publicStore.status,200);assert.equal(JSON.parse(publicStore.data.channel.profile_json).menu[0].name,'Latte');
+ for(const secret of ['owner_id','biz_reg_num','biz_type','biz_verified','plan','schedules','playlist','expires_at'])assert.equal(publicStore.data.channel[secret],undefined,'No '+secret+' may leak from the public store API');
+ sql.exec("CREATE TABLE IF NOT EXISTS v5_sales_stores(channel_id TEXT PRIMARY KEY,kind TEXT)");
+ const now=Date.now(),other=sql.prepare("INSERT INTO cafe_channels(channel_id,name,owner_id,country,biz_reg_num,addr,status,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)");
+ for(let k=0;k<35;k++)other.run('world_'+k,k===14?'Special Espresso':'Store '+k,1,'KR','1234567890','Seoul '+k,'active',now+k,now,Date.UTC(9999,0,1));
+ other.run('world_hidden','Do not show',1,'KR','1234567890','Seoul','deleted',now+100,now,Date.UTC(9999,0,1));
+ async function world(query){const r=await api.sales.request('https://fixture.invalid/world?'+query,{},env);return {status:r.status,data:await r.json()}}
+ const world1=await world('kind=all&page=1'),world2=await world('kind=all&page=2');
+ assert.equal(world1.status,200);assert.equal(world1.data.total,36);
+ assert.equal(world1.data.channels.length,30);assert.equal(world1.data.has_more,true);
+ assert.equal(world2.data.channels.length,6);assert.equal(world2.data.has_more,false);
+ const keys=[...world1.data.channels,...world2.data.channels].map(x=>x.channel_id);
+ assert.equal(new Set(keys).size,36,'Store World must show each independent shop exactly once');
+ assert.ok(!keys.includes('world_hidden'));
+ const withProfile=[...world1.data.channels,...world2.data.channels].find(x=>x.channel_id===channel);
+ assert.equal(JSON.parse(withProfile.profile_json).tagline,'Independent flagship store');
+ assert.equal(withProfile.biz_reg_num,undefined);
+ const searched=await world('kind=all&q=Special');assert.equal(searched.data.total,1);
+ assert.equal(searched.data.channels[0].name,'Special Espresso');
+ assert.equal((await world('country=ABCDE')).status,400);
  sql.exec('UPDATE users SET is_active=0 WHERE id=1');
  assert.equal((await call(1,base+'/staff')).status,401);
- console.log('PASS TLV5-003/004 real HTTP/SQLite: verified personal account opens free store, owner scope, private invites, pending/approve/revoke, replay, expiry, disabled account, stale-approval race');
+ console.log('PASS individual cafe public decor, staff permissions, safe detail and paginated world: verified personal account opens free store, owner scope, private invites, pending/approve/revoke, replay, expiry, disabled account, stale-approval race');
 }finally{sql?.close();fs.rmSync(temp,{recursive:true,force:true})}})().catch(e=>{console.error(e);process.exitCode=1});

@@ -1,5 +1,6 @@
 import {assignmentPlan,settleCafeService} from '../sales-managers';
 import { Hono } from 'hono';
+import {ensureCafePublicProfiles,validateCafeProfile} from '../cafe-public-profile';
 import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
@@ -163,11 +164,13 @@ router.get('/countries', (c) => {
 router.get('/channels', async (c) => {
   try {
     await ensureCafeTables(c.env.DB);
+    await ensureCafePublicProfiles(c.env.DB);
     const { results } = await c.env.DB.prepare(
-      `SELECT channel_id, name, country, addr, description, images, playlist, plan, status, expires_at, created_at
-       FROM cafe_channels
-       WHERE status='active' AND (expires_at IS NULL OR expires_at > ?)
-       ORDER BY created_at DESC LIMIT 100`
+      `SELECT c.channel_id,c.name,c.country,c.addr,c.description,c.images,c.playlist,c.plan,c.status,c.expires_at,c.created_at,
+          COALESCE(p.profile_json,'{}') profile_json
+       FROM cafe_channels c LEFT JOIN cafe_public_profiles p ON p.channel_id=c.channel_id
+       WHERE c.status='active' AND (c.expires_at IS NULL OR c.expires_at > ?)
+       ORDER BY c.created_at DESC LIMIT 100`
     ).bind(Date.now()).all();
     return c.json({ ok: true, channels: results || [] });
   } catch (e: any) {
@@ -181,9 +184,12 @@ router.get('/my-channels', async (c) => {
   if (!auth) return c.json({ ok: false, error: '인증 필요' }, 401);
   try {
     await ensureCafeTables(c.env.DB);
+    await ensureCafePublicProfiles(c.env.DB);
     const { results } = await c.env.DB.prepare(
-      `SELECT channel_id, name, owner_id, country, addr, description, images, playlist, schedules, plan, status, expires_at, created_at
-       FROM cafe_channels WHERE owner_id=? ORDER BY created_at DESC`
+      `SELECT c.channel_id,c.name,c.owner_id,c.country,c.addr,c.description,c.images,c.playlist,c.schedules,c.plan,c.status,c.expires_at,c.created_at,
+          COALESCE(p.profile_json,'{}') profile_json
+       FROM cafe_channels c LEFT JOIN cafe_public_profiles p ON p.channel_id=c.channel_id
+       WHERE c.owner_id=? ORDER BY c.created_at DESC`
     ).bind(auth.id).all();
     return c.json({ ok: true, channels: results || [] });
   } catch (e: any) {
@@ -406,8 +412,15 @@ router.get('/channels/:id', async (c) => {
   try {
     await ensureCafeTables(c.env.DB);
     const channelId = c.req.param('id');
-    const row = await c.env.DB.prepare('SELECT * FROM cafe_channels WHERE channel_id=?').bind(channelId).first<any>();
-    if (!row) return c.json({ ok: false, error: '채널을 찾을 수 없습니다.' }, 404);
+    await ensureCafePublicProfiles(c.env.DB);
+    // Public profiles never expose owner IDs, registration numbers, plans or staff.
+    const row = await c.env.DB.prepare(
+      `SELECT c.channel_id,c.name,c.country,c.addr,c.description,c.images,c.status,
+              COALESCE(p.profile_json,'{}') profile_json
+       FROM cafe_channels c LEFT JOIN cafe_public_profiles p ON p.channel_id=c.channel_id
+       WHERE c.channel_id=? AND c.status='active' AND (c.expires_at IS NULL OR c.expires_at>?)`
+    ).bind(channelId,Date.now()).first<any>();
+    if (!row) return c.json({ ok: false, error: '공개된 매장을 찾을 수 없습니다.' }, 404);
     return c.json({ ok: true, channel: row });
   } catch (e: any) {
     return c.json({ ok: false, error: e?.message || '채널 조회 실패' }, 500);
@@ -427,6 +440,11 @@ router.put('/channels/:id', async (c) => {
   if (!row) return c.json({ ok: false, error: '채널을 찾을 수 없습니다.' }, 404);
   if (Number(row.owner_id) !== auth.id) return c.json({ ok: false, error: '권한이 없습니다.' }, 403);
 
+  let profileJson:string|undefined;
+  if(body.profile!==undefined){
+    try{profileJson=JSON.stringify(validateCafeProfile(body.profile));}
+    catch(e:any){return c.json({ok:false,error:String(e?.message||'매장 꾸미기 정보 확인 필요')},400);}
+  }
   const fields: string[] = [];
   const values: any[] = [];
   const allowed = ['name','addr','addr_detail','description','images','playlist','schedules','status'];
@@ -436,14 +454,19 @@ router.put('/channels/:id', async (c) => {
       values.push(typeof body[k] === 'object' ? JSON.stringify(body[k]) : body[k]);
     }
   }
-  if (!fields.length) return c.json({ ok: false, error: '수정할 항목이 없습니다.' }, 400);
-
-  fields.push('updated_at=?');
-  values.push(Date.now());
-  values.push(channelId);
+  if (!fields.length && profileJson===undefined) return c.json({ ok: false, error: '수정할 항목이 없습니다.' }, 400);
 
   try {
-    await c.env.DB.prepare(`UPDATE cafe_channels SET ${fields.join(',')} WHERE channel_id=?`).bind(...values).run();
+    await ensureCafePublicProfiles(c.env.DB);
+    const now=Date.now(),statements:any[]=[];
+    if(fields.length){
+      fields.push('updated_at=?');values.push(now,channelId);
+      statements.push(c.env.DB.prepare(`UPDATE cafe_channels SET ${fields.join(',')} WHERE channel_id=? AND owner_id=?`).bind(...values,auth.id));
+    }
+    if(profileJson!==undefined)statements.push(c.env.DB.prepare(
+      'INSERT INTO cafe_public_profiles(channel_id,profile_json,updated_at) VALUES(?,?,?) ON CONFLICT(channel_id) DO UPDATE SET profile_json=excluded.profile_json,updated_at=excluded.updated_at'
+    ).bind(channelId,profileJson,now));
+    await c.env.DB.batch(statements);
     return c.json({ ok: true, channel_id: channelId });
   } catch (e: any) {
     return c.json({ ok: false, error: e?.message || '채널 수정 실패' }, 500);

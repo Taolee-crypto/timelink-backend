@@ -23,6 +23,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Validate independent cafe decoration and public World listing
+        run: node scripts/test-cafe-member-staff.cjs
       - name: Validate stream authorization regression guards
         run: python scripts/validate-stream-auth.py
       - name: Prevent retired score service from returning

@@ -1,5 +1,6 @@
 import {readSalesFinance,createSalesSettlement,transitionSalesSettlement} from '../sales-finance';
 import {Hono} from 'hono';
+import {ensureCafePublicProfiles} from '../cafe-public-profile';
 import type {Env} from '../types';
 import {verifyToken} from '../auth';
 import {salesPolicy,salesTerms,signSalesContract,simulateSalesDeposit,reviewSalesMember,updateSalesPolicy,assignmentPlan,settleCafeService} from '../sales-managers';
@@ -25,8 +26,22 @@ router.get('/invites/:code',async c=>{
 });
 router.get('/world',async c=>{
  const kind=c.req.query('kind')||'all';
- const r=await c.env.DB.prepare("SELECT c.channel_id,c.name,c.country,c.addr,c.description,c.images,c.playlist,c.status,COALESCE(s.kind,'cafe') kind FROM cafe_channels c LEFT JOIN v5_sales_stores s ON s.channel_id=c.channel_id WHERE c.status='active' AND (c.expires_at IS NULL OR c.expires_at>?) AND (?='all' OR COALESCE(s.kind,'cafe')=?) ORDER BY c.created_at DESC LIMIT 300").bind(Date.now(),kind,kind).all();
- return c.json({ok:true,channels:r.results||[]});
+ if(!['all','cafe','store'].includes(kind))return c.json({ok:false,error:'Invalid store category'},400);
+ const page=Math.min(100000,Math.max(1,Number(c.req.query('page')||'1')|0));
+ const limit=30,offset=(page-1)*limit;
+ const country=String(c.req.query('country')||'').trim().toUpperCase();
+ if(country&&!/^[A-Z]{2}$/.test(country))return c.json({ok:false,error:'Invalid country'},400);
+ const search=String(c.req.query('q')||'').trim().slice(0,100);
+ const term='%'+search.replace(/[\\%_]/g,'\\$&')+'%';
+ try{
+  await ensureCafePublicProfiles(c.env.DB);
+  const where="c.status='active' AND (c.expires_at IS NULL OR c.expires_at>?) AND (?='all' OR COALESCE(s.kind,'cafe')=?) AND (?='' OR c.country=?) AND (?='' OR c.name LIKE ? ESCAPE '\\' OR c.addr LIKE ? ESCAPE '\\')";
+  const from=' FROM cafe_channels c LEFT JOIN v5_sales_stores s ON s.channel_id=c.channel_id LEFT JOIN cafe_public_profiles p ON p.channel_id=c.channel_id WHERE '+where;
+  const args=[Date.now(),kind,kind,country,country,search,term,term];
+  const count=await c.env.DB.prepare('SELECT COUNT(*) total'+from).bind(...args).first<any>();
+  const result=await c.env.DB.prepare("SELECT c.channel_id,c.name,c.country,c.addr,c.description,c.images,c.status,COALESCE(s.kind,'cafe') kind,COALESCE(p.profile_json,'{}') profile_json"+from+' ORDER BY c.created_at DESC,c.channel_id LIMIT ? OFFSET ?').bind(...args,limit,offset).all();
+  return c.json({ok:true,channels:result.results||[],total:Number(count?.total||0),page,page_size:limit,has_more:offset+(result.results||[]).length<Number(count?.total||0)});
+ }catch(_){return c.json({ok:false,error:'STORE_WORLD_UNAVAILABLE'},503);}
 });
 router.get('/me',async c=>{
  const uid=c.get('salesUser').id,db=c.env.DB;
