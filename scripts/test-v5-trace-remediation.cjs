@@ -11,6 +11,8 @@ export {permittedStationTracks} from './src/tilo-station';
 export {default as admin} from './src/routes/admin';
 export {makeAccessToken} from './src/auth';
 export {requestListenerCashout,listenerCashoutEligibility} from './src/v5-cashout';
+export {readPurchasedTlAttribution} from './src/v5-purchased-tl-attribution';
+export {ensureLedgerAccount,postLedgerTransaction,tlToAtoms} from './src/economy-ledger';
 export {default as community} from './src/routes/community';
 export {default as discovery} from './src/routes/music-discovery';
 export {default as incar} from './src/routes/incar';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'api.cjs'),logLevel:'silent'});
@@ -42,7 +44,7 @@ INSERT INTO tl3_releases VALUES(7,'released',1);
 INSERT INTO tl_files VALUES(7,'Fixture','Artist',1,'audio/tl3',0);`);
 const db={prepare(sql){let args=[];const stmt={bind(...a){args=a;return stmt},async first(){return sqlite.prepare(sql).get(...args)||null},async all(){return {results:sqlite.prepare(sql).all(...args)}},async run(){const r=sqlite.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}}}};return stmt},async exec(sql){sqlite.exec(sql)},async batch(stmts){sqlite.exec('BEGIN IMMEDIATE');try{const results=[];for(const s of stmts)results.push(await s.run());sqlite.exec('COMMIT');return results}catch(e){sqlite.exec('ROLLBACK');throw e}}};
 async function main(){
- const payment={userId:'1',method:'fixture',paymentId:'pay-1',orderId:'order-1',paidTL:10000,bonusTL:500};
+ const payment={userId:'1',method:'fixture',paymentId:'pay-1',orderId:'order-1',paidTL:10000,bonusTL:500,paymentMode:'live'};
  await creditVerifiedPayment(db,payment);
  assert.deepEqual([(await readV5Wallet(db,1)).tl_p,(await readV5Wallet(db,1)).tl_b],[10000,500]);
  assert.equal((await creditVerifiedPayment(db,payment)).replayed,true);
@@ -53,17 +55,14 @@ async function main(){
  assert.equal((await readV5Wallet(db,1)).tl_balance,10500);
  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM tl_payments WHERE pg_id='pay-fail'").get().n,0);
  console.log('PASS verified payments: paid/bonus split, replay/conflict, atomic rollback');
- const session=await startAdReward(db,1,'ad-1');
- await assert.rejects(completeAdReward(db,1,'ad-1',session.session_id),/AD_SESSION_NOT_READY/);
+ // Deleted ads must never grant new TL_A while historical ledgers stay intact.
+ await assert.rejects(startAdReward(db,1,'ad-1'),/AD_REWARD_RETIRED/);
+ await assert.rejects(completeAdReward(db,1,'ad-1','old-session'),/AD_REWARD_RETIRED/);
  assert.equal((await readV5Wallet(db,1)).tl_a,0);
- sqlite.prepare('UPDATE v5_ad_reward_sessions SET started_at=unixepoch()-20 WHERE id=?').run(session.session_id);
- const awarded=await completeAdReward(db,1,'ad-1',session.session_id);
- assert.equal(awarded.tl_a_rewarded,300);
- assert.equal((await completeAdReward(db,1,'ad-1',session.session_id)).tl_a_rewarded,0);
- assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM ad_views').get().n,1);
- await assert.rejects(startAdReward(db,2,'ad-1'),/AD_BUDGET_EXHAUSTED/);
- assert.equal((await readV5Wallet(db,1)).tl_a,300);
- console.log('PASS ad rewards: elapsed session, exact-once ledger/view/budget, exhausted budget');
+ assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM ad_views').get().n,0);
+ assert.equal(sqlite.prepare("SELECT spent_tl FROM tl_ads WHERE id='ad-1'").get().spent_tl,0);
+ console.log('PASS retired ad rewards: no session, no TL_A and no budget spend');
+
  assert.equal((await permittedStationTracks(db,'KR')).length,0,'Undeclared V5 rights must never air');
  sqlite.exec('UPDATE tl_creator_metadata SET rights_declared=1');
  assert.equal((await permittedStationTracks(db,'KR')).length,1,'Public declared track is ordinary broadcast eligible without a second admin grant');
@@ -90,9 +89,35 @@ async function main(){
  assert.equal((await requestListenerCashout(db,cashout)).replayed,true);
  await assert.rejects(requestListenerCashout(db,{...cashout,amountTL:1100}),/CONFLICT/);
  assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM tl_exchanges').get().n,1);
- await creditVerifiedPayment(db,{userId:'2',method:'fixture',paymentId:'pay-ratio',orderId:'order-ratio',paidTL:10000,bonusTL:30000});
+ await creditVerifiedPayment(db,{userId:'2',method:'fixture',paymentId:'pay-ratio',orderId:'order-ratio',paidTL:10000,bonusTL:30000,paymentMode:'live'});
  await assert.rejects(requestListenerCashout(db,{userId:2,amountTL:1000,requestKey:'cashout-low-ratio',plan:'A'}),/BELOW_50_PERCENT/);
  assert.equal((await readV5Wallet(db,2)).tl_p,10000);
+ await creditVerifiedPayment(db,{userId:'2',method:'fixture',paymentId:'pay-unknown',orderId:'order-unknown',paidTL:5000,bonusTL:0,paymentMode:'unknown'});
+ // Purchase attribution must exclude unknown/test receipts even with paid balance.
+ const {readPurchasedTlAttribution}=require(path.join(temp,'api.cjs'));
+ const projected=await readPurchasedTlAttribution(db,'2');
+ assert.equal(projected.lots.find(x=>x.paymentKey==='v5-payment:fixture:pay-unknown').walletAtoms,50000000);
+ const {listenerCashoutEligibility}=require(path.join(temp,'api.cjs'));
+ const eligible=await listenerCashoutEligibility(db,2);
+ assert.ok(eligible.livePurchasedWalletAtoms<=100000000,'Only live purchased credit can fund cashout');
+ // Unverified purchase credits cannot be paid out as verified cash principal.
+ sqlite.prepare("INSERT INTO users(id,role) VALUES(3,'user'),(4,'user')").run();
+ await creditVerifiedPayment(db,{userId:'3',method:'fixture',paymentId:'pay-unknown-3',orderId:'order-unknown-3',paidTL:10000,bonusTL:0,paymentMode:'unknown'});
+ await assert.rejects(requestListenerCashout(db,{userId:3,amountTL:2000,requestKey:'cashout-unknown-3',plan:'A'}),/VERIFIED_LIVE_PURCHASE_BALANCE_REQUIRED/);
+ assert.equal((await readV5Wallet(db,3)).tl_p,10000);
+ // Creator royalties in wallet_paid must never substitute for spent purchase principal.
+ await creditVerifiedPayment(db,{userId:'4',method:'fixture',paymentId:'pay-live-4',orderId:'order-live-4',paidTL:10000,bonusTL:0,paymentMode:'live'});
+ const {ensureLedgerAccount,postLedgerTransaction,tlToAtoms}=require(path.join(temp,'api.cjs'));
+ const wallet4=await ensureLedgerAccount(db,'user',4,'TL','wallet_paid');
+ const platform4=await ensureLedgerAccount(db,'platform','fixture','TL','fixture_paid');
+ await postLedgerTransaction(db,{idempotencyKey:'fixture-use-4',transactionType:'verified_payment_use',source:'fixture',actorUserId:'4',lines:[
+  {accountId:wallet4,assetCode:'TL',amountAtoms:-tlToAtoms(9000)},{accountId:platform4,assetCode:'TL',amountAtoms:tlToAtoms(9000)}]});
+ await postLedgerTransaction(db,{idempotencyKey:'fixture-royalty-4',transactionType:'verified_creator_royalty',source:'fixture',actorUserId:'4',lines:[
+  {accountId:platform4,assetCode:'TL',amountAtoms:-tlToAtoms(9000)},{accountId:wallet4,assetCode:'TL',amountAtoms:tlToAtoms(9000)}]});
+ assert.equal((await readV5Wallet(db,4)).tl_p,10000);
+ await assert.rejects(requestListenerCashout(db,{userId:4,amountTL:2000,requestKey:'cashout-royalty-4',plan:'A'}),/VERIFIED_LIVE_PURCHASE_BALANCE_REQUIRED/);
+ assert.equal((await readV5Wallet(db,4)).tl_p,10000);
+ console.log('PASS listener cashout: unverified funds and creator-paid royalties cannot replace spent purchase TL_P');
  console.log('PASS listener cashout: purchased provenance, 50% threshold, escrow, fees and request replay');
  const headers={Authorization:'Bearer '+userToken,'Content-Type':'application/json'};
  const post=(app,url,body,token=userToken)=>app.request(url,{method:'POST',headers:{...headers,Authorization:'Bearer '+token},body:JSON.stringify(body)},env);
@@ -137,4 +162,6 @@ async function main(){
 
 
 }
+// Include structural retirement and four-category weights in existing V5 CI suite.
+require('./test-v5-retired-reward-rules.cjs');
 main().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>{sqlite.close();fs.rmSync(temp,{recursive:true,force:true})});

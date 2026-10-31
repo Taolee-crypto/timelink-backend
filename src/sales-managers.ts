@@ -25,6 +25,7 @@ export async function updateSalesPolicy(db:D1Database,b:Input,actor:number){
  return salesPolicy(db);
 }
 export async function signSalesContract(db:D1Database,uid:number,b:Input,userAgent=''){
+ throw Error('RETIRED_SALES_MANAGER_DJ');
  const p=await salesPolicy(db);if(p.join_fee_krw==null)bad('가입비 안내 준비 중입니다. 관리자 설정 후 서명할 수 있습니다.');
  const existing=await db.prepare('SELECT user_id FROM v5_sales_members WHERE user_id=?').bind(uid).first();if(existing)bad('이미 가입 신청이 있습니다.');
  if(b.expected_version!==p.version||b.terms_version!==SALES_TERMS_VERSION||b.accept!==true)bad('최신 계약을 확인하고 동의하세요.');
@@ -44,6 +45,7 @@ export async function signSalesContract(db:D1Database,uid:number,b:Input,userAge
  ]);return{virtual_ref:ref,fee_krw:p.join_fee_krw,state:'pending_deposit',signature_hash:hash,payment_mode:'simulation'};
 }
 export async function simulateSalesDeposit(db:D1Database,uid:number){
+ throw Error('RETIRED_SALES_MANAGER_DJ');
  const member=await db.prepare('SELECT state,virtual_ref,fee_krw FROM v5_sales_members WHERE user_id=?').bind(uid).first<any>();if(!member)bad('가입 신청 없음');
  if(member.state==='simulated_paid'||member.state==='active')return{state:member.state,simulated:true,replayed:true};
  if(member.state!=='pending_deposit')bad('신청 상태 확인 필요');
@@ -62,6 +64,7 @@ export async function reviewSalesMember(db:D1Database,b:Input,actor:number){
  ]);return{state:b.state,activation_basis:'simulation'};
 }
 export async function assignmentPlan(db:D1Database,cafe:Input,owner:number,b:Input){
+ throw Error('RETIRED_SALES_MANAGER_DJ');
  if(Number(cafe.owner_id)!==owner)bad('상점주만 담당 매니저를 변경할 수 있습니다.');
  const manager=b.invite_code?await db.prepare("SELECT m.* FROM v5_sales_members m JOIN users u ON u.id=m.user_id WHERE m.invite_code=? AND m.state='active' AND COALESCE(u.is_active,1)=1 AND COALESCE(u.account_forfeited,0)=0").bind(str(b.invite_code,16,80)).first<any>():
  await db.prepare("SELECT m.* FROM v5_sales_members m JOIN users u ON u.id=m.user_id WHERE m.user_id=? AND m.state='active' AND COALESCE(u.is_active,1)=1 AND COALESCE(u.account_forfeited,0)=0").bind(num(b.manager_user_id,1)).first<any>();
@@ -82,6 +85,7 @@ export async function assignmentPlan(db:D1Database,cafe:Input,owner:number,b:Inp
  return{manager_user_id:Number(manager.user_id),dj_user_id:Number(dj.user_id),dj_id:Number(dj.id),version:version+1,statements};
 }
 export async function settleCafeService(db:D1Database,input:{payerId:number;channelId:string;amountAtoms:number;key:string;managerId?:number|null;djUserId?:number|null;guards?:D1PreparedStatement[];atomic?:D1PreparedStatement[];metadata?:Input}){
+ throw Error('RETIRED_SALES_MANAGER_DJ');
  await assertTLAtomScale(db);const amount=num(input.amountAtoms,1,1000000000000),p=await salesPolicy(db);
  const prior=await db.prepare('SELECT * FROM v5_sales_payments WHERE idempotency_key=?').bind(input.key).first<any>();
  if(prior){if(prior.payer_user_id!==input.payerId||prior.channel_id!==input.channelId||prior.amount_atoms!==amount)bad('재시도 거래가 일치하지 않습니다.');return{replayed:true,transaction_id:prior.ledger_transaction_id,charged:atomsToTl(prior.amount_atoms),manager_revenue:atomsToTl(prior.manager_atoms),dj_revenue:atomsToTl(prior.dj_atoms),platform_revenue:atomsToTl(prior.platform_atoms),creator_revenue:0,wallet:await cafeWallet(db,input.payerId)};}
@@ -117,6 +121,7 @@ export async function cafeWallet(db:D1Database,uid:number){
  const get=(b:string)=>atomsToTl(r.filter(x=>x.bucket===b).reduce((n,x)=>n+Number(x.available_atoms),0));return{tl_a:get('wallet_ad'),tl_b:get('wallet_bonus'),tl_p:get('wallet_paid'),total:get('wallet_ad')+get('wallet_bonus')+get('wallet_paid')};
 }
 export async function chargeCafeStream(db:D1Database,input:{ownerId:number;channelId:string;djId:number;seconds:number;rate:number;requestId:string}){
+ throw Error('RETIRED_SALES_MANAGER_DJ');
  const key='cafe:stream:'+input.channelId+':'+str(input.requestId,16,100);const old=await db.prepare('SELECT * FROM v5_sales_payments WHERE idempotency_key=?').bind(key).first<any>();
  const link=await db.prepare('SELECT s.*,d.user_id dj_user_id FROM v5_sales_stores s LEFT JOIN dj_profiles d ON d.id=s.dj_id WHERE channel_id=?').bind(input.channelId).first<any>();
  if(link&&link.dj_id!==input.djId)bad('상점주가 선택한 DJ 방송을 사용하세요.');

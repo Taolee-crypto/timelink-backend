@@ -6,7 +6,6 @@ import { requestListenerCashout } from './v5-cashout';
 import { readRewardPolicy } from './v5-reward-policy';
 import {readReferralPocBonus} from './v5-referral-reward';
 import {assertTlcAssetScale,splitMinedTlcAtoms,TLC_RESERVE_OWNER,TLC_RESERVE_BUCKET,TLC_SPLIT_POLICY} from './v5-tlc-mining-split';
-import { completeAdReward, startAdReward } from './v5-ad-reward';
 import { verifyToken } from './auth';
 import type { Env } from './types';
 import { getLedgerWallet, atomsToTl, ensureLedgerAccount, postLedgerTransaction, wholeTlToAtoms } from './economy-ledger';
@@ -360,7 +359,7 @@ eco.post('/consume', async (c) => {
       creatorEarnA = Number((consumedA * CREATOR_SHARE_RATE).toFixed(6));
       platformEarnA = Number((consumedA * PLATFORM_SHARE_RATE).toFixed(6));
 
-      // TL_B 소비도 공통 7:3 정책 적용: 창작자 70%는 출처 제한을 보존해 TL_A로 지급
+      // TL_B 유래 창작자 70%는 비환금성 TL_B로 지급한다 (광고 TL_A로 재분류 금지)
       creatorEarnB = Number((consumedB * CREATOR_SHARE_RATE).toFixed(6));
       platformEarnB = Number((consumedB * PLATFORM_SHARE_RATE).toFixed(6));
 
@@ -370,11 +369,12 @@ eco.post('/consume', async (c) => {
             tl_p = tl_p + ?,
             tl = tl + ?,
             tl_a = tl_a + ?,
+            tl_b = tl_b + ?,
             total_tl_earned = total_tl_earned + ?
           WHERE id=?
         `).bind(
           creatorEarnP, creatorEarnP,
-          creatorEarnA + creatorEarnB,
+          creatorEarnA, creatorEarnB,
           creatorEarnP + creatorEarnA + creatorEarnB,
           share.creator_id
         ).run();
@@ -416,7 +416,7 @@ eco.post('/consume', async (c) => {
     return c.json({
       ok: true,
       consumed: { tl_p: consumedP, tl_a: consumedA, tl_b: consumedB, total: actualConsumed },
-      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA + creatorEarnB },
+      creator: { tl_p: creatorEarnP, tl_a: creatorEarnA, tl_b: creatorEarnB },
       platform: { tl_p: platformEarnP, tl_a: platformEarnA, tl_b: platformEarnB },
       wallet: {
         tl_p: updated?.tl_p ?? updated?.tl ?? 0,
@@ -429,28 +429,9 @@ eco.post('/consume', async (c) => {
   }
 });
 
-/* ══════════════════════════════════════════════════════
-   POST /api/eco/ad-reward
-   광고 시청 완료 → TL_A 지급 (교환 불가)
-   body: { ad_id, tl_amount }
-══════════════════════════════════════════════════════ */
-eco.post('/ad-session', async c => {
-  const userId=await authId(c);
-  if(!userId)return c.json({error:'인증 필요'},401);
-  try {
-    const body=await c.req.json<any>();
-    return c.json({ok:true,...await startAdReward(c.env.DB,Number(userId),String(body.ad_id||''))});
-  } catch(e:any){return c.json({error:e.message},400);}
-});
-
-eco.post('/ad-reward', async c => {
-  const userId=await authId(c);
-  if(!userId)return c.json({error:'인증 필요'},401);
-  try {
-    const body=await c.req.json<any>();
-    return c.json(await completeAdReward(c.env.DB,Number(userId),String(body.ad_id||''),String(body.session_id||'')));
-  } catch(e:any){return c.json({error:e.message},409);}
-});
+/* Retired advertising: never create new TL_A grants. Historical ledger entries are preserved. */
+eco.post('/ad-session',c=>c.json({ok:false,code:'AD_REWARD_RETIRED',error:'광고 보상이 종료되었습니다.'},410));
+eco.post('/ad-reward',c=>c.json({ok:false,code:'AD_REWARD_RETIRED',error:'광고 보상이 종료되었습니다.'},410));
 
 /* ══════════════════════════════════════════════════════
    POST /api/eco/exchange
@@ -504,34 +485,21 @@ async function calculateServerPoc(db:D1Database,userId:string){
       WHERE user_id=? AND mode='listen' AND created_at >= ?
     `).bind(userId, monthStart).first() as any;
 
-    // MP3와 TL3 업로드 수 분리 집계 (MP3 = 1, TL3 = 3 가중치)
+    // Only protected TL3 shares are eligible; raw MP3 inputs are not public works.
     const uploadStats = await db.prepare(`
-      SELECT 
-        COALESCE(SUM(CASE WHEN content_kind='mp3' OR release_mode LIKE 'free_mp3%' THEN 1 ELSE 0 END), 0) as mp3_count,
-        COALESCE(SUM(CASE WHEN content_kind='tl3' OR release_mode='tl3' THEN 1 ELSE 0 END), 0) as tl3_count
-      FROM tl_shares
+      SELECT COUNT(*) as tl3_count FROM tl_shares
       WHERE user_id=? AND created_at >= ?
-    `).bind(userId, monthStart + ' 00:00:00').first().catch(() => ({ mp3_count: 0, tl3_count: 0 })) as any;
+        AND (content_kind='tl3' OR release_mode='tl3')
+    `).bind(userId, monthStart + ' 00:00:00').first().catch(() => ({ tl3_count: 0 })) as any;
 
 
-    // ★ 악보 통계 (신규) — 악보 공유/사용/보기
-    const scoreStats = await db.prepare(`
-      SELECT
-        COALESCE(SUM(CASE WHEN mode='upload_score' THEN 1 ELSE 0 END), 0) as shares,
-        COALESCE(SUM(CASE WHEN mode='score_use' THEN 1 ELSE 0 END), 0) as uses,
-        COALESCE(SUM(CASE WHEN mode='score_view' THEN 1 ELSE 0 END), 0) as views
-      FROM poc_logs
-      WHERE user_id=? AND created_at >= ?
-    `).bind(userId, monthStart).first().catch(() => ({ shares: 0, uses: 0, views: 0 })) as any;
     // ── POC 신 알고리즘 ──
     // 요소별 정규화 (각 최대값 기준)
     const monthlyTlP   = Math.max(0,Number(monthlyStats?.monthly_tl_p || 0));
     const monthlyPlays = Number(shareStats?.play_count || 0);
     const monthlyHours = Math.max(0,Number(monthlyStats?.total_seconds || 0)) / 3600;
-    // MP3 = 1점, TL3 = 3점 (가중치)
-    const mp3Count = Number(uploadStats?.mp3_count || 0);
     const tl3Count = Number(uploadStats?.tl3_count || 0);
-    const uploads  = mp3Count * policy.upload_mp3_weight + tl3Count * policy.upload_tl3_weight;
+    const uploads = tl3Count * policy.upload_tl3_weight;
 
     // 각 요소 점수 (0 ~ 최대값)
     const contentScore = Math.min(policy.content_cap,monthlyPlays/policy.content_target);        // 500회 = 만점
@@ -539,24 +507,13 @@ async function calculateServerPoc(db:D1Database,userId:string){
     const listenScore  = Math.min(policy.listen_cap,monthlyHours/policy.listen_target);         // 30시간 = 만점
     const uploadScore  = Math.min(policy.upload_cap,uploads/policy.upload_target);               // 5개 = 만점
 
-    // ★ 악보 기여 점수 (신규)
-    const scoreShares = Number(scoreStats?.shares || 0);
-    const scoreUses   = Number(scoreStats?.uses || 0);
-    const scoreViews  = Number(scoreStats?.views || 0);
-    const scoreScore  = Math.min(policy.score_cap,
-      scoreShares * policy.score_share +        // 악보 공유 1개 = 0.3
-      scoreUses   * policy.score_use +       // 악보 사용 1회 = 0.05
-      scoreViews  * policy.score_view        // 악보 보기 1회 = 0.005
-    );
-
-    // 가중합 (5요소, 총 100%)
+    // 가중합 (폐기된 악보 영역 제외, 4요소 합계 100%)
     const verifiedReferralPoc=Math.min(policy.referral_poc_cap,await readReferralPocBonus(db,userId,monthStart));
     const rawPoc = verifiedReferralPoc +
-      contentScore * policy.weight_content +      // 40% → 35%
-      spendScore   * policy.weight_spend +      // 30% → 25%
-      listenScore  * policy.weight_listen +      // 20% → 18%
-      uploadScore  * policy.weight_upload +      // 그대로
-      scoreScore   * policy.weight_score;       // ★ 신규 12%
+      contentScore * policy.weight_content +
+      spendScore   * policy.weight_spend +
+      listenScore  * policy.weight_listen +
+      uploadScore  * policy.weight_upload;
 
     // 하드캡 5.0, 최솟값 0.1
     const pocIndex = Math.min(policy.poc_max,Math.max(policy.poc_min,rawPoc*policy.poc_scale));
@@ -596,7 +553,6 @@ async function calculateServerPoc(db:D1Database,userId:string){
         spend:   Number(spendScore.toFixed(3)),
         listen:  Number(listenScore.toFixed(3)),
         upload:  Number(uploadScore.toFixed(3)),
-        score:   Number(scoreScore.toFixed(3)),
         referral:Number(verifiedReferralPoc.toFixed(3)),
       },
       tlc_mining: {

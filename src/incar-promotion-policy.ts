@@ -46,7 +46,8 @@ export function splitIncarPromotionAtoms(
     throw new Error('INVALID_PROMOTION_AMOUNT');
   }
   if (channel !== 'central' && channel !== 'dj') throw new Error('INVALID_PROMOTION_CHANNEL');
-  const djAtoms = channel === 'dj' ? Math.floor(totalAtoms * policy.djShareBps / 10000) : 0;
+  if (channel === 'dj') throw new Error('RETIRED_DJ_PROMOTION_CHANNEL');
+  const djAtoms = 0; // DJ selection retired; only central promotion remains.
   return { djAtoms, platformAtoms: totalAtoms - djAtoms };
 }
 
