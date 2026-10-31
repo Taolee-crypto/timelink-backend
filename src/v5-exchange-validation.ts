@@ -6,7 +6,7 @@ export function parseWholeTL(value:unknown):number {
  return amount;
 }
 export function parseTLCAtoms(value:unknown):bigint {
- if(typeof value!=='string'||!/^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,9})?$/.test(value))throw new Error('INVALID_TLC_AMOUNT');
+ if(typeof value!=='string'||!/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?$/.test(value))throw new Error('INVALID_TLC_AMOUNT');
  const [whole,fraction='']=value.split('.');
  const atoms=BigInt(whole)*1000000000n+BigInt(fraction.padEnd(9,'0')||'0');
  if(atoms<=0n||atoms>BigInt(Number.MAX_SAFE_INTEGER))throw new Error('TLC_AMOUNT_OUT_OF_RANGE');
