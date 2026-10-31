@@ -1,5 +1,6 @@
 import {timeFreePreflight,beginTimeFreeSession} from '../v5-time-free';
 import {subscriptionPreflight,beginSubscriptionSession} from '../v5-subscription-playback';
+import {reserveOfflineV5TrackTl} from '../v5-offline-ledger-reservation';
 import {authorizeDjMonitor} from '../dj-v5-library';
 import {readCreatorSplit} from '../creator-split-policy';
 import { ensureCentralBroadcastSchema } from '../central-broadcast-schema';
@@ -524,6 +525,91 @@ router.get('/offline/quote/:sha256', async (c) => {
   }catch(error){
     console.error('[TL3_V5_OFFLINE_QUOTE]',error);
     return c.json({ok:false,error:'오프라인 TL 잔액 확인에 실패했습니다.'},503);
+  }
+});
+
+router.post('/offline/grant/:sha256', async (c) => {
+  try{
+    const userId=await userFromRequest(c);
+    if(!userId)return c.json({ok:false,error:'로그인이 필요합니다.'},401);
+    const sha=String(c.req.param('sha256')||'').toLowerCase();
+    if(!/^[a-f0-9]{64}$/.test(sha))return c.json({ok:false,error:'TL3 파일 확인값이 올바르지 않습니다.'},400);
+    const body=await c.req.json<any>().catch(()=>({}));
+    const playerId=body?.player_id;
+    const entitlementId=String(body?.entitlement_id||'');
+    if(!validPlayerId(playerId)||!/^[A-Za-z0-9_-]{12,128}$/.test(entitlementId))
+      return c.json({ok:false,error:'Player 또는 오프라인 청취권 식별자가 올바르지 않습니다.'},400);
+    await ensureV5Tables(c.env.DB);
+    const [player,release]=await Promise.all([
+      c.env.DB.prepare('SELECT public_jwk,key_thumbprint FROM tl3_player_keys WHERE user_id=? AND player_id=? AND revoked_at IS NULL')
+        .bind(userId,playerId).first<any>(),
+      c.env.DB.prepare(`SELECT v.file_id,v.share_id,v.duration_ms,v.container_sha256,v.wrapped_content_key,
+        COALESCE(v.key_id,'legacy') AS key_id
+        FROM tl3_v5_releases v JOIN tl_files f ON f.id=v.file_id
+        WHERE v.container_sha256=? AND v.status='sealed' AND f.shared=1
+          AND LOWER(f.file_type)='audio/tl3' AND COALESCE(f.revenue_held,0)=0
+          AND EXISTS(SELECT 1 FROM tl_creator_metadata m
+            WHERE m.file_id=v.file_id AND m.user_id=v.user_id AND m.rights_declared=1
+              AND m.rights_role IN ('owner','authorized_agent','licensee')
+              AND m.rights_scope IN ('master_recording','distribution_license','delegated_scope')
+              AND m.declaration_status IN ('declared','verified','approved'))
+        LIMIT 1`).bind(sha).first<any>()
+    ]);
+    if(!player)return c.json({ok:false,code:'PLAYER_KEY_REQUIRED',error:'이 기기의 TimeLink Player 키를 먼저 등록해야 합니다.'},403);
+    if(!release)return c.json({ok:false,error:'권리 확인된 TL3 V5 음원을 찾지 못했습니다.'},404);
+    const pools=await getTrackPoolBalances(c.env.DB,userId,String(release.share_id));
+    const atoms=Number(pools.paid||0)+Number(pools.bonus||0)+Number(pools.ad||0);
+    if(!Number.isSafeInteger(atoms)||atoms<0)throw Error('INVALID_OFFLINE_GRANT_BALANCE');
+    const availableSeconds=Math.min(86400,Math.floor(atoms/10000));
+    const requested=body?.requested_seconds==null?availableSeconds:Number(body.requested_seconds);
+    if(!Number.isSafeInteger(requested)||requested<=0||requested>availableSeconds)
+      return c.json({ok:false,code:'OFFLINE_TL_INSUFFICIENT',error:'이 곡에 오프라인 재생용으로 예약할 TL이 부족합니다.',max_reservable_seconds:availableSeconds},402);
+
+    const masterKeys=resolveMasterKeyring(c.env);
+    const releaseMasterKey=masterKeys.keys[String(release.key_id||'legacy')];
+    if(!releaseMasterKey)return c.json({ok:false,code:'TL3_MASTER_KEY_MISSING',error:'이 자산의 마스터 키를 찾을 수 없습니다.'},503);
+    const contentKey=await unwrapAssetKey(releaseMasterKey,Number(release.file_id),String(release.share_id),String(release.wrapped_content_key));
+    const publicJwk=JSON.parse(String(player.public_jwk));
+    const memberPublic=await crypto.subtle.importKey('jwk',publicJwk,{name:'ECDH',namedCurve:'P-256'},false,[]);
+    const ephemeral=await crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']) as CryptoKeyPair;
+    const shared=new Uint8Array(await crypto.subtle.deriveBits({name:'ECDH',public:memberPublic} as any,ephemeral.privateKey,256));
+    const salt=crypto.getRandomValues(new Uint8Array(32));
+    const nonce=crypto.getRandomValues(new Uint8Array(12));
+    const issuedAt=Math.floor(Date.now()/1000);
+    const expiresAt=issuedAt+31536000;
+    const infoText=['timelink:tl3:v5:offline:v1',userId,playerId,Number(release.file_id),
+      String(release.share_id),sha,entitlementId,requested,expiresAt].join(':');
+    const hkdf=await crypto.subtle.importKey('raw',bytes(shared),'HKDF',false,['deriveKey']);
+    const wrapKey=await crypto.subtle.deriveKey({name:'HKDF',hash:'SHA-256',salt:bytes(salt),info:te.encode(infoText)},
+      hkdf,{name:'AES-GCM',length:256},false,['encrypt']);
+    const thumb=String(player.key_thumbprint||'');
+    const wrapped=new Uint8Array(await crypto.subtle.encrypt(
+      {name:'AES-GCM',iv:bytes(nonce),additionalData:te.encode(infoText+':'+thumb),tagLength:128},
+      wrapKey,bytes(contentKey)
+    ));
+    contentKey.fill(0);
+
+    // Commit the actual funded TL reservation before the decryptable envelope leaves the server.
+    const reservation=await reserveOfflineV5TrackTl(c.env.DB,{
+      userId,shareId:String(release.share_id),entitlementId,seconds:requested
+    });
+    const ephemeralPublic=await crypto.subtle.exportKey('jwk',ephemeral.publicKey) as JsonWebKey;
+    await c.env.DB.prepare("UPDATE tl3_player_keys SET last_used_at=datetime('now') WHERE user_id=? AND player_id=?")
+      .bind(userId,playerId).run();
+    return c.json({ok:true,version:1,algorithm:'ECDH-P256/HKDF-SHA256/AES-256-GCM',
+      entitlement_id:entitlementId,player_id:playerId,user_id:userId,
+      file_id:Number(release.file_id),share_id:String(release.share_id),container_sha256:sha,
+      file_tl_reserved:requested,personal_tl_reserved:0,issued_at:issuedAt,expires_at:expiresAt,
+      salt:b64u(salt),nonce:b64u(nonce),
+      ephemeral_public_key:{kty:'EC',crv:'P-256',x:ephemeralPublic.x,y:ephemeralPublic.y},
+      wrapped_license:b64u(wrapped),aad_thumbprint:thumb,
+      ledger_transaction_id:reservation.ledgerTransactionId,reservation_replayed:reservation.replayed});
+  }catch(error:any){
+    const message=String(error?.message||'오프라인 청취권 발급 실패');
+    if(message==='OFFLINE_V5_INSUFFICIENT_TRACK_TL')
+      return c.json({ok:false,code:'OFFLINE_TL_INSUFFICIENT',error:'이 곡에 충전된 TL이 부족합니다.'},402);
+    console.error('[TL3_V5_OFFLINE_GRANT]',error);
+    return c.json({ok:false,error:message},500);
   }
 });
 
