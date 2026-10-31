@@ -4,6 +4,10 @@ on:
     paths:
       - 'src/routes/music-discovery.ts'
       - 'scripts/test-v5-creator-private-duplicate.cjs'
+      - 'scripts/test-v5-track-rights-e2e.cjs'
+      - 'scripts/test-v5-track-rights-contract.cjs'
+      - 'src/v5-recording-identity.ts'
+      - 'src/routes/tl3-v5.ts'
       - 'scripts/test-creator-contributors.cjs'
       - 'scripts/test-creator-payout-report.cjs'
       - 'scripts/test-v5-music-gate-worker.cjs'
@@ -13,6 +17,10 @@ on:
     paths:
       - 'src/routes/music-discovery.ts'
       - 'scripts/test-v5-creator-private-duplicate.cjs'
+      - 'scripts/test-v5-track-rights-e2e.cjs'
+      - 'scripts/test-v5-track-rights-contract.cjs'
+      - 'src/v5-recording-identity.ts'
+      - 'src/routes/tl3-v5.ts'
       - 'scripts/test-creator-contributors.cjs'
       - 'scripts/test-creator-payout-report.cjs'
       - 'scripts/test-v5-music-gate-worker.cjs'
@@ -32,6 +40,10 @@ jobs:
       - run: npm ci
       - name: Run actual Hono/D1 private recording and duplicate guard
         run: node scripts/test-v5-creator-private-duplicate.cjs
+      - name: Verify track-level registered duplicate and rights-review lifecycle
+        run: node scripts/test-v5-track-rights-e2e.cjs
+      - name: Verify duplicate gate precedes V5 manufacture
+        run: node scripts/test-v5-track-rights-contract.cjs
       - name: Verify source-linked audio review and audit immutability
         run: node scripts/test-v5-music-gate-worker.cjs
       - name: Verify multi-rights ownership, escrow and creator shares
