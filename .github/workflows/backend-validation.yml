@@ -31,6 +31,8 @@ jobs:
         run: node scripts/test-v5-numeric-resolve.cjs
       - name: Verify TILO administrator discount evidence and settlement safety
         run: node scripts/test-tilo-flexible-discount.cjs
+      - name: Enforce territorial TILO station broadcaster licenses
+        run: node scripts/test-tilo-station-v5.cjs
       - name: Check TILO station operational evidence and rights
         run: node scripts/test-tilo-v5-operations.cjs
       - name: Verify country rights grant reviewer owner and revocation guards
