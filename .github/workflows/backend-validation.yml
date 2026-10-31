@@ -37,5 +37,7 @@ jobs:
         run: node scripts/test-tilo-country-grant-audit.cjs
       - name: Verify member profile account-bound contract
         run: node scripts/test-member-profile-v5.cjs
+      - name: Test TILO bulk country grant ownership and audited atomicity
+        run: node scripts/test-tilo-bulk-grant.cjs
       - name: Validate Worker bundle (dry run only)
         run: npx wrangler deploy --dry-run --outdir .wrangler-dist
