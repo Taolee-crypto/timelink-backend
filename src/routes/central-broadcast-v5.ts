@@ -215,16 +215,20 @@ router.post('/airtime/record', async c => {
     const policy=await c.env.DB.prepare(`SELECT coefficient_bps,revision
       FROM tilo_broadcast_discount_policy WHERE id=1`).first<{coefficient_bps:number;revision:number}>();
     const coefficientBps=policy?.coefficient_bps??3000;
-    if(!Number.isSafeInteger(coefficientBps)||coefficientBps<0||coefficientBps>10000)
+    const revision=policy?.revision??0;
+    if(!Number.isSafeInteger(coefficientBps)||coefficientBps<0||coefficientBps>10000||
+       !Number.isSafeInteger(revision)||revision<0)
       return c.json({ok:false,error:'INVALID_DISCOUNT_CONFIGURATION'},503);
     const atoms=calculateCentralBroadcastAtoms(BigInt(audibleMs),BigInt(coefficientBps));
     const inserted=await c.env.DB.prepare(`
       INSERT OR IGNORE INTO tilo_v5_verified_airtime
         (event_id,country,service_id,creator_id,file_id,started_at,ended_at,
-         local_month,audible_ms,creator_atoms,platform_atoms,evidence_digest)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+         local_month,audible_ms,creator_atoms,platform_atoms,evidence_digest,
+         discount_coefficient_bps,discount_revision)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).bind(eventId,country,serviceId,creatorId,fileId,startedAt,endedAt,
-      localMonth,audibleMs,Number(atoms.creatorAtoms),Number(atoms.platformAtoms),evidenceDigest).run();
+      localMonth,audibleMs,Number(atoms.creatorAtoms),Number(atoms.platformAtoms),
+      evidenceDigest,coefficientBps,revision).run();
     if(!inserted.meta?.changes){
       const existing=await c.env.DB.prepare(
         'SELECT country,service_id,creator_id,file_id,started_at,ended_at,audible_ms,evidence_digest FROM tilo_v5_verified_airtime WHERE event_id=?'
@@ -237,7 +241,7 @@ router.post('/airtime/record', async c => {
       return c.json({ok:true,replayed:true,posted:false,event_id:eventId});
     }
     return c.json({ok:true,replayed:false,posted:false,event_id:eventId,
-      creator_atoms:Number(atoms.creatorAtoms),platform_atoms:Number(atoms.platformAtoms),discount_coefficient_bps:coefficientBps,discount_revision:policy?.revision??0});
+      creator_atoms:Number(atoms.creatorAtoms),platform_atoms:Number(atoms.platformAtoms),discount_coefficient_bps:coefficientBps,discount_revision:revision});
   }catch(e){if(String(e).includes('TILO_AIRTIME_INTERVAL_OVERLAP'))return c.json({ok:false,error:'AIRTIME_INTERVAL_OVERLAP'},409);console.error('[TILO_AIRTIME_RECORD]',e);return c.json({ok:false,error:'AIRTIME_STORAGE_UNAVAILABLE'},503);}
 });
 
