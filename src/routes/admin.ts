@@ -13,7 +13,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../types';
 import { verifyToken } from '../auth';
-import {reverseReferralReward} from '../v5-referral-reward';
+import {reverseReferralReward,reverseStoreReferralForRefund} from '../v5-referral-reward';
 import {readGroupTlcReserve} from '../v5-tlc-mining-split';
 import {readTlcIssuanceIntegrity} from '../v5-tlc-issuance-audit';
 import {ensureLedgerAccount,postLedgerTransaction} from '../economy-ledger';
@@ -113,6 +113,25 @@ router.post('/referrals/reverse',async c=>{
     return c.json({ok:false,error:'BONUS_BALANCE_TOO_LOW_MANUAL_REVIEW_REQUIRED'},409);
    console.error('[ADMIN_REFERRAL_REVERSAL]',code);
    return c.json({ok:false,error:'REFERRAL_REVERSAL_UNAVAILABLE'},503);
+ }
+});
+router.post('/referrals/store-refund',async c=>{
+ const actor=await requireAdmin(c);
+ if(!actor)return c.json({ok:false,error:'ADMIN_REQUIRED'},403);
+ const body=await c.req.json().catch(()=>null) as any;
+ if(!body||typeof body!=='object'||Array.isArray(body)||
+    Object.keys(body).some(k=>!['order_id','proof_reference'].includes(k))||
+    typeof body.order_id!=='string'||typeof body.proof_reference!=='string')
+   return c.json({ok:false,error:'INVALID_STORE_REFERRAL_REFUND'},400);
+ try{return c.json(await reverseStoreReferralForRefund(c.env.DB,actor,body.order_id,body.proof_reference));}
+ catch(error:any){
+   const code=String(error.message||error);
+   if(['INVALID_STORE_REFERRAL_REFUND','VERIFIED_STORE_PAYMENT_REQUIRED','REFUND_REFERENCE_CONFLICT'].includes(code))
+     return c.json({ok:false,error:code},409);
+   if(/negative|INSUFFICIENT/i.test(code))
+     return c.json({ok:false,error:'BONUS_BALANCE_TOO_LOW_MANUAL_REVIEW_REQUIRED'},409);
+   console.error('[ADMIN_STORE_REFERRAL_REFUND]',code);
+   return c.json({ok:false,error:'STORE_REFERRAL_REFUND_UNAVAILABLE'},503);
  }
 });
 router.get('/audit-events',async c=>{
