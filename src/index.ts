@@ -456,8 +456,8 @@ async function registerWithEmail(c:any,providedBody?:any) {
       await ensureV5SignupConsentAudit(c.env.DB);
       await c.env.DB.batch([c.env.DB.prepare(
         'INSERT INTO users (email, username, password_hash, tl, tl_balance, tlc_balance, created_at, is_advertiser, biz_reg_num, business_name, email_verified) VALUES (?,?,?,?,?,0,?,?,?,?,1)'
-      ).bind(email, username, hashedPw2, isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus, isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus, now, isAdvertiser?1:0, bizRegNum||'', businessName||username),
-        c.env.DB.prepare('INSERT INTO v5_signup_entitlements(user_id,bonus_tl,policy_version) SELECT id,?,? FROM users WHERE email=?').bind(isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus,rewardPolicy.version,email),
+      ).bind(email, username, hashedPw2, rewardRules.signup_bonus, rewardRules.signup_bonus, now, isAdvertiser?1:0, bizRegNum||'', businessName||username),
+        c.env.DB.prepare('INSERT INTO v5_signup_entitlements(user_id,bonus_tl,policy_version) SELECT id,?,? FROM users WHERE email=?').bind(rewardRules.signup_bonus,rewardPolicy.version,email),
         signupConsentInsert(c.env.DB,email,consent),
         c.env.DB.prepare('DELETE FROM email_verifications WHERE email=? AND code=?').bind(email,verifyCode)
       ]);
@@ -465,7 +465,7 @@ async function registerWithEmail(c:any,providedBody?:any) {
       await c.env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=?').bind(Number((user as any).id)).run();
       if(user){
         const bonusUser=await c.env.DB.prepare('SELECT id,tl,tl_balance,total_tl_spent,tl_p_lifetime,tl_p_exchanged FROM users WHERE id=?').bind(Number((user as any).id)).first();
-        await reconcilePristineSignupBonus(c.env.DB,bonusUser,isAdvertiser?rewardRules.advertiser_signup_bonus:rewardRules.signup_bonus);
+        await reconcilePristineSignupBonus(c.env.DB,bonusUser,rewardRules.signup_bonus);
       }
       const token = await makeAccessToken(Number((user as any).id), c.env.JWT_SECRET);
       const wallet=await readV5Wallet(c.env.DB,Number((user as any).id));
