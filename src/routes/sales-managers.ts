@@ -15,6 +15,14 @@ router.use('*',async(c,next)=>{
  const user=await c.env.DB.prepare("SELECT id,role FROM users WHERE id=? AND COALESCE(is_active,1)=1 AND COALESCE(account_forfeited,0)=0").bind(Number(payload.sub)).first<any>();
  if(!user)return c.json({ok:false,error:'활성 계정이 필요합니다.'},401);c.set('salesUser',user);return next();
 });
+// The manager/DJ product was withdrawn. Keep historic read/settlement audit
+// available, but do not sign new contracts, assign DJs or create new billing.
+router.use('*',async(c,next)=>{
+ if(c.req.method==='GET'||c.req.method==='HEAD'||c.req.method==='OPTIONS')return next();
+ const p=new URL(c.req.url).pathname;
+ if(/^\/api\/sales\/admin\/settlements(\/|$)/.test(p))return next();
+ return c.json({ok:false,error:'RETIRED_SALES_MANAGER_DJ',message:'영업매니저·DJ 유료 서비스는 종료되었습니다.'},410);
+});
 router.get('/policy',async c=>{const p=await salesPolicy(c.env.DB);return c.json({ok:true,policy:p,terms:salesTerms(p)});});
 router.get('/directory',async c=>{
  const managers=await c.env.DB.prepare("SELECT m.user_id,m.display_name,m.country FROM v5_sales_members m JOIN users u ON u.id=m.user_id WHERE m.state='active' AND COALESCE(u.is_active,1)=1 AND COALESCE(u.account_forfeited,0)=0 ORDER BY m.display_name LIMIT 500").all();
