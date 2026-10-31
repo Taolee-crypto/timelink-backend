@@ -509,6 +509,13 @@ router.post('/player/revoke', async (c) => {
 async function authorizedTiloBroadcast(db:D1Database,userId:number,fileId:number,country:string):Promise<boolean>{
   if(!['KR','JP','US','CN','TH','VN'].includes(country))return false;
   await ensureCentralBroadcastSchema(db);
+  // This zero-charge flag is reserved for a verified platform broadcaster.
+  // It must NEVER be available to ordinary listener accounts; they use
+  // TIME FREE first, otherwise 1 TL per audible second through V5 metering.
+  const operator=await db.prepare("SELECT role FROM users WHERE id=? AND COALESCE(is_active,1)=1").bind(userId).first<{role:string}>();
+  if(operator?.role!=='admin')return false;
+  const service=await db.prepare("SELECT service_id FROM central_broadcast_service_accounts WHERE parent_admin_user_id=? AND status='active' LIMIT 1").bind(userId).first();
+  if(!service)return false;
   return (await permittedStationTracks(db,country)).some(track=>track.file_id===fileId);
 }
 

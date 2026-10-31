@@ -48,20 +48,12 @@ function verifyJP(bizNo: string): VerifyResult {
 }
 
 function verifyCN(bizNo: string): VerifyResult {
-  const cleaned = bizNo.replace(/-/g, '').trim().toUpperCase();
-  if (!/^[0-9A-HJ-NPQRTUWXY]{18}$/.test(cleaned)) return { ok: false, verified: false, error: '중국 통일사회신용코드는 18자리입니다.' };
-  // 체크섬
-  const code = '0123456789ABCDEFGHJKLMNPQRTUWXY';
-  const weights = [1,3,9,27,19,26,16,17,20,29,25,13,8,24,10,30,28];
-  let sum = 0;
-  for (let i = 0; i < 17; i++) {
-    const idx = code.indexOf(cleaned[i]);
-    if (idx < 0) return { ok: false, verified: false, error: '중국 통일사회신용코드에 허용되지 않은 문자입니다.' };
-    sum += idx * weights[i];
-  }
-  const checkIdx = (31 - (sum % 31)) % 31;
-  if (code[checkIdx] !== cleaned[17]) return { ok: false, verified: false, error: '중국 통일사회신용코드 체크섬이 올바르지 않습니다.' };
-  return { ok: true, verified: false };
+  const cleaned=bizNo.replace(/[\s-]/g,'').trim().toUpperCase();
+  // Chinese unified social credit codes include digits AND letters.
+  // Before a government API integration, only validate country syntax/length.
+  if(!/^[0-9A-HJ-NPQRTUWXY]{18}$/.test(cleaned))
+    return {ok:false,verified:false,error:'중국 통일사회신용코드는 18자리 영문·숫자입니다.'};
+  return {ok:true,verified:false};
 }
 
 function verifyGB(bizNo: string): VerifyResult {
@@ -84,18 +76,10 @@ async function verifyBizRegNum(c: Context<{ Bindings: Env }>, country: string, b
     case 'GB': result = verifyGB(bizNo); break;
     default: return { ok: false, verified: false, error: '지원하지 않는 국가입니다.' };
   }
-  if (!result.ok) return result;
-  // 국세청/IRS 등 API 연동 여부 확인
-  let enabled = false;
-  try {
-    await c.env.DB.prepare("CREATE TABLE IF NOT EXISTS tl_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime('now')))").run().catch(()=>{});
-    const row = await c.env.DB.prepare("SELECT value FROM tl_settings WHERE key='biz_verify_enabled'").first<any>();
-    enabled = String(row?.value || '').toLowerCase() === 'true';
-  } catch(_) {}
-  if (!enabled) return { ok: true, verified: false };
-  // TODO: 국가별 API 연동
-  // KR: 국세청 홈택스 / US: IRS TIN / JP: 国税庁 / CN: 国家企业信用 / GB: HMRC VIES
-  return { ok: true, verified: false };
+  // Before verified country APIs are connected, only number/format checks
+  // apply. Never mark country-format checks as official registration verified.
+  if(!result.ok)return result;
+  return {ok:true,verified:false};
 }
 
 // ── 테이블 보장 ──
@@ -186,7 +170,7 @@ router.get('/my-channels', async (c) => {
     await ensureCafeTables(c.env.DB);
     await ensureCafePublicProfiles(c.env.DB);
     const { results } = await c.env.DB.prepare(
-      `SELECT c.channel_id,c.name,c.owner_id,c.country,c.addr,c.description,c.images,c.playlist,c.schedules,c.plan,c.status,c.expires_at,c.created_at,
+      `SELECT c.channel_id,c.name,c.owner_id,c.country,c.addr,c.description,c.images,c.playlist,c.schedules,c.plan,c.status,c.expires_at,c.created_at,c.biz_verified,
           COALESCE(p.profile_json,'{}') profile_json
        FROM cafe_channels c LEFT JOIN cafe_public_profiles p ON p.channel_id=c.channel_id
        WHERE c.owner_id=? ORDER BY c.created_at DESC`

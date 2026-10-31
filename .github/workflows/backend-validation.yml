@@ -23,6 +23,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Verify business-only store opening and block free central-radio listener bypass
+        run: node scripts/test-member-radio-and-store-business-guards.cjs
       - name: Validate independent cafe decoration and public World listing
         run: node scripts/test-cafe-member-staff.cjs
       - name: Validate stream authorization regression guards
